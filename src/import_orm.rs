@@ -363,6 +363,24 @@ fn main() -> Result<()> {
     let decoded = nrclip::parse_payload(&payload, MODEL_VERSION)?;
     let total: usize = decoded.iter().flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
     println!("Verified: {} tracks", total);
+
+    // Run visualizer
+    let img_path = format!("{}.png", output.trim_end_matches(".nrclip"));
+    match std::process::Command::new("cargo")
+        .args(["run", "--bin", "visualize", "--", output, &img_path, "4096"])
+        .status() {
+        Ok(s) if s.success() => println!("Rendered: {}", img_path),
+        _ => eprintln!("Warning: visualizer failed"),
+    }
+
+    // Run comparison if JSON path available
+    match std::process::Command::new("cargo")
+        .args(["run", "--bin", "compare_orm", "--", output, json_path])
+        .status() {
+        Ok(s) if s.success() => {},
+        _ => eprintln!("Warning: compare_orm failed"),
+    }
+
     Ok(())
 }
 
