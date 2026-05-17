@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 
 mod encode;
+mod hobby;
 mod wyhash_nrc1;
 mod nrclip;
 
@@ -200,6 +201,51 @@ fn main() -> Result<()> {
                     keep[i] = true;
                     last_kept = i;
                 }
+            }
+
+            // Iterative spline refinement: compute the actual spline for
+            // the kept points, measure deviation from the original polyline,
+            // and add nodes where deviation exceeds threshold.
+            for _ in 0..3 { // max 3 refinement passes
+                let kept_pts: Vec<(f64, f64)> = (0..coords.len())
+                    .filter(|&i| keep[i]).map(|i| coords[i]).collect();
+                let kept_idx: Vec<usize> = (0..coords.len())
+                    .filter(|&i| keep[i]).collect();
+
+                if kept_pts.len() < 2 { break; }
+                let segs = hobby::hobby_spline(&kept_pts, 0.0);
+                let mut added = false;
+
+                for (si, seg) in segs.iter().enumerate() {
+                    let orig_start = kept_idx[si];
+                    let orig_end = kept_idx[si + 1];
+                    if orig_end - orig_start <= 1 { continue; }
+
+                    // Sample spline points and find max deviation from original polyline
+                    let mut worst_dev = 0.0f64;
+                    let mut worst_orig = orig_start;
+                    for oi in (orig_start + 1)..orig_end {
+                        let (ox, oy) = coords[oi];
+                        // Find nearest point on this spline segment
+                        let mut best_d = f64::MAX;
+                        for s in 0..=32 {
+                            let pt = hobby::bezier_point(seg, s as f64 / 32.0);
+                            let d = ((ox - pt.0).powi(2) + (oy - pt.1).powi(2)).sqrt();
+                            if d < best_d { best_d = d; }
+                        }
+                        if best_d > worst_dev {
+                            worst_dev = best_d;
+                            worst_orig = oi;
+                        }
+                    }
+
+                    if worst_dev > 3.0 { // 3m spline deviation threshold
+                        keep[worst_orig] = true;
+                        added = true;
+                    }
+                }
+
+                if !added { break; }
             }
 
             coords.iter().enumerate()
