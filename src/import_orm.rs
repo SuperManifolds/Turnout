@@ -1,8 +1,15 @@
 /// Import OpenRailwayMap tracks into a Nimby Rails blueprint.
-/// Fetches railway data from the Overpass API and generates a .nrclip file.
+///
+/// Pipeline:
+/// 1. Load Overpass JSON → OSM nodes + ways
+/// 2. Merge ways into continuous routes through shared endpoints
+/// 3. Identify junction points (where routes branch)
+/// 4. Simplify routes to tangent-mode control points (direction changes + max spacing)
+/// 5. For branches: compute attached_to_t along parent route segment
+/// 6. Generate .nrclip with proper junction topology
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 mod encode;
@@ -12,181 +19,284 @@ mod nrclip;
 use encode::PayloadWriter;
 
 const MODEL_VERSION: u32 = 226;
+const MAX_SPACING: f64 = 500.0;
+const ANGLE_THRESHOLD: f64 = 3.0 * std::f64::consts::PI / 180.0;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let json_path = args.get(1).context("usage: import_orm <tracks.json> [output.nrclip]")?;
     let output = args.get(2).map(|s| s.as_str()).unwrap_or("orm_import.nrclip");
 
-    // Load Overpass JSON
     let raw = fs::read_to_string(json_path).context("read JSON")?;
     let data: serde_json::Value = serde_json::from_str(&raw).context("parse JSON")?;
-
     let elements = data["elements"].as_array().context("no elements")?;
 
-    // Extract OSM nodes (lat/lon)
+    // Parse OSM nodes and ways
     let mut osm_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
+    let mut ways: Vec<Vec<u64>> = Vec::new();
     for e in elements {
-        if e["type"].as_str() == Some("node") {
-            let id = e["id"].as_u64().unwrap();
-            let lat = e["lat"].as_f64().unwrap();
-            let lon = e["lon"].as_f64().unwrap();
-            osm_nodes.insert(id, (lat, lon));
+        match e["type"].as_str() {
+            Some("node") => {
+                let id = e["id"].as_u64().unwrap();
+                osm_nodes.insert(id, (e["lat"].as_f64().unwrap(), e["lon"].as_f64().unwrap()));
+            }
+            Some("way") => {
+                let nids: Vec<u64> = e["nodes"].as_array().unwrap()
+                    .iter().map(|n| n.as_u64().unwrap()).collect();
+                if nids.len() >= 2 { ways.push(nids); }
+            }
+            _ => {}
         }
     }
-
-    // Extract OSM ways
-    let mut ways: Vec<OsmWay> = Vec::new();
-    for e in elements {
-        if e["type"].as_str() == Some("way") {
-            let id = e["id"].as_u64().unwrap();
-            let node_ids: Vec<u64> = e["nodes"].as_array().unwrap()
-                .iter().map(|n| n.as_u64().unwrap()).collect();
-            let tags = e.get("tags").cloned().unwrap_or_default();
-            ways.push(OsmWay { id, node_ids, tags });
-        }
-    }
-
     println!("Loaded {} OSM nodes, {} ways", osm_nodes.len(), ways.len());
 
-    // Convert to game coordinates (Web Mercator EPSG:3857)
-    let mut track_nodes: Vec<TrackNode> = Vec::new();
-    let mut node_id_counter: i64 = 100;
-    let mut osm_to_game: HashMap<u64, (i64, usize)> = HashMap::new();
-
-    // Collect all ways with resolved coordinates (no simplification for now)
-    struct ResolvedWay {
-        osm_ids: Vec<u64>,
-        points: Vec<(f64, f64)>,
+    // Build node→way index
+    let mut node_ways: HashMap<u64, Vec<(usize, usize)>> = HashMap::new(); // nid → [(way_idx, pos)]
+    for (wi, way) in ways.iter().enumerate() {
+        for (pi, &nid) in way.iter().enumerate() {
+            node_ways.entry(nid).or_default().push((wi, pi));
+        }
     }
-    let mut resolved_ways: Vec<ResolvedWay> = Vec::new();
-    for way in &ways {
-        let mut osm_ids = Vec::new();
-        let mut points = Vec::new();
-        for &nid in &way.node_ids {
-            if let Some(&(lat, lon)) = osm_nodes.get(&nid) {
-                osm_ids.push(nid);
-                points.push(latlon_to_mercator(lat, lon));
+
+    // Classify shared nodes: continuations vs junctions
+    let mut continuations: HashSet<u64> = HashSet::new();
+    let mut junction_nodes: HashSet<u64> = HashSet::new();
+    for (&nid, refs) in &node_ways {
+        let n_ways = refs.iter().map(|&(wi,_)| wi).collect::<HashSet<_>>().len();
+        if n_ways < 2 { continue; }
+        let all_endpoints = refs.iter().all(|&(wi, pi)| pi == 0 || pi == ways[wi].len() - 1);
+        if n_ways == 2 && all_endpoints {
+            continuations.insert(nid);
+        } else {
+            junction_nodes.insert(nid);
+        }
+    }
+    println!("{} continuations, {} junctions", continuations.len(), junction_nodes.len());
+
+    // Merge ways into routes through continuation points
+    let mut way_used = vec![false; ways.len()];
+    let mut routes: Vec<Vec<u64>> = Vec::new();
+
+    for start_wi in 0..ways.len() {
+        if way_used[start_wi] { continue; }
+        way_used[start_wi] = true;
+        let mut route = ways[start_wi].clone();
+
+        // Extend forward
+        loop {
+            let last = *route.last().unwrap();
+            if !continuations.contains(&last) { break; }
+            let next = node_ways[&last].iter()
+                .find(|&&(wi, _)| !way_used[wi]);
+            match next {
+                Some(&(wi, pi)) => {
+                    way_used[wi] = true;
+                    if pi == 0 {
+                        route.extend_from_slice(&ways[wi][1..]);
+                    } else {
+                        route.extend(ways[wi][..ways[wi].len()-1].iter().rev());
+                    }
+                }
+                None => break,
             }
         }
-        if points.len() >= 2 {
-            resolved_ways.push(ResolvedWay { osm_ids, points });
+        // Extend backward
+        loop {
+            let first = route[0];
+            if !continuations.contains(&first) { break; }
+            let prev = node_ways[&first].iter()
+                .find(|&&(wi, _)| !way_used[wi]);
+            match prev {
+                Some(&(wi, pi)) => {
+                    way_used[wi] = true;
+                    let mut prefix: Vec<u64> = if pi == ways[wi].len() - 1 {
+                        ways[wi][..ways[wi].len()-1].to_vec()
+                    } else {
+                        ways[wi][1..].iter().rev().copied().collect()
+                    };
+                    prefix.extend_from_slice(&route);
+                    route = prefix;
+                }
+                None => break,
+            }
         }
+        routes.push(route);
     }
 
-    // Process ways: create shared nodes, wire prev/next, then fix junctions
-    // with proper attached_to branches.
-    let mut way_gids: Vec<Vec<i64>> = Vec::new();
+    // Sort routes by length (longest = most important = through-routes)
+    routes.sort_by(|a, b| b.len().cmp(&a.len()));
+    println!("Merged into {} routes", routes.len());
 
-    let new_node = |nodes: &mut Vec<TrackNode>, counter: &mut i64, x, y| -> (i64, usize) {
-        let gid = *counter; *counter += 100;
-        let idx = nodes.len();
-        nodes.push(TrackNode {
-            id: gid, x, y, layer: 0, prev: 0, next: 0,
-            tangential: 0, tangent_delta: 0.0,
-            attached_to_id: 0, attached_to_t: 0.0, attached_to_dir: 0,
-            attached_by: Vec::new(),
-        });
-        (gid, idx)
-    };
+    // Convert routes to Mercator coordinates
+    let route_coords: Vec<Vec<(f64, f64)>> = routes.iter().map(|route| {
+        route.iter().filter_map(|nid| {
+            osm_nodes.get(nid).map(|&(lat, lon)| latlon_to_mercator(lat, lon))
+        }).collect()
+    }).collect();
 
-    // Stage 1: create shared nodes and wire through-routes
-    for rw in &resolved_ways {
-        let gids: Vec<i64> = rw.osm_ids.iter().enumerate().map(|(pi, &osm_nid)| {
-            osm_to_game.entry(osm_nid).or_insert_with(|| {
-                new_node(&mut track_nodes, &mut node_id_counter, rw.points[pi].0, rw.points[pi].1)
-            }).0
+    // Simplify routes: keep endpoints, junctions, direction changes, max spacing
+    let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter())
+        .map(|(route, coords)| {
+            let mut keep = vec![false; coords.len()];
+            keep[0] = true;
+            *keep.last_mut().unwrap() = true;
+
+            // Keep junction nodes
+            for (i, &nid) in route.iter().enumerate() {
+                if junction_nodes.contains(&nid) { keep[i] = true; }
+            }
+
+            // Keep at direction changes and max spacing
+            let mut last_kept = 0;
+            let mut last_heading: Option<f64> = None;
+            for i in 1..coords.len() {
+                if keep[i] { last_kept = i; last_heading = None; continue; }
+                let dx = coords[i].0 - coords[last_kept].0;
+                let dy = coords[i].1 - coords[last_kept].1;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let heading = dy.atan2(dx);
+                let angle_change = last_heading.map_or(0.0, |lh| {
+                    let d = (heading - lh).abs();
+                    if d > std::f64::consts::PI { 2.0 * std::f64::consts::PI - d } else { d }
+                });
+                if dist >= MAX_SPACING || angle_change >= ANGLE_THRESHOLD {
+                    keep[i] = true;
+                    last_kept = i;
+                    last_heading = Some(heading);
+                } else if last_heading.is_none() {
+                    last_heading = Some(heading);
+                }
+            }
+
+            coords.iter().enumerate()
+                .filter(|(i, _)| keep[*i])
+                .map(|(i, &(x, y))| (i, x, y))
+                .collect()
         }).collect();
 
-        for i in 0..gids.len() {
-            let idx = osm_to_game[&rw.osm_ids[i]].1;
-            let node = &mut track_nodes[idx];
-            if i > 0 && node.prev == 0 { node.prev = gids[i - 1]; }
-            if i + 1 < gids.len() && node.next == 0 { node.next = gids[i + 1]; }
+    let total_before: usize = route_coords.iter().map(|c| c.len()).sum();
+    let total_after: usize = simplified.iter().map(|s| s.len()).sum();
+    println!("Simplified: {} → {} nodes", total_before, total_after);
+
+    // Build game track nodes
+    let mut track_nodes: Vec<TrackNode> = Vec::new();
+    let mut node_id_counter: i64 = 100;
+
+    // For each route, create a chain of game nodes
+    // Track which game node corresponds to each (route_idx, original_osm_idx) for branch attachment
+    let mut route_game_nodes: Vec<Vec<RouteNodeInfo>> = Vec::new();
+
+    // Also map junction OSM nodes to (route_idx, node position in simplified route)
+    // so branches can find their parent
+    let mut junction_to_route: HashMap<u64, (usize, usize)> = HashMap::new(); // osm_nid → (route_idx, simplified_pos)
+
+    for (ri, simp) in simplified.iter().enumerate() {
+        let mut chain: Vec<RouteNodeInfo> = Vec::new();
+
+        for (si, &(orig_idx, x, y)) in simp.iter().enumerate() {
+            let gid = node_id_counter;
+            node_id_counter += 100;
+            let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
+            track_nodes.push(TrackNode {
+                id: gid, x, y, layer: 0,
+                prev,
+                next: 0, // filled in next iteration
+                tangential: 1,  // tangent mode for through-routes
+                tangent_delta: 0.0,
+                attached_to_id: 0, attached_to_t: 0.0, attached_to_dir: 0,
+                attached_by: Vec::new(),
+            });
+            // Set previous node's next
+            if si > 0 {
+                let prev_idx = track_nodes.len() - 2;
+                track_nodes[prev_idx].next = gid;
+            }
+            chain.push(RouteNodeInfo { game_id: gid, orig_idx });
+
+            // If this is a junction node, register it
+            let osm_nid = routes[ri][orig_idx];
+            if junction_nodes.contains(&osm_nid) {
+                junction_to_route.entry(osm_nid).or_insert((ri, si));
+            }
         }
-        way_gids.push(gids);
+        route_game_nodes.push(chain);
     }
 
-    // Stage 2: create branch endpoints at junctions.
-    // A junction is any node where a way couldn't claim prev/next.
-    // Branch roots get attached_to pointing to the junction node.
-    // Junction nodes get tangential=1 and tangent_delta≈2π (matching real blueprints).
-    for (wi, rw) in resolved_ways.iter().enumerate() {
-        let gids = &mut way_gids[wi];
-        if gids.len() < 2 { continue; }
+    // Now handle branches: for each route that starts or ends at a junction node,
+    // if that junction is owned by a DIFFERENT route, create an attachment.
+    for (ri, simp) in simplified.iter().enumerate() {
+        if simp.is_empty() { continue; }
 
-        for i in 0..gids.len() {
-            let junc_idx = osm_to_game[&rw.osm_ids[i]].1;
-            let want_prev = if i > 0 { gids[i - 1] } else { 0 };
-            let want_next = if i + 1 < gids.len() { gids[i + 1] } else { 0 };
-            let has_prev = want_prev == 0 || track_nodes[junc_idx].prev == want_prev;
-            let has_next = want_next == 0 || track_nodes[junc_idx].next == want_next;
+        // Check start of route
+        let start_osm = routes[ri][simp[0].0];
+        if junction_nodes.contains(&start_osm) {
+            if let Some(&(parent_ri, parent_si)) = junction_to_route.get(&start_osm) {
+                if parent_ri != ri {
+                    // This route starts at a junction owned by another route
+                    // Find the parent segment and compute att_t
+                    let parent_chain = &route_game_nodes[parent_ri];
+                    let parent_node_id = parent_chain[parent_si].game_id;
+                    let branch_node_idx = route_game_nodes[ri][0].game_id;
 
-            if has_prev && has_next { continue; }
+                    // Compute att_t: fraction along the parent segment
+                    // The parent segment goes from parent_si to parent_si+1 (or parent_si-1)
+                    let (att_t, att_dir) = compute_att_t(
+                        &track_nodes, parent_chain, parent_si,
+                        &route_coords[ri][simp[0].0],
+                    );
 
-            // Create branch root at junction position
-            let junction_id = gids[i];
-            let (jx, jy) = (track_nodes[junc_idx].x, track_nodes[junc_idx].y);
-            let (branch_id, _) = new_node(&mut track_nodes, &mut node_id_counter, jx, jy);
+                    // Set attachment on the branch's first node
+                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_idx).unwrap();
+                    track_nodes[br_idx].attached_to_id = parent_node_id;
+                    track_nodes[br_idx].attached_to_t = att_t;
+                    track_nodes[br_idx].attached_to_dir = att_dir;
+                    track_nodes[br_idx].tangential = 0; // point mode for branch roots
 
-            // Compute att_dir: does branch head toward junction's next (+1) or prev (-1)?
-            let branch_other = if want_next != 0 { want_next } else { want_prev };
-            let bo = track_nodes.iter().find(|n| n.id == branch_other).unwrap();
-            let branch_heading = (bo.y - jy).atan2(bo.x - jx);
-
-            let jn = &track_nodes[junc_idx];
-            let att_dir = if jn.next != 0 && jn.prev != 0 {
-                let nn = track_nodes.iter().find(|n| n.id == jn.next).unwrap();
-                let fwd = (nn.y - jy).atan2(nn.x - jx);
-                let mut diff = (branch_heading - fwd).abs();
-                if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
-                if diff < std::f64::consts::FRAC_PI_2 { 1 } else { -1 }
-            } else if jn.next != 0 { 1 } else { -1 };
-
-            // Set branch root fields
-            let br_idx = track_nodes.len() - 1;
-            track_nodes[br_idx].prev = want_prev;
-            track_nodes[br_idx].next = want_next;
-            track_nodes[br_idx].attached_to_id = junction_id;
-            track_nodes[br_idx].attached_to_t = 0.01; // small nonzero — game needs mid-segment position
-            track_nodes[br_idx].attached_to_dir = att_dir;
-
-            // Mark junction as tangential with tangent_delta ≈ 2π
-            track_nodes[junc_idx].tangential = 1;
-            track_nodes[junc_idx].tangent_delta = std::f32::consts::TAU; // 2π
-
-            // Replace junction with branch in this way's chain
-            gids[i] = branch_id;
-
-            // Fix adjacent nodes
-            if want_prev != 0 {
-                if let Some(pi) = track_nodes.iter().position(|n| n.id == want_prev) {
-                    if track_nodes[pi].next == junction_id { track_nodes[pi].next = branch_id; }
+                    // Add to parent's attached_by
+                    let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
+                    track_nodes[par_idx].attached_by.push(branch_node_idx);
                 }
             }
-            if want_next != 0 {
-                if let Some(ni) = track_nodes.iter().position(|n| n.id == want_next) {
-                    if track_nodes[ni].prev == junction_id { track_nodes[ni].prev = branch_id; }
+        }
+
+        // Check end of route
+        let end_osm = routes[ri][simp.last().unwrap().0];
+        if junction_nodes.contains(&end_osm) {
+            if let Some(&(parent_ri, parent_si)) = junction_to_route.get(&end_osm) {
+                if parent_ri != ri {
+                    let parent_chain = &route_game_nodes[parent_ri];
+                    let parent_node_id = parent_chain[parent_si].game_id;
+                    let branch_node_id = route_game_nodes[ri].last().unwrap().game_id;
+
+                    let (att_t, att_dir) = compute_att_t(
+                        &track_nodes, parent_chain, parent_si,
+                        &route_coords[ri][simp.last().unwrap().0],
+                    );
+
+                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
+                    track_nodes[br_idx].attached_to_id = parent_node_id;
+                    track_nodes[br_idx].attached_to_t = att_t;
+                    track_nodes[br_idx].attached_to_dir = att_dir;
+                    track_nodes[br_idx].tangential = 0;
+
+                    let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
+                    track_nodes[par_idx].attached_by.push(branch_node_id);
                 }
             }
-
-            // Add to junction's attached_by
-            track_nodes[junc_idx].attached_by.push(branch_id);
         }
     }
 
-    println!("Created {} track nodes from {} ways", track_nodes.len(), ways.len());
+    let n_branches = track_nodes.iter().filter(|n| n.attached_to_id != 0).count();
+    let n_junctions = track_nodes.iter().filter(|n| !n.attached_by.is_empty()).count();
+    println!("Created {} track nodes, {} branches, {} junction nodes",
+             track_nodes.len(), n_branches, n_junctions);
 
-    // Compute centroid in absolute Web Mercator for the clip center,
-    // then convert track coordinates to ground-meter offsets.
-    // The game stores relative positions in ground meters, not Mercator meters.
-    // Ground meters = Mercator meters * cos(latitude_at_center).
+    // Compute center and convert to ground meters
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
-    let center_lat = (cy / 6_378_137.0).sinh().atan(); // Mercator Y → latitude in radians
+    let center_lat = (cy / 6_378_137.0).sinh().atan();
     let cos_lat = center_lat.cos();
-    println!("Center: ({:.2}, {:.2}), lat={:.6}°, cos(lat)={:.6}", cx, cy,
-             center_lat.to_degrees(), cos_lat);
+    println!("Center: ({:.2}, {:.2}), cos(lat)={:.6}", cx, cy, cos_lat);
     for t in &mut track_nodes {
         t.x = (t.x - cx) * cos_lat;
         t.y = (t.y - cy) * cos_lat;
@@ -196,7 +306,6 @@ fn main() -> Result<()> {
     let payload = build_payload(&track_nodes, cx, cy)?;
     println!("Payload: {} bytes", payload.len());
 
-    // Compress with content size in frame header
     let compressed = {
         let mut enc = zstd::stream::Encoder::new(Vec::new(), 3)?;
         enc.include_contentsize(true)?;
@@ -204,11 +313,8 @@ fn main() -> Result<()> {
         std::io::copy(&mut payload.as_slice(), &mut enc)?;
         enc.finish()?
     };
-
-    // Checksum
     let checksum = wyhash_nrc1::checksum(&payload);
 
-    // Write NRC1
     let mut file_data = Vec::new();
     file_data.extend_from_slice(b"NRC1");
     file_data.extend_from_slice(&MODEL_VERSION.to_le_bytes());
@@ -220,18 +326,56 @@ fn main() -> Result<()> {
     fs::write(output, &file_data)?;
     println!("Wrote {} bytes to {}", file_data.len(), output);
 
-    // Verify
     let decoded = nrclip::parse_payload(&payload, MODEL_VERSION)?;
     let total: usize = decoded.iter().flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
     println!("Verified: {} tracks", total);
-
     Ok(())
 }
 
-struct OsmWay {
-    id: u64,
-    node_ids: Vec<u64>,
-    tags: serde_json::Value,
+struct RouteNodeInfo {
+    game_id: i64,
+    orig_idx: usize,
+}
+
+/// Compute attached_to_t: where along the parent's segment does the branch connect?
+/// Returns (att_t, att_dir).
+fn compute_att_t(
+    tracks: &[TrackNode],
+    parent_chain: &[RouteNodeInfo],
+    parent_si: usize,
+    branch_pos: &(f64, f64),
+) -> (f64, i32) {
+    // Try forward segment (parent_si → parent_si+1)
+    if parent_si + 1 < parent_chain.len() {
+        let p = tracks.iter().find(|n| n.id == parent_chain[parent_si].game_id).unwrap();
+        let q = tracks.iter().find(|n| n.id == parent_chain[parent_si + 1].game_id).unwrap();
+        let sx = q.x - p.x;
+        let sy = q.y - p.y;
+        let seg_len_sq = sx * sx + sy * sy;
+        if seg_len_sq > 0.001 {
+            let bx = branch_pos.0 - p.x;
+            let by = branch_pos.1 - p.y;
+            let t = (bx * sx + by * sy) / seg_len_sq;
+            let t = t.clamp(0.01, 0.99);
+            return (t, 1);
+        }
+    }
+    // Try backward segment (parent_si → parent_si-1)
+    if parent_si > 0 {
+        let p = tracks.iter().find(|n| n.id == parent_chain[parent_si].game_id).unwrap();
+        let q = tracks.iter().find(|n| n.id == parent_chain[parent_si - 1].game_id).unwrap();
+        let sx = q.x - p.x;
+        let sy = q.y - p.y;
+        let seg_len_sq = sx * sx + sy * sy;
+        if seg_len_sq > 0.001 {
+            let bx = branch_pos.0 - p.x;
+            let by = branch_pos.1 - p.y;
+            let t = (bx * sx + by * sy) / seg_len_sq;
+            let t = t.clamp(0.01, 0.99);
+            return (t, -1);
+        }
+    }
+    (0.5, 1) // fallback
 }
 
 struct TrackNode {
@@ -249,7 +393,6 @@ struct TrackNode {
     attached_by: Vec<i64>,
 }
 
-/// Convert WGS84 lat/lon to Web Mercator (EPSG:3857) — the game's coordinate system.
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     let x = lon.to_radians() * 6_378_137.0;
     let y = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * 6_378_137.0;
@@ -259,68 +402,64 @@ fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
 fn build_payload(tracks: &[TrackNode], center_x: f64, center_y: f64) -> Result<Vec<u8>> {
     let mut w = PayloadWriter::new();
 
-    // 1 collection
     w.write_varint(1);
-    w.write_varint(7777777777u64);          // id_a
-    w.write_varint(8888888888u64);          // id_b
+    w.write_varint(7777777777u64);
+    w.write_varint(8888888888u64);
     w.write_optional_mod_source(&None);
     w.write_string("ORM Import");
 
-    // 1 clip
     w.write_varint(1);
     w.write_string("orm-import");
     w.write_varint(0x08120001u64);
     w.write_f64(center_x);
     w.write_f64(center_y);
 
-    // Tracks
     w.write_varint(tracks.len() as u64);
     for t in tracks {
         w.write_i64z(t.id);
-        w.write_raw_u8(1);           // node_type
-        w.write_i32z(0);             // track_type
-        w.write_i32z(t.layer);       // layer
-        w.write_raw_u8(1);           // winding (1 or 255 in real blueprints, never 0)
+        w.write_raw_u8(1);
+        w.write_i32z(0);
+        w.write_i32z(t.layer);
+        w.write_raw_u8(1);            // winding
         w.write_i64z(t.prev);
         w.write_i64z(t.next);
-        w.write_i64z(0);             // group_id
-        w.write_f32(0.0);            // user_max_speed
+        w.write_i64z(0);
+        w.write_f32(0.0);
         w.write_f64(t.x);
         w.write_f64(t.y);
-        w.write_f32(t.tangent_delta); // user_tangent_delta (2π at junction nodes)
-        w.write_f32(0.5);            // next_spline_t
-        w.write_i64z(0);             // station_group_id
-        w.write_i32z(0);             // blueprint
-        w.write_string("");          // name
-        w.write_raw_u8(0);           // station_platform_auto_name
-        w.write_raw_u8(0);           // straight
-        w.write_raw_u8(t.tangential); // 0=point mode, 1=tangent mode (junction through-routes)
-        w.write_raw_u8(0);           // limited_shapes
-        for _ in 0..4 { w.write_varint(0); } // conflicts
-        w.write_vec_set_i64(&[]);    // signal_ids
+        w.write_f32(t.tangent_delta);
+        w.write_f32(0.5);
+        w.write_i64z(0);
+        w.write_i32z(0);
+        w.write_string("");
+        w.write_raw_u8(0);
+        w.write_raw_u8(0);            // straight
+        w.write_raw_u8(t.tangential);
+        w.write_raw_u8(if t.tangential == 1 { 1 } else { 0 }); // limited_shapes for tangent mode
+        for _ in 0..4 { w.write_varint(0); }
+        w.write_vec_set_i64(&[]);
         w.write_i64z(t.attached_to_id);
         w.write_f64(t.attached_to_t);
         w.write_i32z(t.attached_to_dir);
         w.write_vec_set_i64(&t.attached_by);
-        w.write_vec_set_i64(&[]);    // building_attached_by
-        w.write_i64z(0);             // parallel_to_id
-        w.write_i64z(0);             // parallel_kind
-        w.write_f32(0.0);            // parallel_to_t
-        w.write_i32z(0);             // parallel_to_direction
-        w.write_f32(0.0);            // parallel_to_offset
-        w.write_f32(0.0);            // parallel_to_disp
-        w.write_vec_set_i64(&[]);    // parallel_by
-        w.write_f32(0.0);            // proximity_diamond
+        w.write_vec_set_i64(&[]);
+        w.write_i64z(0);
+        w.write_i64z(0);
+        w.write_f32(0.0);
+        w.write_i32z(0);
+        w.write_f32(0.0);
+        w.write_f32(0.0);
+        w.write_vec_set_i64(&[]);
+        w.write_f32(0.0);
     }
 
-    // Empty sections
-    w.write_varint(0);  // signals
-    w.write_varint(0);  // station_groups
-    w.write_varint(0);  // buildings
-    w.write_varint(0);  // track_kinds
-    w.write_varint(0);  // building_kinds
-    w.write_varint(0);  // demands
-    w.write_varint(0);  // mod_metas
+    w.write_varint(0); // signals
+    w.write_varint(0); // station_groups
+    w.write_varint(0); // buildings
+    w.write_varint(0); // track_kinds
+    w.write_varint(0); // building_kinds
+    w.write_varint(0); // demands
+    w.write_varint(0); // mod_metas
 
     Ok(w.into_bytes())
 }

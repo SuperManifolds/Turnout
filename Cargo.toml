@@ -35,3 +35,7 @@ path = "src/hashtest.rs"
 [[bin]]
 name = "import_orm"
 path = "src/import_orm.rs"
+
+[[bin]]
+name = "dump_branches"
+path = "src/dump_branches.rs"
