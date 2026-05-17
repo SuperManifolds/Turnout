@@ -165,9 +165,25 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Keep junction nodes
+            // Keep junction nodes AND all nodes within 100m of a junction
+            // (prevents Hobby spline overshoot near junctions)
+            let mut junction_indices: Vec<usize> = Vec::new();
             for (i, &nid) in route.iter().enumerate() {
-                if junction_nodes.contains(&nid) { keep[i] = true; }
+                if junction_nodes.contains(&nid) {
+                    keep[i] = true;
+                    junction_indices.push(i);
+                }
+            }
+            for &ji in &junction_indices {
+                let jx = coords[ji].0;
+                let jy = coords[ji].1;
+                for i in 0..coords.len() {
+                    let dx = coords[i].0 - jx;
+                    let dy = coords[i].1 - jy;
+                    if dx * dx + dy * dy < 100.0 * 100.0 {
+                        keep[i] = true;
+                    }
+                }
             }
 
             // Keep at direction changes and max spacing

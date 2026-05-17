@@ -15,7 +15,8 @@ pub struct BezierSegment {
 }
 
 /// Compute Hobby spline through a sequence of points.
-/// omega (0.0-1.0) controls endpoint curl (0 = natural, 1 = straight).
+/// omega (0.0-1.0) controls endpoint curl (0 = natural/curly, 1 = straight).
+/// For railway tracks, omega=1.0 is recommended to prevent endpoint overshoot.
 /// Returns cubic Bézier segments connecting consecutive points.
 pub fn hobby_spline(points: &[(f64, f64)], omega: f64) -> Vec<BezierSegment> {
     if points.len() < 2 {
