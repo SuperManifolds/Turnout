@@ -55,14 +55,14 @@ pub fn hobby_spline(points: &[(f64, f64)], _omega: f64) -> Vec<BezierSegment> {
             // Last node: tangent = last chord direction
             tangent_angles.push(chords[n - 2].1.atan2(chords[n - 2].0));
         } else {
-            // Interior node: weighted bisector of incoming and outgoing chords
+            // Interior node: bisector of incoming/outgoing chord directions
+            // (matching game at RVA 0xBA5C0 — direction is angle midpoint,
+            // the 1/(2*cos(angle/2)) weight only affects magnitude)
             let in_angle = chords[i - 1].1.atan2(chords[i - 1].0);
             let out_angle = chords[i].1.atan2(chords[i].0);
             let mut turn = out_angle - in_angle;
-            // Normalize to [-pi, pi]
             while turn > std::f64::consts::PI { turn -= 2.0 * std::f64::consts::PI; }
             while turn < -std::f64::consts::PI { turn += 2.0 * std::f64::consts::PI; }
-            // Bisector: average of incoming and outgoing
             tangent_angles.push(in_angle + turn / 2.0);
         }
     }
