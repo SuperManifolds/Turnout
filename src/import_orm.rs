@@ -20,7 +20,7 @@ mod nrclip;
 use encode::PayloadWriter;
 
 const MODEL_VERSION: u32 = 226;
-const MAX_SPACING: f64 = 500.0;
+const MAX_SPACING: f64 = 200.0;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -200,6 +200,30 @@ fn main() -> Result<()> {
                 if dx * dx + dy * dy >= MAX_SPACING * MAX_SPACING {
                     keep[i] = true;
                     last_kept = i;
+                }
+            }
+
+            // Remove noise on long segments: if a node creates <0.5° turn
+            // AND both adjacent segments are >100m, it's just GPS noise
+            // that the spline amplifies into visible curves.
+            {
+                let kept_idx: Vec<usize> = (0..coords.len()).filter(|&i| keep[i]).collect();
+                for w in kept_idx.windows(3) {
+                    let (i, j, k) = (w[0], w[1], w[2]);
+                    if j == 0 || j == coords.len() - 1 { continue; }
+                    if route.get(j).map_or(false, |nid| junction_nodes.contains(nid)) { continue; }
+
+                    let d1 = ((coords[j].0-coords[i].0).powi(2) + (coords[j].1-coords[i].1).powi(2)).sqrt();
+                    let d2 = ((coords[k].0-coords[j].0).powi(2) + (coords[k].1-coords[j].1).powi(2)).sqrt();
+                    if d1 < 100.0 || d2 < 100.0 { continue; } // only filter long segments
+
+                    let h1 = (coords[j].1 - coords[i].1).atan2(coords[j].0 - coords[i].0);
+                    let h2 = (coords[k].1 - coords[j].1).atan2(coords[k].0 - coords[j].0);
+                    let mut turn = (h2 - h1).abs();
+                    if turn > std::f64::consts::PI { turn = 2.0 * std::f64::consts::PI - turn; }
+                    if turn < 0.5_f64.to_radians() {
+                        keep[j] = false;
+                    }
                 }
             }
 

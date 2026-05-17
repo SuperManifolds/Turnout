@@ -142,7 +142,7 @@ fn main() -> Result<()> {
     }
 
     println!("\nDeviation distribution:");
-    for &thresh in &[1.0, 2.0, 5.0, 10.0, 20.0, 50.0] {
+    for &thresh in &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0] {
         let count = all_devs.iter().filter(|&&d| d <= thresh).count();
         let pct = count as f64 / total as f64 * 100.0;
         println!("  <={:>3.0}m: {:>5.1}% ({}/{})", thresh, pct, count, total);
