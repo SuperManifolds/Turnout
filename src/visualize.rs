@@ -8,6 +8,7 @@ use std::io::{Seek, SeekFrom};
 use std::{env, fs::File, io::BufReader};
 
 mod nrclip;
+mod hobby;
 use nrclip::{parse_payload, Track};
 
 #[derive(BinRead)]
@@ -105,56 +106,26 @@ fn main() -> Result<()> {
         println!("  Layers: {:?}", layer_counts);
     }
 
-    // Draw spline-interpolated track chains
+    // Draw track chains using Hobby splines (matching game's point-mode v1.9 renderer)
     for chain in &chains {
         if chain.len() < 2 { continue; }
 
         let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
+        let segments = hobby::hobby_spline(&points, 0.0);
 
-        for i in 0..points.len() - 1 {
-            // Color by elevation layer of the segment start node
+        for (i, seg) in segments.iter().enumerate() {
             let track_color = layer_color(chain[i].layer);
-
-            let is_straight = chain[i].straight.unwrap_or(0) != 0
-                || chain[i + 1].straight.unwrap_or(0) != 0;
-
-            if is_straight {
-                let (x1, y1) = to_px(points[i].0, points[i].1);
-                let (x2, y2) = to_px(points[i + 1].0, points[i + 1].1);
-                draw_line(&mut img, x1 as i32, y1 as i32, x2 as i32, y2 as i32, track_color);
-            } else {
-                // Spline mode: Catmull-Rom interpolation
-                // For endpoints/junctions, mirror the tangent instead of using
-                // a neighbor that might be on a different branch
-                let p0 = if i > 0 {
-                    points[i - 1]
-                } else {
-                    // Mirror: p0 = p1 - (p2 - p1) = 2*p1 - p2
-                    (2.0 * points[i].0 - points[i + 1].0,
-                     2.0 * points[i].1 - points[i + 1].1)
-                };
-                let p1 = points[i];
-                let p2 = points[i + 1];
-                let p3 = if i + 2 < points.len() {
-                    points[i + 2]
-                } else {
-                    // Mirror: p3 = p2 + (p2 - p1) = 2*p2 - p1
-                    (2.0 * points[i + 1].0 - points[i].0,
-                     2.0 * points[i + 1].1 - points[i].1)
-                };
-
-                let subdiv = 16;
-                let mut prev_px = to_px(p1.0, p1.1);
-                for s in 1..=subdiv {
-                    let t = s as f64 / subdiv as f64;
-                    let pt = catmull_rom(p0, p1, p2, p3, t);
-                    let cur_px = to_px(pt.0, pt.1);
-                    draw_line(&mut img,
-                        prev_px.0 as i32, prev_px.1 as i32,
-                        cur_px.0 as i32, cur_px.1 as i32,
-                        track_color);
-                    prev_px = cur_px;
-                }
+            let subdiv = 16;
+            let mut prev_px = to_px(seg.p0.0, seg.p0.1);
+            for s in 1..=subdiv {
+                let t = s as f64 / subdiv as f64;
+                let pt = hobby::bezier_point(seg, t);
+                let cur_px = to_px(pt.0, pt.1);
+                draw_line(&mut img,
+                    prev_px.0 as i32, prev_px.1 as i32,
+                    cur_px.0 as i32, cur_px.1 as i32,
+                    track_color);
+                prev_px = cur_px;
             }
         }
     }
