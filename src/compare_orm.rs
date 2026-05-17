@@ -11,28 +11,29 @@ mod wyhash_nrc1;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let nrclip_path = args.get(1).context("usage: compare_orm <blueprint.nrclip> <tracks.json>")?;
-    let json_path = args.get(2).context("usage: compare_orm <blueprint.nrclip> <tracks.json>")?;
+    let nrclip_path = args.get(1).context("usage: compare_orm <blueprint.nrclip> [tracks.json]")?;
+    let json_path = args.get(2).map(|s| s.as_str());
 
-    // Load OSM data
-    let raw_json = std::fs::read_to_string(json_path)?;
-    let data: serde_json::Value = serde_json::from_str(&raw_json)?;
-    let elements = data["elements"].as_array().context("no elements")?;
-
+    // Load OSM data (optional — if not provided, just render splines)
     let mut osm_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
     let mut osm_ways: Vec<Vec<u64>> = Vec::new();
-    for e in elements {
-        match e["type"].as_str() {
-            Some("node") => {
-                let id = e["id"].as_u64().unwrap();
-                osm_nodes.insert(id, (e["lat"].as_f64().unwrap(), e["lon"].as_f64().unwrap()));
+    if let Some(jp) = json_path {
+        let raw_json = std::fs::read_to_string(jp)?;
+        let data: serde_json::Value = serde_json::from_str(&raw_json)?;
+        let elements = data["elements"].as_array().context("no elements")?;
+        for e in elements {
+            match e["type"].as_str() {
+                Some("node") => {
+                    let id = e["id"].as_u64().unwrap();
+                    osm_nodes.insert(id, (e["lat"].as_f64().unwrap(), e["lon"].as_f64().unwrap()));
+                }
+                Some("way") => {
+                    let nids: Vec<u64> = e["nodes"].as_array().unwrap()
+                        .iter().map(|n| n.as_u64().unwrap()).collect();
+                    if nids.len() >= 2 { osm_ways.push(nids); }
+                }
+                _ => {}
             }
-            Some("way") => {
-                let nids: Vec<u64> = e["nodes"].as_array().unwrap()
-                    .iter().map(|n| n.as_u64().unwrap()).collect();
-                if nids.len() >= 2 { osm_ways.push(nids); }
-            }
-            _ => {}
         }
     }
 
@@ -90,65 +91,66 @@ fn main() -> Result<()> {
         if chain.len() >= 2 { chains.push(chain); }
     }
 
-    // Measure deviation per chain
-    let mut all_devs: Vec<f64> = Vec::new();
-    let mut chain_stats: Vec<(usize, f64, f64, f64, f64)> = Vec::new(); // (nodes, length, avg, p95, max)
+    // Measure deviation per chain (only if OSM data available)
+    if !osm_segments.is_empty() {
+        let mut all_devs: Vec<f64> = Vec::new();
+        let mut chain_stats: Vec<(usize, f64, f64, f64, f64)> = Vec::new();
 
-    for chain in &chains {
-        let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
-        let segments = hobby::hobby_spline(&points, 0.0);
+        for chain in &chains {
+            let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
+            let segments = hobby::hobby_spline(&points, 0.0);
 
-        let mut devs = Vec::new();
-        for seg in &segments {
-            for s in 0..=16 {
-                let pt = hobby::bezier_point(seg, s as f64 / 16.0);
-                let d = nearest_segment_dist(pt, &osm_segments);
-                devs.push(d);
+            let mut devs = Vec::new();
+            for seg in &segments {
+                for s in 0..=16 {
+                    let pt = hobby::bezier_point(seg, s as f64 / 16.0);
+                    let d = nearest_segment_dist(pt, &osm_segments);
+                    devs.push(d);
+                }
             }
+
+            let chain_len: f64 = (0..points.len() - 1).map(|i| {
+                let dx = points[i + 1].0 - points[i].0;
+                let dy = points[i + 1].1 - points[i].1;
+                (dx * dx + dy * dy).sqrt()
+            }).sum();
+
+            let max_dev = devs.iter().cloned().fold(0.0f64, f64::max);
+            let avg_dev = devs.iter().sum::<f64>() / devs.len() as f64;
+            let mut sorted = devs.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p95 = sorted[sorted.len() * 95 / 100];
+
+            chain_stats.push((chain.len(), chain_len, avg_dev, p95, max_dev));
+            all_devs.extend(devs);
         }
 
-        let chain_len: f64 = (0..points.len() - 1).map(|i| {
-            let dx = points[i + 1].0 - points[i].0;
-            let dy = points[i + 1].1 - points[i].1;
-            (dx * dx + dy * dy).sqrt()
-        }).sum();
+        all_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let total = all_devs.len();
+        let overall_avg = all_devs.iter().sum::<f64>() / total as f64;
+        let overall_p95 = all_devs[total * 95 / 100];
+        let overall_max = *all_devs.last().unwrap();
 
-        let max_dev = devs.iter().cloned().fold(0.0f64, f64::max);
-        let avg_dev = devs.iter().sum::<f64>() / devs.len() as f64;
-        let mut sorted = devs.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let p95 = sorted[sorted.len() * 95 / 100];
+        println!("=== Hobby Spline vs OSM Deviation ===");
+        println!("Chains: {}, sample points: {}", chains.len(), total);
+        println!("Overall: avg={:.1}m  p95={:.1}m  max={:.1}m", overall_avg, overall_p95, overall_max);
 
-        chain_stats.push((chain.len(), chain_len, avg_dev, p95, max_dev));
-        all_devs.extend(devs);
+        chain_stats.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap());
+        println!("\nWorst chains:");
+        for &(nodes, length, avg, p95, max) in chain_stats.iter().take(15) {
+            println!("  {:>3} nodes  {:>6.0}m  avg={:>5.1}m  p95={:>5.1}m  max={:>6.1}m",
+                     nodes, length, avg, p95, max);
+        }
+
+        println!("\nDeviation distribution:");
+        for &thresh in &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0] {
+            let count = all_devs.iter().filter(|&&d| d <= thresh).count();
+            let pct = count as f64 / total as f64 * 100.0;
+            println!("  <={:>3.0}m: {:>5.1}% ({}/{})", thresh, pct, count, total);
+        }
     }
 
-    // Report
-    all_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let total = all_devs.len();
-    let overall_avg = all_devs.iter().sum::<f64>() / total as f64;
-    let overall_p95 = all_devs[total * 95 / 100];
-    let overall_max = *all_devs.last().unwrap();
-
-    println!("=== Hobby Spline vs OSM Deviation ===");
-    println!("Chains: {}, sample points: {}", chains.len(), total);
-    println!("Overall: avg={:.1}m  p95={:.1}m  max={:.1}m", overall_avg, overall_p95, overall_max);
-
-    chain_stats.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap());
-    println!("\nWorst chains:");
-    for &(nodes, length, avg, p95, max) in chain_stats.iter().take(15) {
-        println!("  {:>3} nodes  {:>6.0}m  avg={:>5.1}m  p95={:>5.1}m  max={:>6.1}m",
-                 nodes, length, avg, p95, max);
-    }
-
-    println!("\nDeviation distribution:");
-    for &thresh in &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0] {
-        let count = all_devs.iter().filter(|&&d| d <= thresh).count();
-        let pct = count as f64 / total as f64 * 100.0;
-        println!("  <={:>3.0}m: {:>5.1}% ({}/{})", thresh, pct, count, total);
-    }
-
-    // Render overlay image: red=OSM, white=Hobby spline, yellow=nodes
+    // Render overlay image
     let img_path = format!("{}.png", nrclip_path.trim_end_matches(".nrclip"));
     render_overlay(&clip.tracks, &chains, &osm_ways, &osm_rel, &img_path)?;
     println!("Rendered: {}", img_path);

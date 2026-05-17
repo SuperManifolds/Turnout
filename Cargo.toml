@@ -16,9 +16,6 @@ zstd = "0.13.3"
 name = "nimby_gen"
 path = "src/main.rs"
 
-[[bin]]
-name = "visualize"
-path = "src/visualize.rs"
 
 [[bin]]
 name = "generate"
