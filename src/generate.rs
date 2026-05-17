@@ -63,68 +63,83 @@ struct TrackNode {
 
 fn generate_double_track() -> Vec<TrackNode> {
     let mut nodes = Vec::new();
-    let mut next_id: i64 = 1;
+    let track_spacing = 15.0;
+    let node_spacing = 25.0; // ~25m between nodes for smooth curves
 
-    // Route: ~1km with S-curves and elevation changes
-    // Track 1 (forward direction) and Track 2 (parallel, offset by ~30 units)
-    let track_spacing = 30.0;
+    // Design the route as a heading (angle) that changes gradually.
+    // Real railways have minimum curve radii — we use large gentle arcs.
+    //
+    // Route plan (~1.5km):
+    //   0-300m:    straight heading east, ground
+    //   300-500m:  gentle curve left (15°), rising to elevated
+    //   500-700m:  straight on elevated bridge
+    //   700-900m:  gentle curve right (20°), descending to ground
+    //   900-1100m: straight, ground
+    //   1100-1300m: gentle S-curve entering tunnel (underground)
+    //   1300-1500m: straight underground, then exit
 
-    // Define waypoints as (x, y, layer) — the route curves through these
-    let waypoints: Vec<(f64, f64, i32)> = vec![
-        (0.0,     0.0,    0),   // start, ground
-        (100.0,   20.0,   0),   // gentle curve right
-        (200.0,   10.0,   0),   // curve back
-        (300.0,   40.0,   1),   // rise to elevated
-        (400.0,   80.0,   1),   // elevated bridge section
-        (500.0,   60.0,   1),   // still elevated
-        (600.0,   30.0,   0),   // descend to ground
-        (700.0,   -10.0,  0),   // curve left
-        (800.0,   -40.0, -1),   // tunnel entrance
-        (900.0,   -30.0, -1),   // underground
-        (1000.0,  0.0,   -1),   // underground curve
-        (1100.0,  20.0,   0),   // tunnel exit
-        (1200.0,  50.0,   0),   // final stretch
+    struct Segment {
+        length: f64,
+        curvature: f64, // radians per meter (positive = left turn)
+        layer: i32,
+    }
+
+    let segments = vec![
+        Segment { length: 300.0, curvature: 0.0,       layer: 0 },   // straight east
+        Segment { length: 200.0, curvature: 0.0013,    layer: 0 },   // gentle left, 15° over 200m
+        Segment { length: 100.0, curvature: 0.0,       layer: 1 },   // transition to elevated
+        Segment { length: 200.0, curvature: 0.0,       layer: 1 },   // straight bridge
+        Segment { length: 100.0, curvature: 0.0,       layer: 1 },   // end of bridge
+        Segment { length: 200.0, curvature: -0.0015,   layer: 0 },   // gentle right, descend
+        Segment { length: 200.0, curvature: 0.0,       layer: 0 },   // straight
+        Segment { length: 150.0, curvature: 0.001,     layer: 0 },   // left into tunnel
+        Segment { length: 100.0, curvature: -0.0008,   layer: -1 },  // right underground
+        Segment { length: 200.0, curvature: 0.0,       layer: -1 },  // straight tunnel
+        Segment { length: 150.0, curvature: -0.0005,   layer: 0 },   // exit, slight right
+        Segment { length: 200.0, curvature: 0.0,       layer: 0 },   // final straight
     ];
 
-    // Subdivide each segment to get smooth node placement (~50m spacing)
-    let subdiv = 3;
+    // Walk along the route, placing nodes at regular intervals
     let mut route_points: Vec<(f64, f64, i32)> = Vec::new();
-    for i in 0..waypoints.len() - 1 {
-        for s in 0..subdiv {
-            let t = s as f64 / subdiv as f64;
-            let x = waypoints[i].0 + (waypoints[i + 1].0 - waypoints[i].0) * t;
-            let y = waypoints[i].1 + (waypoints[i + 1].1 - waypoints[i].1) * t;
-            let layer = waypoints[i].2;
-            route_points.push((x, y, layer));
+    let mut x = 0.0f64;
+    let mut y = 0.0f64;
+    let mut heading = 0.0f64; // radians, 0 = east
+
+    for seg in &segments {
+        let n_steps = (seg.length / node_spacing).ceil() as usize;
+        let step = seg.length / n_steps as f64;
+        for _ in 0..n_steps {
+            route_points.push((x, y, seg.layer));
+            heading += seg.curvature * step;
+            x += heading.cos() * step;
+            y += heading.sin() * step;
         }
     }
-    route_points.push(*waypoints.last().unwrap());
+    route_points.push((x, y, segments.last().unwrap().layer));
 
     let n = route_points.len();
-
-    // Pre-assign IDs: track1 uses IDs 1..n, track2 uses IDs n+1..2n
     let id_base_1 = 1i64;
     let id_base_2 = (n as i64) + 1;
 
-    // Build track 1 (main line)
+    // Track 1 (main)
     for i in 0..n {
         let id = id_base_1 + i as i64;
-        let prev = if i == 0 { 0 } else { id - 1 };
-        let next = if i == n - 1 { 0 } else { id + 1 };
         nodes.push(TrackNode {
-            id, x: route_points[i].0, y: route_points[i].1,
-            layer: route_points[i].2, prev, next,
+            id,
+            x: route_points[i].0,
+            y: route_points[i].1,
+            layer: route_points[i].2,
+            prev: if i == 0 { 0 } else { id - 1 },
+            next: if i == n - 1 { 0 } else { id + 1 },
         });
     }
 
-    // Build track 2 (parallel, offset perpendicular to route direction)
+    // Track 2 (parallel, perpendicular offset)
     for i in 0..n {
         let id = id_base_2 + i as i64;
-        let prev = if i == 0 { 0 } else { id - 1 };
-        let next = if i == n - 1 { 0 } else { id + 1 };
 
-        // Compute perpendicular offset direction from route tangent
-        let (dx, dy) = if i < n - 1 {
+        // Tangent direction for perpendicular offset
+        let (dx, dy) = if i + 1 < n {
             (route_points[i + 1].0 - route_points[i].0,
              route_points[i + 1].1 - route_points[i].1)
         } else {
@@ -132,13 +147,16 @@ fn generate_double_track() -> Vec<TrackNode> {
              route_points[i].1 - route_points[i - 1].1)
         };
         let len = (dx * dx + dy * dy).sqrt().max(0.001);
-        // Perpendicular: rotate 90° clockwise
         let nx = dy / len * track_spacing;
         let ny = -dx / len * track_spacing;
 
         nodes.push(TrackNode {
-            id, x: route_points[i].0 + nx, y: route_points[i].1 + ny,
-            layer: route_points[i].2, prev, next,
+            id,
+            x: route_points[i].0 + nx,
+            y: route_points[i].1 + ny,
+            layer: route_points[i].2,
+            prev: if i == 0 { 0 } else { id - 1 },
+            next: if i == n - 1 { 0 } else { id + 1 },
         });
     }
 
