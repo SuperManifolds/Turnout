@@ -22,3 +22,11 @@ path = "src/visualize.rs"
 [[bin]]
 name = "generate"
 path = "src/generate.rs"
+
+[[bin]]
+name = "inject"
+path = "src/inject.rs"
+
+[[bin]]
+name = "hashtest"
+path = "src/hashtest.rs"

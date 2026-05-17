@@ -2,31 +2,47 @@ use anyhow::{Context, Result};
 use std::fs;
 
 mod encode;
+mod wyhash_nrc1;
 mod nrclip;
 
 use encode::PayloadWriter;
 
 const MODEL_VERSION: u32 = 226;
-const WYHASH_SEED: u64 = 0x9c3805fc2c85cacc;
 
 fn main() -> Result<()> {
-    let output = std::env::args().nth(1).unwrap_or_else(|| "generated.nrclip".to_string());
+    let args: Vec<String> = std::env::args().collect();
+    let output = args.iter().find(|a| !a.starts_with('-') && *a != &args[0])
+        .cloned().unwrap_or_else(|| "generated.nrclip".to_string());
 
-    // Generate a double-track route ~1km with curves and elevation changes
-    let tracks = generate_double_track();
+    // Generate tracks
+    let empty = args.iter().any(|a| a == "--empty");
+    let simple = args.iter().any(|a| a == "--simple");
+    let count: usize = args.iter().find_map(|a| a.strip_prefix("--count=").and_then(|s| s.parse().ok())).unwrap_or(170);
+    let tracks = if empty {
+        Vec::new()
+    } else if simple {
+        generate_simple_track(count)
+    } else {
+        generate_double_track()
+    };
     println!("Generated {} track nodes", tracks.len());
 
     // Build payload
     let payload = build_payload(&tracks)?;
     println!("Payload: {} bytes", payload.len());
 
-    // Compress
-    let compressed = zstd::stream::encode_all(payload.as_slice(), 3)
-        .context("zstd compress")?;
+    // Compress (must include content size in frame header for game compatibility)
+    let compressed = {
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3)?;
+        encoder.include_contentsize(true)?;
+        encoder.set_pledged_src_size(Some(payload.len() as u64))?;
+        std::io::copy(&mut payload.as_slice(), &mut encoder)?;
+        encoder.finish()?
+    };
     println!("Compressed: {} bytes", compressed.len());
 
     // Checksum (wyhash of uncompressed payload)
-    let checksum = wyhash::wyhash(payload.as_slice(), WYHASH_SEED);
+    let checksum = wyhash_nrc1::checksum(&payload);
 
     // Write NRC1 container
     let mut file_data = Vec::new();
@@ -59,6 +75,22 @@ struct TrackNode {
     layer: i32,
     prev: i64,
     next: i64,
+}
+
+/// Simple linear track matching the Python generator exactly.
+fn generate_simple_track(count: usize) -> Vec<TrackNode> {
+    let mut nodes = Vec::new();
+    for i in 0..count {
+        nodes.push(TrackNode {
+            id: (i + 1) as i64,
+            x: (i as f64) * 50.0,
+            y: 0.0,
+            layer: 0,
+            prev: if i == 0 { 0 } else { i as i64 },
+            next: if i == count - 1 { 0 } else { (i + 2) as i64 },
+        });
+    }
+    nodes
 }
 
 fn generate_double_track() -> Vec<TrackNode> {
@@ -171,24 +203,27 @@ fn build_payload(tracks: &[TrackNode]) -> Result<Vec<u8>> {
     w.write_varint(1);
 
     // Collection header
-    w.write_varint(0); w.write_varint(0);  // id_a, id_b (v>=71)
-    w.write_optional_mod_source(&None);     // mod_source (v>=71)
-    w.write_string("Generated");            // name (v>=66)
+    w.write_varint(5641124955619280206u64);  // id_a (v>=71)
+    w.write_varint(81985529216486895u64);    // id_b (v>=71)
+    w.write_optional_mod_source(&None);      // mod_source (v>=71)
+    w.write_string("Rust Test");             // name (v>=66)
 
     // Clip count = 1
     w.write_varint(1);
 
     // Clip header
-    w.write_string("generated-test");  // GUID (v>=66)
-    w.write_varint(0);                 // clip_id (v>=66)
-    // Center coords (v>=147): average of all track positions
-    let cx: f64 = tracks.iter().map(|t| t.x).sum::<f64>() / tracks.len() as f64;
-    let cy: f64 = tracks.iter().map(|t| t.y).sum::<f64>() / tracks.len() as f64;
-    w.write_f64(cx);
-    w.write_f64(cy);
+    w.write_string("test");           // GUID (v>=66)
+    w.write_varint(0xDEADBEEFu64);    // clip_id (v>=66)
+    // Center coords (v>=147)
+    w.write_f64(0.0);
+    w.write_f64(0.0);
 
     // vec<Track>
-    write_tracks(&mut w, tracks, ver);
+    if tracks.is_empty() {
+        w.write_varint(0);
+    } else {
+        write_tracks(&mut w, tracks, ver);
+    }
 
     // vec<Signal> (v>=198): empty
     w.write_varint(0);
@@ -197,15 +232,11 @@ fn build_payload(tracks: &[TrackNode]) -> Result<Vec<u8>> {
     // vec<Building> (v>=66): empty
     w.write_varint(0);
 
-    // map<int, TrackKind> (v>=66): 1 entry with key matching track_type
-    write_track_kind_map(&mut w);
-
-    // map<int, BuildingKind> (v>=66): empty
-    w.write_varint(0);
-    // map<u64, Demand> (v>=158): empty
-    w.write_varint(0);
-    // vec<ModMeta> (v>=66): empty
-    w.write_varint(0);
+    // All remaining sections empty
+    w.write_varint(0);  // track_kinds
+    w.write_varint(0);  // building_kinds
+    w.write_varint(0);  // demands
+    w.write_varint(0);  // mod_metas
 
     Ok(w.into_bytes())
 }
@@ -217,7 +248,7 @@ fn write_tracks(w: &mut PayloadWriter, tracks: &[TrackNode], ver: u32) {
         // Pre-coordinate
         w.write_i64z(t.id);               // node_id
         w.write_raw_u8(1);                 // node_type (v>=30)
-        w.write_i32z(1);                   // track_type = 1 (index into TrackKind map)
+        w.write_i32z(0);                   // track_type = 0 (default, no specific TrackKind needed)
         w.write_i32z(t.layer);             // layer (v>=45)
         w.write_raw_u8(0);                 // winding (v>=122)
         w.write_i64z(t.prev);             // prev_node
@@ -269,43 +300,139 @@ fn write_tracks(w: &mut PayloadWriter, tracks: &[TrackNode], ver: u32) {
     }
 }
 
-fn write_track_kind_map(w: &mut PayloadWriter) {
-    // 1 entry: key=1, matching track_type=1 in our tracks
-    w.write_varint(1);
-    w.write_i32z(1); // key
+/// Load TrackKind, BuildingKind, Demand, and ModMeta from a reference blueprint,
+/// then re-encode them into our output. This ensures valid game asset references.
+/// Returns the track_type key to use for our generated tracks.
+fn write_borrowed_sections(w: &mut PayloadWriter, _tracks: &[TrackNode]) -> Result<()> {
+    use crate::nrclip;
 
-    // TrackKind
-    w.write_string("Generated Track");     // display_name
-    w.write_raw_u8(1);                     // speed_class_flag
-    w.write_i32z(1);                       // speed_class
-    w.write_string("generated_track");     // internal_name
-    w.write_string("generated_track_name");// secondary_name
+    let ref_paths = [
+        "/Users/alex/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/workshop/content/1134710/3667051683/blueprints.nrclip",
+        "testblueprint_backup.nrclip",
+        "2949234540/blueprints.nrclip",
+    ];
 
-    // 3 Horizons (required)
-    for i in 0..3 {
-        let max_speed = match i { 0 => 200.0, 1 => 100.0, _ => 300.0 };
-        write_horizon(w, max_speed);
+    // Find a clip with a TrackKind
+    let mut donor: Option<nrclip::Clip> = None;
+    for path in &ref_paths {
+        let Ok(raw) = std::fs::read(path) else { continue };
+        let ver = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+        let Ok(payload) = zstd::stream::decode_all(&raw[32..]) else { continue };
+        let Ok(colls) = nrclip::parse_payload(&payload, ver) else { continue };
+        for coll in colls {
+            for clip in coll.clips {
+                if !clip.track_kinds.is_empty() {
+                    eprintln!("  Borrowing TrackKind/ModMeta from: {}", path);
+                    donor = Some(clip);
+                    break;
+                }
+            }
+            if donor.is_some() { break; }
+        }
+        if donor.is_some() { break; }
+    }
+
+    let clip = donor.expect("No reference blueprint found with TrackKind");
+
+    // Re-encode the borrowed sections byte-for-byte through our encoder
+    // (reuse the write functions from inject.rs via include)
+
+    // map<int, TrackKind>
+    w.write_varint(clip.track_kinds.len() as u64);
+    for (key, tk) in &clip.track_kinds {
+        w.write_i32z(*key);
+        write_track_kind(w, tk);
+    }
+
+    // map<int, BuildingKind>
+    w.write_varint(clip.building_kinds.len() as u64);
+    for (key, bk) in &clip.building_kinds {
+        w.write_i32z(*key);
+        write_building_kind(w, bk, MODEL_VERSION);
+    }
+
+    // map<u64, Demand>: empty (we don't need demand data)
+    w.write_varint(0);
+
+    // vec<ModMeta>
+    w.write_varint(clip.mod_metas.len() as u64);
+    for m in &clip.mod_metas {
+        write_mod_meta(w, m, MODEL_VERSION);
+    }
+
+    Ok(())
+}
+
+// Include the writer functions from inject.rs
+// (These are the same functions used for round-trip encoding)
+fn write_track_kind(w: &mut PayloadWriter, tk: &nrclip::TrackKind) {
+    w.write_string(&tk.display_name);
+    w.write_raw_u8(tk.speed_class_flag);
+    w.write_i32z(tk.speed_class);
+    w.write_string(&tk.internal_name);
+    w.write_string(&tk.secondary_name);
+    for h in &tk.horizons {
+        w.write_i32z(h.speed_class);
+        w.write_f64(h.gauge); w.write_f64(h.height); w.write_f64(h.max_speed);
+        w.write_f64(h.width_a); w.write_f64(h.width_b); w.write_f64(h.spacing);
+        w.write_f64(h.offset_a); w.write_f64(h.offset_b);
+        w.write_i64z(h.visual_distance);
+        for &f in &h.flags { w.write_raw_u8(f); }
+        for tex in &h.textures {
+            w.write_i32z(tex.speed_class);
+            for file in &tex.files {
+                w.write_mod_rel_file(file.workshop_id, &file.path, &file.name);
+            }
+        }
     }
 }
 
-fn write_horizon(w: &mut PayloadWriter, max_speed: f64) {
-    w.write_i32z(1);           // speed_class
-    w.write_f64(22.222);       // gauge
-    w.write_f64(4.68);         // height
-    w.write_f64(max_speed);    // max_speed
-    w.write_f64(3.0);          // width_a
-    w.write_f64(2.0);          // width_b
-    w.write_f64(15.0);         // spacing
-    w.write_f64(2.5);          // offset_a
-    w.write_f64(2.0);          // offset_b
-    w.write_i64z(125000);      // visual_distance
-    for _ in 0..5 { w.write_raw_u8(0); } // flags
+fn write_building_kind(w: &mut PayloadWriter, bk: &nrclip::BuildingKind, ver: u32) {
+    w.write_string(&bk.display_name);
+    w.write_raw_u8(bk.speed_class_flag);
+    w.write_i32z(bk.speed_class);
+    w.write_string(&bk.internal_name);
+    w.write_string(&bk.secondary_name);
+    if ver == 62 { w.write_i32z(0); }
+    w.write_vec_set_i64(&bk.tags);
+    w.write_f32(bk.size_x); w.write_f32(bk.size_y);
+    if (62..=181).contains(&ver) { w.write_raw_u8(0); }
+    if (167..=181).contains(&ver) { w.write_raw_u8(0); }
+    if ver >= 65 { w.write_raw_u8(bk.curved.unwrap_or(0)); }
+    w.write_raw_u8(bk.recolor);
+    if ver >= 67 { w.write_raw_u8(bk.is_poi.unwrap_or(0)); }
+    if ver >= 69 { w.write_raw_u8(bk.has_default_size.unwrap_or(0)); w.write_raw_u8(bk.decal_count.unwrap_or(0)); }
+    w.write_i32z(bk.border_x);
+    w.write_i32z(bk.border_x); // read twice
+    if ver >= 69 {
+        w.write_f32(bk.lod_x); w.write_f32(bk.lod_y);
+        w.write_varint(bk.sentinel as u64);
+        w.write_f32(bk.offset_neg); w.write_f32(bk.offset_pos);
+        w.write_raw_u8(bk.decal_count.unwrap_or(0)); // re-read
+        w.write_varint(bk.scripts.len() as u64);
+        for s in &bk.scripts { w.write_string(s); }
+    }
+    w.write_i32z(bk.rule_x); w.write_i32z(bk.rule_y);
+    if ver >= 63 { w.write_raw_u8(bk.partial_repeat_x.unwrap_or(1)); w.write_raw_u8(bk.partial_repeat_y.unwrap_or(1)); }
+    w.write_i32z(bk.default_draw_layer);
+    w.write_mod_source_pair(bk.texture.workshop_id, &bk.texture.path);
+    w.write_string(&bk.model_path);
+    if ver == 62 { w.write_mod_source_pair(0, ""); w.write_string(""); }
+}
 
-    // 6 texture groups, each with 4 ModRelFiles
-    for _ in 0..6 {
-        w.write_i32z(0);       // texture speed_class
-        for _ in 0..4 {
-            w.write_mod_rel_file(0, "", ""); // empty texture
+fn write_mod_meta(w: &mut PayloadWriter, m: &nrclip::ModMeta, ver: u32) {
+    w.write_i64z(m.source_id);
+    w.write_string(&m.source_path);
+    w.write_string(&m.folder); w.write_string(&m.display_name);
+    w.write_string(&m.author); w.write_string(&m.description);
+    w.write_string(&m.version); w.write_string(&m.tag);
+    w.write_vec_set_i64(&m.provides);
+    if ver >= 117 {
+        w.write_varint(m.content_items.len() as u64);
+        for (kt, kn, vn) in &m.content_items {
+            w.write_i32z(*kt); w.write_string(kn); w.write_string(vn);
         }
     }
+    w.write_raw_u8(m.content_loaded);
+    w.write_raw_u8(m.has_local_data);
 }
