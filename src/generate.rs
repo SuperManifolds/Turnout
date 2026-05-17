@@ -281,7 +281,7 @@ fn write_tracks(w: &mut PayloadWriter, tracks: &[TrackNode], ver: u32) {
         // F20 migration: not at v226
         // F21 migration: not at v226
         w.write_raw_u8(0);                 // straight (v>=62)
-        w.write_raw_u8(0);                 // tangential (v>=143)
+        w.write_raw_u8(1);                 // tangential (v>=143, auto-compute tangent)
         w.write_raw_u8(0);                 // limited_shapes (v>=144)
 
         // 4× conflict vectors (v>=28): all empty

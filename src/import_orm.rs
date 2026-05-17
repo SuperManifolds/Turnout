@@ -52,37 +52,161 @@ fn main() -> Result<()> {
     // Convert to game coordinates (Web Mercator EPSG:3857)
     let mut track_nodes: Vec<TrackNode> = Vec::new();
     let mut node_id_counter: i64 = 100;
+    let mut osm_to_game: HashMap<u64, (i64, usize)> = HashMap::new();
 
+    // Collect all ways with resolved coordinates
+    struct ResolvedWay {
+        osm_ids: Vec<u64>,
+        points: Vec<(f64, f64)>,
+    }
+    let mut resolved_ways: Vec<ResolvedWay> = Vec::new();
     for way in &ways {
-        let points: Vec<(f64, f64)> = way.node_ids.iter()
-            .filter_map(|nid| osm_nodes.get(nid).map(|&(lat, lon)| latlon_to_mercator(lat, lon)))
-            .collect();
-
-        if points.len() < 2 {
-            continue;
+        let mut osm_ids = Vec::new();
+        let mut points = Vec::new();
+        for &nid in &way.node_ids {
+            if let Some(&(lat, lon)) = osm_nodes.get(&nid) {
+                osm_ids.push(nid);
+                points.push(latlon_to_mercator(lat, lon));
+            }
         }
+        if points.len() >= 2 {
+            resolved_ways.push(ResolvedWay { osm_ids, points });
+        }
+    }
 
-        // Each way gets its own independent chain of nodes.
-        // No sharing — junctions would need the game's junction system
-        // which we don't implement yet. Each way is a standalone chain.
-        let mut way_ids: Vec<i64> = Vec::new();
-        for _ in 0..points.len() {
-            way_ids.push(node_id_counter);
+    // For each OSM node, collect (way_idx, position_in_way, heading) from all ways
+    struct WayRef { way_idx: usize, pos: usize, heading: f64 }
+    let mut node_refs: HashMap<u64, Vec<WayRef>> = HashMap::new();
+    for (wi, rw) in resolved_ways.iter().enumerate() {
+        for (pi, &osm_nid) in rw.osm_ids.iter().enumerate() {
+            let heading = if pi + 1 < rw.points.len() {
+                let (dx, dy) = (rw.points[pi+1].0 - rw.points[pi].0, rw.points[pi+1].1 - rw.points[pi].1);
+                dy.atan2(dx)
+            } else if pi > 0 {
+                let (dx, dy) = (rw.points[pi].0 - rw.points[pi-1].0, rw.points[pi].1 - rw.points[pi-1].1);
+                dy.atan2(dx)
+            } else { 0.0 };
+            node_refs.entry(osm_nid).or_default().push(WayRef { way_idx: wi, pos: pi, heading });
+        }
+    }
+
+    // Process ways in two stages:
+    // 1. Create shared game nodes for all OSM nodes, wire prev/next (first claim wins)
+    // 2. For junction branches (ways that couldn't claim prev/next on a shared node),
+    //    create a separate branch endpoint with attached_to pointing to the junction node.
+
+    // Stage 1: create nodes and wire through-routes
+    let mut way_gids: Vec<Vec<i64>> = Vec::new();
+    for rw in &resolved_ways {
+        let gids: Vec<i64> = rw.osm_ids.iter().enumerate().map(|(pi, &osm_nid)| {
+            osm_to_game.entry(osm_nid).or_insert_with(|| {
+                let gid = node_id_counter;
+                node_id_counter += 100;
+                let idx = track_nodes.len();
+                let (x, y) = rw.points[pi];
+                track_nodes.push(TrackNode {
+                    id: gid, x, y, layer: 0, prev: 0, next: 0,
+                    attached_to_id: 0, attached_to_t: 0.0, attached_to_dir: 0,
+                    attached_by: Vec::new(),
+                });
+                (gid, idx)
+            }).0
+        }).collect();
+
+        for i in 0..gids.len() {
+            let idx = osm_to_game[&rw.osm_ids[i]].1;
+            let node = &mut track_nodes[idx];
+            if i > 0 && node.prev == 0 { node.prev = gids[i - 1]; }
+            if i + 1 < gids.len() && node.next == 0 { node.next = gids[i + 1]; }
+        }
+        way_gids.push(gids);
+    }
+
+    // Stage 2: fix branches at junctions.
+    // For each node in each way, check if it's a shared junction node where
+    // this way couldn't claim prev/next. If so, split the chain at the junction
+    // by inserting branch endpoints with attached_to.
+    for (wi, rw) in resolved_ways.iter().enumerate() {
+        let gids = &mut way_gids[wi];
+        if gids.len() < 2 { continue; }
+
+        for i in 0..gids.len() {
+            let shared_idx = osm_to_game[&rw.osm_ids[i]].1;
+            let node = &track_nodes[shared_idx];
+
+            // Check if this way's expected links match the shared node's actual links
+            let want_prev = if i > 0 { gids[i - 1] } else { 0 };
+            let want_next = if i + 1 < gids.len() { gids[i + 1] } else { 0 };
+
+            let has_prev = want_prev == 0 || node.prev == want_prev;
+            let has_next = want_next == 0 || node.next == want_next;
+
+            if has_prev && has_next {
+                continue; // This way owns this node, no branch needed
+            }
+
+            // This is a junction where we couldn't claim prev/next.
+            // Create a branch endpoint at the same position.
+            let junction_id = gids[i];
+            let branch_id = node_id_counter;
             node_id_counter += 100;
-        }
+            let (x, y) = (track_nodes[shared_idx].x, track_nodes[shared_idx].y);
 
-        for (i, &game_id) in way_ids.iter().enumerate() {
-            let prev = if i == 0 { 0 } else { way_ids[i - 1] };
-            let next = if i == way_ids.len() - 1 { 0 } else { way_ids[i + 1] };
+            // Compute att_dir from geometry: does the branch head toward
+            // the junction's next (+1) or prev (-1)?
+            let branch_heading = if want_next != 0 {
+                // Branch continues forward — find the next node's position
+                let ni = track_nodes.iter().find(|n| n.id == want_next).unwrap();
+                (ni.y - y).atan2(ni.x - x)
+            } else if want_prev != 0 {
+                let pi = track_nodes.iter().find(|n| n.id == want_prev).unwrap();
+                (y - pi.y).atan2(x - pi.x) // heading FROM prev toward branch
+            } else { 0.0 };
+
+            let jn = &track_nodes[shared_idx];
+            let att_dir = if jn.next != 0 {
+                let next_node = track_nodes.iter().find(|n| n.id == jn.next).unwrap();
+                let fwd_heading = (next_node.y - jn.y).atan2(next_node.x - jn.x);
+                let diff = (branch_heading - fwd_heading).abs();
+                let diff = if diff > std::f64::consts::PI { 2.0 * std::f64::consts::PI - diff } else { diff };
+                if diff < std::f64::consts::FRAC_PI_2 { 1 } else { -1 }
+            } else if jn.prev != 0 {
+                let prev_node = track_nodes.iter().find(|n| n.id == jn.prev).unwrap();
+                let bwd_heading = (prev_node.y - jn.y).atan2(prev_node.x - jn.x);
+                let diff = (branch_heading - bwd_heading).abs();
+                let diff = if diff > std::f64::consts::PI { 2.0 * std::f64::consts::PI - diff } else { diff };
+                if diff < std::f64::consts::FRAC_PI_2 { -1 } else { 1 }
+            } else { 1 };
 
             track_nodes.push(TrackNode {
-                id: game_id,
-                x: points[i].0,
-                y: points[i].1,
-                layer: 0,
-                prev,
-                next,
+                id: branch_id, x, y, layer: 0,
+                prev: want_prev,
+                next: want_next,
+                attached_to_id: junction_id,
+                attached_to_t: 0.0,
+                attached_to_dir: att_dir,
+                attached_by: Vec::new(),
             });
+
+            // Replace junction ID with branch ID in this way's chain
+            gids[i] = branch_id;
+
+            // Fix adjacent nodes to point to branch instead of junction
+            if i > 0 {
+                let prev_node_idx = track_nodes.iter().position(|n| n.id == want_prev).unwrap();
+                if track_nodes[prev_node_idx].next == junction_id {
+                    track_nodes[prev_node_idx].next = branch_id;
+                }
+            }
+            if i + 1 < gids.len() {
+                let next_node_idx = track_nodes.iter().position(|n| n.id == want_next).unwrap();
+                if track_nodes[next_node_idx].prev == junction_id {
+                    track_nodes[next_node_idx].prev = branch_id;
+                }
+            }
+
+            // Add to junction's attached_by
+            track_nodes[shared_idx].attached_by.push(branch_id);
         }
     }
 
@@ -152,6 +276,10 @@ struct TrackNode {
     layer: i32,
     prev: i64,
     next: i64,
+    attached_to_id: i64,
+    attached_to_t: f64,
+    attached_to_dir: i32,
+    attached_by: Vec<i64>,
 }
 
 /// Convert WGS84 lat/lon to Web Mercator (EPSG:3857) — the game's coordinate system.
@@ -185,7 +313,7 @@ fn build_payload(tracks: &[TrackNode], center_x: f64, center_y: f64) -> Result<V
         w.write_raw_u8(1);           // node_type
         w.write_i32z(0);             // track_type
         w.write_i32z(t.layer);       // layer
-        w.write_raw_u8(0);           // winding
+        w.write_raw_u8(1);           // winding (1 or 255 in real blueprints, never 0)
         w.write_i64z(t.prev);
         w.write_i64z(t.next);
         w.write_i64z(0);             // group_id
@@ -199,14 +327,14 @@ fn build_payload(tracks: &[TrackNode], center_x: f64, center_y: f64) -> Result<V
         w.write_string("");          // name
         w.write_raw_u8(0);           // station_platform_auto_name
         w.write_raw_u8(0);           // straight
-        w.write_raw_u8(0);           // tangential
+        w.write_raw_u8(0);           // tangential (0=point mode: nodes ARE on the track)
         w.write_raw_u8(0);           // limited_shapes
         for _ in 0..4 { w.write_varint(0); } // conflicts
         w.write_vec_set_i64(&[]);    // signal_ids
-        w.write_i64z(0);             // attached_to_id
-        w.write_f64(0.0);            // attached_to_t
-        w.write_i32z(0);             // attached_to_direction
-        w.write_vec_set_i64(&[]);    // attached_by
+        w.write_i64z(t.attached_to_id);
+        w.write_f64(t.attached_to_t);
+        w.write_i32z(t.attached_to_dir);
+        w.write_vec_set_i64(&t.attached_by);
         w.write_vec_set_i64(&[]);    // building_attached_by
         w.write_i64z(0);             // parallel_to_id
         w.write_i64z(0);             // parallel_kind
