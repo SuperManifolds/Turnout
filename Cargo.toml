@@ -8,6 +8,7 @@ anyhow = "1.0.99"
 binrw = "0.15.0"
 half = "2.4.1"
 image = "0.25"
+wyhash = "0.6.0"
 zstd = "0.13.3"
 
 [[bin]]
@@ -17,3 +18,7 @@ path = "src/main.rs"
 [[bin]]
 name = "visualize"
 path = "src/visualize.rs"
+
+[[bin]]
+name = "generate"
+path = "src/generate.rs"
