@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use binrw::BinRead;
 use image::{Rgb, RgbImage};
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::{env, fs::File, io::BufReader};
 
 mod nrclip;
@@ -48,6 +50,15 @@ fn main() -> Result<()> {
 
     println!("Rendering {} tracks from v{} file...", all_tracks.len(), header.version);
 
+    // Build node ID → track lookup
+    let node_map: HashMap<i64, &Track> = all_tracks.iter()
+        .map(|t| (t.node_id, *t))
+        .collect();
+
+    // Build chains: walk prev→next links to form ordered polylines
+    let chains = build_chains(&all_tracks, &node_map);
+    println!("  {} chains extracted", chains.len());
+
     // Compute bounding box
     let mut min_x = f64::MAX;
     let mut min_y = f64::MAX;
@@ -66,44 +77,79 @@ fn main() -> Result<()> {
     let cx = (min_x + max_x) / 2.0;
     let cy = (min_y + max_y) / 2.0;
 
-    // Margin: 5% padding
     let margin = 0.05;
     let scale = (img_size as f64) * (1.0 - 2.0 * margin) / range;
     let offset_x = (img_size as f64) / 2.0;
     let offset_y = (img_size as f64) / 2.0;
 
-    let to_px = |x: f64, y: f64| -> (i32, i32) {
-        let px = ((x - cx) * scale + offset_x) as i32;
-        let py = ((cy - y) * scale + offset_y) as i32; // flip Y
+    let to_px = |x: f64, y: f64| -> (f64, f64) {
+        let px = (x - cx) * scale + offset_x;
+        let py = (cy - y) * scale + offset_y; // flip Y
         (px, py)
     };
-
-    // Build node ID → track lookup
-    let node_map: HashMap<i64, &Track> = all_tracks.iter()
-        .map(|t| (t.node_id, *t))
-        .collect();
 
     // Create image
     let bg = Rgb([24u8, 24, 32]);
     let mut img = RgbImage::from_pixel(img_size, img_size, bg);
 
-    let track_color = Rgb([180u8, 200, 255]);
+    let track_color = Rgb([140u8, 165, 210]);
     let node_color = Rgb([255u8, 120, 60]);
     let station_color = Rgb([60u8, 255, 120]);
     let endpoint_color = Rgb([255u8, 255, 80]);
 
-    // Draw track edges (lines between connected nodes)
-    for t in &all_tracks {
-        let (x1, y1) = to_px(t.x, t.y);
-        if t.next_node != 0 && t.next_node != -1 {
-            if let Some(next) = node_map.get(&t.next_node) {
-                let (x2, y2) = to_px(next.x, next.y);
-                draw_line(&mut img, x1, y1, x2, y2, track_color);
+    // Draw spline-interpolated track chains
+    for chain in &chains {
+        if chain.len() < 2 { continue; }
+
+        let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
+
+        for i in 0..points.len() - 1 {
+            let is_straight = chain[i].straight.unwrap_or(0) != 0
+                || chain[i + 1].straight.unwrap_or(0) != 0;
+
+            if is_straight {
+                // Straight mode: linear segment
+                let (x1, y1) = to_px(points[i].0, points[i].1);
+                let (x2, y2) = to_px(points[i + 1].0, points[i + 1].1);
+                draw_line(&mut img, x1 as i32, y1 as i32, x2 as i32, y2 as i32, track_color);
+            } else {
+                // Spline mode: Catmull-Rom interpolation
+                // For endpoints/junctions, mirror the tangent instead of using
+                // a neighbor that might be on a different branch
+                let p0 = if i > 0 {
+                    points[i - 1]
+                } else {
+                    // Mirror: p0 = p1 - (p2 - p1) = 2*p1 - p2
+                    (2.0 * points[i].0 - points[i + 1].0,
+                     2.0 * points[i].1 - points[i + 1].1)
+                };
+                let p1 = points[i];
+                let p2 = points[i + 1];
+                let p3 = if i + 2 < points.len() {
+                    points[i + 2]
+                } else {
+                    // Mirror: p3 = p2 + (p2 - p1) = 2*p2 - p1
+                    (2.0 * points[i + 1].0 - points[i].0,
+                     2.0 * points[i + 1].1 - points[i].1)
+                };
+
+                let subdiv = 16;
+                let mut prev_px = to_px(p1.0, p1.1);
+                for s in 1..=subdiv {
+                    let t = s as f64 / subdiv as f64;
+                    let pt = catmull_rom(p0, p1, p2, p3, t);
+                    let cur_px = to_px(pt.0, pt.1);
+                    draw_line(&mut img,
+                        prev_px.0 as i32, prev_px.1 as i32,
+                        cur_px.0 as i32, cur_px.1 as i32,
+                        track_color);
+                    prev_px = cur_px;
+                }
             }
         }
     }
 
-    // Draw nodes on top of edges
+    // Draw nodes on top
     for t in &all_tracks {
         let (px, py) = to_px(t.x, t.y);
         let is_endpoint = t.prev_node == 0 || t.prev_node == -1
@@ -118,7 +164,7 @@ fn main() -> Result<()> {
             node_color
         };
         let radius = if has_station { 3 } else if is_endpoint { 2 } else { 1 };
-        draw_circle(&mut img, px, py, radius, color);
+        draw_circle(&mut img, px as i32, py as i32, radius, color);
     }
 
     img.save(output).with_context(|| format!("save {}", output))?;
@@ -127,6 +173,73 @@ fn main() -> Result<()> {
     println!("  Scale: {:.2} px/unit", scale);
 
     Ok(())
+}
+
+/// Catmull-Rom spline interpolation between p1 and p2,
+/// using p0 and p3 as tangent guides. t in [0, 1].
+fn catmull_rom(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), t: f64) -> (f64, f64) {
+    let t2 = t * t;
+    let t3 = t2 * t;
+
+    let x = 0.5 * ((2.0 * p1.0)
+        + (-p0.0 + p2.0) * t
+        + (2.0 * p0.0 - 5.0 * p1.0 + 4.0 * p2.0 - p3.0) * t2
+        + (-p0.0 + 3.0 * p1.0 - 3.0 * p2.0 + p3.0) * t3);
+
+    let y = 0.5 * ((2.0 * p1.1)
+        + (-p0.1 + p2.1) * t
+        + (2.0 * p0.1 - 5.0 * p1.1 + 4.0 * p2.1 - p3.1) * t2
+        + (-p0.1 + 3.0 * p1.1 - 3.0 * p2.1 + p3.1) * t3);
+
+    (x, y)
+}
+
+/// Walk the prev/next graph to extract ordered chains of track nodes.
+/// Each chain is a maximal sequence following next_node links.
+fn build_chains<'a>(tracks: &[&'a Track], node_map: &HashMap<i64, &'a Track>) -> Vec<Vec<&'a Track>> {
+    let mut visited = std::collections::HashSet::new();
+    let mut chains = Vec::new();
+
+    // Find chain starts: nodes with no prev, or whose prev doesn't point back
+    for &t in tracks {
+        if visited.contains(&t.node_id) { continue; }
+
+        // Walk backwards to find the start of this chain
+        let mut start = t;
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(start.node_id);
+        loop {
+            if start.prev_node == 0 || start.prev_node == -1 { break; }
+            match node_map.get(&start.prev_node) {
+                Some(prev) if !seen.contains(&prev.node_id) => {
+                    seen.insert(prev.node_id);
+                    start = prev;
+                }
+                _ => break,
+            }
+        }
+
+        // Walk forward from start
+        let mut chain = Vec::new();
+        let mut current = start;
+        loop {
+            if visited.contains(&current.node_id) { break; }
+            visited.insert(current.node_id);
+            chain.push(current);
+
+            if current.next_node == 0 || current.next_node == -1 { break; }
+            match node_map.get(&current.next_node) {
+                Some(next) if !visited.contains(&next.node_id) => current = next,
+                _ => break,
+            }
+        }
+
+        if chain.len() >= 2 {
+            chains.push(chain);
+        }
+    }
+
+    chains
 }
 
 fn draw_line(img: &mut RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgb<u8>) {
