@@ -96,87 +96,97 @@ fn generate_simple_track(count: usize) -> Vec<TrackNode> {
 fn generate_double_track() -> Vec<TrackNode> {
     let mut nodes = Vec::new();
     let track_spacing = 15.0;
-    let node_spacing = 25.0; // ~25m between nodes for smooth curves
 
-    // Design the route as a heading (angle) that changes gradually.
-    // Real railways have minimum curve radii — we use large gentle arcs.
+    // Place nodes only at key waypoints — the game interpolates curves between them.
+    // Real blueprints use 50-600m between nodes. We place nodes at:
+    //   - start/end of track
+    //   - start/end of curves
+    //   - layer transitions
     //
-    // Route plan (~1.5km):
-    //   0-300m:    straight heading east, ground
-    //   300-500m:  gentle curve left (15°), rising to elevated
-    //   500-700m:  straight on elevated bridge
-    //   700-900m:  gentle curve right (20°), descending to ground
-    //   900-1100m: straight, ground
-    //   1100-1300m: gentle S-curve entering tunnel (underground)
-    //   1300-1500m: straight underground, then exit
+    // Route plan (~2km):
+    //   Start → 300m straight → curve left 15° → 200m elevated bridge →
+    //   curve right 20° → 200m straight → S-curve into tunnel → 200m tunnel → end
 
-    struct Segment {
-        length: f64,
-        curvature: f64, // radians per meter (positive = left turn)
+    struct Waypoint {
+        x: f64,
+        y: f64,
         layer: i32,
     }
 
-    let segments = vec![
-        Segment { length: 300.0, curvature: 0.0,       layer: 0 },   // straight east
-        Segment { length: 200.0, curvature: 0.0013,    layer: 0 },   // gentle left, 15° over 200m
-        Segment { length: 100.0, curvature: 0.0,       layer: 1 },   // transition to elevated
-        Segment { length: 200.0, curvature: 0.0,       layer: 1 },   // straight bridge
-        Segment { length: 100.0, curvature: 0.0,       layer: 1 },   // end of bridge
-        Segment { length: 200.0, curvature: -0.0015,   layer: 0 },   // gentle right, descend
-        Segment { length: 200.0, curvature: 0.0,       layer: 0 },   // straight
-        Segment { length: 150.0, curvature: 0.001,     layer: 0 },   // left into tunnel
-        Segment { length: 100.0, curvature: -0.0008,   layer: -1 },  // right underground
-        Segment { length: 200.0, curvature: 0.0,       layer: -1 },  // straight tunnel
-        Segment { length: 150.0, curvature: -0.0005,   layer: 0 },   // exit, slight right
-        Segment { length: 200.0, curvature: 0.0,       layer: 0 },   // final straight
-    ];
-
-    // Walk along the route, placing nodes at regular intervals
-    let mut route_points: Vec<(f64, f64, i32)> = Vec::new();
+    // Walk the route placing waypoints at key positions
+    let mut waypoints: Vec<Waypoint> = Vec::new();
     let mut x = 0.0f64;
     let mut y = 0.0f64;
-    let mut heading = 0.0f64; // radians, 0 = east
+    let mut heading = 0.0f64;
+
+    struct Segment {
+        length: f64,
+        turn: f64, // total radians over this segment (positive = left)
+        layer: i32,
+        nodes: usize, // how many intermediate nodes (0 = just start)
+    }
+
+    let segments = vec![
+        Segment { length: 300.0, turn: 0.0,       layer: 0,  nodes: 0 },  // straight east
+        Segment { length: 300.0, turn: 0.26,       layer: 0,  nodes: 1 },  // gentle left ~15°
+        Segment { length: 200.0, turn: 0.0,        layer: 1,  nodes: 0 },  // elevated bridge
+        Segment { length: 300.0, turn: -0.35,      layer: 0,  nodes: 1 },  // right ~20°, descend
+        Segment { length: 200.0, turn: 0.0,        layer: 0,  nodes: 0 },  // straight
+        Segment { length: 200.0, turn: 0.17,        layer: 0,  nodes: 1 },  // left into tunnel
+        Segment { length: 150.0, turn: -0.12,       layer: -1, nodes: 0 },  // right underground
+        Segment { length: 200.0, turn: 0.0,        layer: -1, nodes: 0 },  // straight tunnel
+        Segment { length: 200.0, turn: -0.08,       layer: 0,  nodes: 0 },  // exit, slight right
+        Segment { length: 200.0, turn: 0.0,        layer: 0,  nodes: 0 },  // final straight
+    ];
 
     for seg in &segments {
-        let n_steps = (seg.length / node_spacing).ceil() as usize;
-        let step = seg.length / n_steps as f64;
-        for _ in 0..n_steps {
-            route_points.push((x, y, seg.layer));
-            heading += seg.curvature * step;
-            x += heading.cos() * step;
-            y += heading.sin() * step;
+        // Place node at start of segment
+        waypoints.push(Waypoint { x, y, layer: seg.layer });
+
+        let total_steps = seg.nodes + 1;
+        let step_len = seg.length / total_steps as f64;
+        let step_turn = seg.turn / total_steps as f64;
+
+        for s in 0..total_steps {
+            heading += step_turn;
+            x += heading.cos() * step_len;
+            y += heading.sin() * step_len;
+
+            // Place intermediate nodes (not at start, we already did that)
+            if s < total_steps - 1 {
+                waypoints.push(Waypoint { x, y, layer: seg.layer });
+            }
         }
     }
-    route_points.push((x, y, segments.last().unwrap().layer));
+    // Final endpoint
+    waypoints.push(Waypoint { x, y, layer: 0 });
 
-    let n = route_points.len();
+    let n = waypoints.len();
     let id_base_1 = 1i64;
     let id_base_2 = (n as i64) + 1;
 
-    // Track 1 (main)
+    // Track 1 (main line)
     for i in 0..n {
         let id = id_base_1 + i as i64;
         nodes.push(TrackNode {
             id,
-            x: route_points[i].0,
-            y: route_points[i].1,
-            layer: route_points[i].2,
+            x: waypoints[i].x,
+            y: waypoints[i].y,
+            layer: waypoints[i].layer,
             prev: if i == 0 { 0 } else { id - 1 },
             next: if i == n - 1 { 0 } else { id + 1 },
         });
     }
 
-    // Track 2 (parallel, perpendicular offset)
+    // Track 2 (parallel, offset perpendicular to direction)
     for i in 0..n {
         let id = id_base_2 + i as i64;
-
-        // Tangent direction for perpendicular offset
         let (dx, dy) = if i + 1 < n {
-            (route_points[i + 1].0 - route_points[i].0,
-             route_points[i + 1].1 - route_points[i].1)
+            (waypoints[i + 1].x - waypoints[i].x,
+             waypoints[i + 1].y - waypoints[i].y)
         } else {
-            (route_points[i].0 - route_points[i - 1].0,
-             route_points[i].1 - route_points[i - 1].1)
+            (waypoints[i].x - waypoints[i - 1].x,
+             waypoints[i].y - waypoints[i - 1].y)
         };
         let len = (dx * dx + dy * dy).sqrt().max(0.001);
         let nx = dy / len * track_spacing;
@@ -184,9 +194,9 @@ fn generate_double_track() -> Vec<TrackNode> {
 
         nodes.push(TrackNode {
             id,
-            x: route_points[i].0 + nx,
-            y: route_points[i].1 + ny,
-            layer: route_points[i].2,
+            x: waypoints[i].x + nx,
+            y: waypoints[i].y + ny,
+            layer: waypoints[i].layer,
             prev: if i == 0 { 0 } else { id - 1 },
             next: if i == n - 1 { 0 } else { id + 1 },
         });
