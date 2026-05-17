@@ -19,8 +19,7 @@ mod nrclip;
 use encode::PayloadWriter;
 
 const MODEL_VERSION: u32 = 226;
-const MAX_SPACING: f64 = 300.0;
-const ANGLE_THRESHOLD: f64 = 1.0 * std::f64::consts::PI / 180.0; // 1 degree — keep more curve detail
+const MAX_SPACING: f64 = 500.0;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -165,9 +164,8 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Keep junction nodes AND all nodes within 100m of a junction
-            // (prevents Hobby spline overshoot near junctions)
-            let mut junction_indices: Vec<usize> = Vec::new();
+            // Keep junction nodes and neighbors within 50m
+            let mut junction_indices = Vec::new();
             for (i, &nid) in route.iter().enumerate() {
                 if junction_nodes.contains(&nid) {
                     keep[i] = true;
@@ -175,36 +173,32 @@ fn main() -> Result<()> {
                 }
             }
             for &ji in &junction_indices {
-                let jx = coords[ji].0;
-                let jy = coords[ji].1;
+                let (jx, jy) = coords[ji];
                 for i in 0..coords.len() {
                     let dx = coords[i].0 - jx;
                     let dy = coords[i].1 - jy;
-                    if dx * dx + dy * dy < 100.0 * 100.0 {
-                        keep[i] = true;
-                    }
+                    if dx * dx + dy * dy < 50.0 * 50.0 { keep[i] = true; }
                 }
             }
 
-            // Keep at direction changes and max spacing
+            // Douglas-Peucker on segments BETWEEN kept nodes.
+            // This preserves junction detail while simplifying long runs.
+            let kept_indices: Vec<usize> = (0..coords.len()).filter(|&i| keep[i]).collect();
+            for w in kept_indices.windows(2) {
+                if w[1] - w[0] > 2 {
+                    douglas_peucker(coords, &mut keep, w[0], w[1], 2.0);
+                }
+            }
+
+            // Enforce max spacing
             let mut last_kept = 0;
-            let mut last_heading: Option<f64> = None;
             for i in 1..coords.len() {
-                if keep[i] { last_kept = i; last_heading = None; continue; }
+                if keep[i] { last_kept = i; continue; }
                 let dx = coords[i].0 - coords[last_kept].0;
                 let dy = coords[i].1 - coords[last_kept].1;
-                let dist = (dx * dx + dy * dy).sqrt();
-                let heading = dy.atan2(dx);
-                let angle_change = last_heading.map_or(0.0, |lh| {
-                    let d = (heading - lh).abs();
-                    if d > std::f64::consts::PI { 2.0 * std::f64::consts::PI - d } else { d }
-                });
-                if dist >= MAX_SPACING || angle_change >= ANGLE_THRESHOLD {
+                if dx * dx + dy * dy >= MAX_SPACING * MAX_SPACING {
                     keep[i] = true;
                     last_kept = i;
-                    last_heading = Some(heading);
-                } else if last_heading.is_none() {
-                    last_heading = Some(heading);
                 }
             }
 
@@ -431,6 +425,47 @@ struct TrackNode {
     attached_to_t: f64,
     attached_to_dir: i32,
     attached_by: Vec<i64>,
+}
+
+/// Douglas-Peucker polyline simplification. Marks points to keep in `keep[]`.
+/// Recursively finds the point farthest from the line between start and end;
+/// if it exceeds `tolerance`, keeps it and recurses on both halves.
+fn douglas_peucker(coords: &[(f64, f64)], keep: &mut [bool], start: usize, end: usize, tolerance: f64) {
+    if end <= start + 1 { return; }
+
+    let (ax, ay) = coords[start];
+    let (bx, by) = coords[end];
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len_sq = dx * dx + dy * dy;
+
+    let mut max_dist = 0.0f64;
+    let mut max_idx = start;
+
+    for i in (start + 1)..end {
+        // Skip already-kept nodes (junctions) — they split the recursion naturally
+        let dist = if len_sq < 1e-10 {
+            let px = coords[i].0 - ax;
+            let py = coords[i].1 - ay;
+            (px * px + py * py).sqrt()
+        } else {
+            let t = ((coords[i].0 - ax) * dx + (coords[i].1 - ay) * dy) / len_sq;
+            let t = t.clamp(0.0, 1.0);
+            let proj_x = ax + t * dx;
+            let proj_y = ay + t * dy;
+            ((coords[i].0 - proj_x).powi(2) + (coords[i].1 - proj_y).powi(2)).sqrt()
+        };
+        if dist > max_dist {
+            max_dist = dist;
+            max_idx = i;
+        }
+    }
+
+    if max_dist > tolerance {
+        keep[max_idx] = true;
+        douglas_peucker(coords, keep, start, max_idx, tolerance);
+        douglas_peucker(coords, keep, max_idx, end, tolerance);
+    }
 }
 
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
