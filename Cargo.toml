@@ -1,0 +1,10 @@
+[package]
+name = "nimby_gen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.99"
+binrw = "0.15.0"
+half = "2.4.1"
+zstd = "0.13.3"
