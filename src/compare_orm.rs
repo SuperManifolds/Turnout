@@ -148,6 +148,89 @@ fn main() -> Result<()> {
         println!("  <={:>3.0}m: {:>5.1}% ({}/{})", thresh, pct, count, total);
     }
 
+    // Render overlay image: red=OSM, white=Hobby spline, yellow=nodes
+    let img_path = format!("{}.png", nrclip_path.trim_end_matches(".nrclip"));
+    render_overlay(&clip.tracks, &chains, &osm_ways, &osm_rel, &img_path)?;
+    println!("Rendered: {}", img_path);
+
+    Ok(())
+}
+
+fn render_overlay(
+    tracks: &[nrclip::Track],
+    chains: &[Vec<&nrclip::Track>],
+    osm_ways: &[Vec<u64>],
+    osm_rel: &HashMap<u64, (f64, f64)>,
+    path: &str,
+) -> Result<()> {
+    use image::{Rgb, RgbImage};
+
+    let size = 4096u32;
+    let margin = 50.0;
+
+    // Compute bounds from both datasets
+    let mut all_x: Vec<f64> = tracks.iter().map(|t| t.x).collect();
+    let mut all_y: Vec<f64> = tracks.iter().map(|t| t.y).collect();
+    for (_, &(x, y)) in osm_rel { all_x.push(x); all_y.push(y); }
+
+    let xmin = all_x.iter().cloned().fold(f64::MAX, f64::min) - margin;
+    let xmax = all_x.iter().cloned().fold(f64::MIN, f64::max) + margin;
+    let ymin = all_y.iter().cloned().fold(f64::MAX, f64::min) - margin;
+    let ymax = all_y.iter().cloned().fold(f64::MIN, f64::max) + margin;
+
+    let scale = (size as f64 / (xmax - xmin)).min(size as f64 / (ymax - ymin)) * 0.9;
+    let to_px = |x: f64, y: f64| -> (i32, i32) {
+        let px = (x - xmin) * scale + (size as f64 - (xmax - xmin) * scale) / 2.0;
+        let py = size as f64 - ((y - ymin) * scale + (size as f64 - (ymax - ymin) * scale) / 2.0);
+        (px as i32, py as i32)
+    };
+
+    let mut img = RgbImage::from_pixel(size, size, Rgb([30, 32, 40]));
+    let red = Rgb([200, 50, 50]);
+    let white = Rgb([255, 255, 255]);
+    let yellow = Rgb([255, 255, 0]);
+
+    // Draw OSM ways (red)
+    for way in osm_ways {
+        let pts: Vec<(i32, i32)> = way.iter()
+            .filter_map(|nid| osm_rel.get(nid).map(|&(x, y)| to_px(x, y)))
+            .collect();
+        for i in 0..pts.len().saturating_sub(1) {
+            draw_line(&mut img, pts[i].0, pts[i].1, pts[i+1].0, pts[i+1].1, red);
+        }
+    }
+
+    // Draw Hobby spline curves (white)
+    for chain in chains {
+        if chain.len() < 2 { continue; }
+        let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
+        let segs = hobby::hobby_spline(&points, 0.0);
+        for seg in &segs {
+            let mut prev = to_px(seg.p0.0, seg.p0.1);
+            for s in 1..=16 {
+                let pt = hobby::bezier_point(seg, s as f64 / 16.0);
+                let cur = to_px(pt.0, pt.1);
+                draw_line(&mut img, prev.0, prev.1, cur.0, cur.1, white);
+                prev = cur;
+            }
+        }
+    }
+
+    // Draw nodes (yellow)
+    for t in tracks {
+        let (px, py) = to_px(t.x, t.y);
+        for dy in -2..=2i32 {
+            for dx in -2..=2i32 {
+                let x = px + dx;
+                let y = py + dy;
+                if x >= 0 && x < size as i32 && y >= 0 && y < size as i32 {
+                    img.put_pixel(x as u32, y as u32, yellow);
+                }
+            }
+        }
+    }
+
+    img.save(path)?;
     Ok(())
 }
 
@@ -169,4 +252,21 @@ fn nearest_segment_dist(pt: (f64, f64), segments: &[((f64, f64), (f64, f64))]) -
         if d < best { best = d; }
     }
     best
+}
+
+fn draw_line(img: &mut image::RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, color: image::Rgb<u8>) {
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let (mut x, mut y) = (x0, y0);
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    loop {
+        if x >= 0 && x < w && y >= 0 && y < h { img.put_pixel(x as u32, y as u32, color); }
+        if x == x1 && y == y1 { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x += sx; }
+        if e2 <= dx { err += dx; y += sy; }
+    }
 }
