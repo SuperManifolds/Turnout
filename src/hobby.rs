@@ -1,10 +1,10 @@
-/// Hobby spline implementation for point-mode track rendering.
-/// Given a sequence of points, produces cubic Bézier control points.
+/// Track curve computation matching Nimby Rails' actual algorithm.
+/// NOT standard Hobby splines — uses local tangent computation
+/// (weighted bisector) instead of global tridiagonal solver.
 ///
-/// Based on Jake Low's implementation (ISC license):
-/// https://www.jakelow.com/blog/hobby-curves/hobby.js
-/// Which implements the algorithm from:
-/// Hobby, J.D., "Smooth, Easy to Compute Interpolating Splines", 1986
+/// Reverse engineered from NIMBYRails.exe:
+///   Tangent: RVA 0xBA490/0xBA5C0 (local bisector)
+///   Rho:     RVA 0xBD8E0 (golden-ratio based velocity function)
 
 /// A cubic Bézier segment: start, control1, control2, end
 pub struct BezierSegment {
@@ -14,92 +14,86 @@ pub struct BezierSegment {
     pub p1: (f64, f64),
 }
 
-/// Compute Hobby spline through a sequence of points.
-/// omega (0.0-1.0) controls endpoint curl (0 = natural/curly, 1 = straight).
-/// For railway tracks, omega=1.0 is recommended to prevent endpoint overshoot.
-/// Returns cubic Bézier segments connecting consecutive points.
-pub fn hobby_spline(points: &[(f64, f64)], omega: f64) -> Vec<BezierSegment> {
+/// Compute track curves through a sequence of points using the game's
+/// actual algorithm: local bisector tangents + Hobby rho velocity function.
+pub fn hobby_spline(points: &[(f64, f64)], _omega: f64) -> Vec<BezierSegment> {
     if points.len() < 2 {
         return Vec::new();
     }
     if points.len() == 2 {
-        // Straight line
+        // Straight line — control points at 1/3 and 2/3
         let (x0, y0) = points[0];
         let (x1, y1) = points[1];
-        let cx = (x0 + x1) / 2.0;
-        let cy = (y0 + y1) / 2.0;
         return vec![BezierSegment {
-            p0: points[0], c0: (cx, cy), c1: (cx, cy), p1: points[1],
+            p0: (x0, y0),
+            c0: (x0 + (x1 - x0) / 3.0, y0 + (y1 - y0) / 3.0),
+            c1: (x0 + 2.0 * (x1 - x0) / 3.0, y0 + 2.0 * (y1 - y0) / 3.0),
+            p1: (x1, y1),
         }];
     }
 
-    let n = points.len() - 1;
+    let n = points.len();
 
-    // Chords and their lengths
-    let mut chords: Vec<(f64, f64)> = Vec::with_capacity(n);
-    let mut d: Vec<f64> = Vec::with_capacity(n);
-    for i in 0..n {
-        let cx = points[i + 1].0 - points[i].0;
-        let cy = points[i + 1].1 - points[i].1;
-        let len = (cx * cx + cy * cy).sqrt();
-        chords.push((cx, cy));
-        d.push(len.max(1e-10)); // avoid zero-length
-    }
-
-    // Turning angles (gamma) at each interior point
-    let mut gamma = vec![0.0f64; n + 1];
-    for i in 1..n {
-        gamma[i] = angle_between(chords[i - 1], chords[i]);
-    }
-
-    // Set up tridiagonal system (Jackowski formula 38)
-    let mut a_diag = vec![0.0; n + 1];
-    let mut b_diag = vec![0.0; n + 1];
-    let mut c_diag = vec![0.0; n + 1];
-    let mut d_rhs = vec![0.0; n + 1];
-
-    b_diag[0] = 2.0 + omega;
-    c_diag[0] = 2.0 * omega + 1.0;
-    d_rhs[0] = -c_diag[0] * gamma[1];
-
-    for i in 1..n {
-        a_diag[i] = 1.0 / d[i - 1];
-        b_diag[i] = (2.0 * d[i - 1] + 2.0 * d[i]) / (d[i - 1] * d[i]);
-        c_diag[i] = 1.0 / d[i];
-        d_rhs[i] = -(2.0 * gamma[i] * d[i] + gamma[i + 1] * d[i - 1]) / (d[i - 1] * d[i]);
-    }
-
-    a_diag[n] = 2.0 * omega + 1.0;
-    b_diag[n] = 2.0 + omega;
-    d_rhs[n] = 0.0;
-
-    // Solve with Thomas algorithm → alpha angles
-    let alpha = thomas(&a_diag, &b_diag, &c_diag, &d_rhs);
-
-    // Compute beta angles
-    let mut beta = vec![0.0; n];
+    // Compute chord vectors and lengths
+    let mut chords: Vec<(f64, f64)> = Vec::with_capacity(n - 1);
+    let mut chord_lens: Vec<f64> = Vec::with_capacity(n - 1);
     for i in 0..n - 1 {
-        beta[i] = -gamma[i + 1] - alpha[i + 1];
+        let dx = points[i + 1].0 - points[i].0;
+        let dy = points[i + 1].1 - points[i].1;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-10);
+        chords.push((dx, dy));
+        chord_lens.push(len);
     }
-    beta[n - 1] = -alpha[n];
 
-    // Compute Bézier control points
-    let mut segments = Vec::with_capacity(n);
+    // Compute tangent angle at each node using weighted bisector
+    let mut tangent_angles: Vec<f64> = Vec::with_capacity(n);
     for i in 0..n {
-        let a_len = rho(alpha[i], beta[i]) * d[i] / 3.0;
-        let b_len = rho(beta[i], alpha[i]) * d[i] / 3.0;
+        if i == 0 {
+            // First node: tangent = chord direction
+            tangent_angles.push(chords[0].1.atan2(chords[0].0));
+        } else if i == n - 1 {
+            // Last node: tangent = last chord direction
+            tangent_angles.push(chords[n - 2].1.atan2(chords[n - 2].0));
+        } else {
+            // Interior node: weighted bisector of incoming and outgoing chords
+            let in_angle = chords[i - 1].1.atan2(chords[i - 1].0);
+            let out_angle = chords[i].1.atan2(chords[i].0);
+            let mut turn = out_angle - in_angle;
+            // Normalize to [-pi, pi]
+            while turn > std::f64::consts::PI { turn -= 2.0 * std::f64::consts::PI; }
+            while turn < -std::f64::consts::PI { turn += 2.0 * std::f64::consts::PI; }
+            // Bisector: average of incoming and outgoing
+            tangent_angles.push(in_angle + turn / 2.0);
+        }
+    }
 
-        let chord_norm = normalize(chords[i]);
-        let c0_dir = rotate(chord_norm, alpha[i]);
-        let c1_dir = rotate(chord_norm, -beta[i]);
+    // Generate Bézier segments
+    let delta = (3.0 - 5.0_f64.sqrt()) / 2.0; // ≈ 0.38197
+
+    let mut segments = Vec::with_capacity(n - 1);
+    for i in 0..n - 1 {
+        let chord_angle = chords[i].1.atan2(chords[i].0);
+        let d = chord_lens[i];
+
+        // Alpha: angle from chord to tangent at start node
+        let alpha = normalize_angle(tangent_angles[i] - chord_angle);
+        // Beta: angle from chord to tangent at end node (negated)
+        let beta = normalize_angle(chord_angle - tangent_angles[i + 1]);
+
+        // Hobby rho velocity function (game's version with delta = (3-√5)/2)
+        let (rho_a, rho_b) = rho(alpha, beta, delta);
+
+        // Control points
+        let c0_dir = rotate_unit(chord_angle + alpha);
+        let c1_dir = rotate_unit(chord_angle - beta);
 
         let c0 = (
-            points[i].0 + c0_dir.0 * a_len,
-            points[i].1 + c0_dir.1 * a_len,
+            points[i].0 + rho_a * d * c0_dir.0,
+            points[i].1 + rho_a * d * c0_dir.1,
         );
         let c1 = (
-            points[i + 1].0 - c1_dir.0 * b_len,
-            points[i + 1].1 - c1_dir.1 * b_len,
+            points[i + 1].0 - rho_b * d * c1_dir.0,
+            points[i + 1].1 - rho_b * d * c1_dir.1,
         );
 
         segments.push(BezierSegment {
@@ -113,50 +107,36 @@ pub fn hobby_spline(points: &[(f64, f64)], omega: f64) -> Vec<BezierSegment> {
     segments
 }
 
-/// Velocity function (Jackowski formula 28)
-fn rho(alpha: f64, beta: f64) -> f64 {
-    let c = 2.0 / 3.0;
-    2.0 / (1.0 + c * beta.cos() + (1.0 - c) * alpha.cos())
+/// Game's rho velocity function (RVA 0xBD8E0).
+/// Uses delta = (3-√5)/2 ≈ 0.38197 (golden ratio related).
+fn rho(alpha: f64, beta: f64, delta: f64) -> (f64, f64) {
+    let sa = alpha.sin();
+    let sb = beta.sin();
+    let ca = alpha.cos();
+    let cb = beta.cos();
+
+    let a = sa - sb / 16.0;
+    let b = sb - sa / 16.0;
+    let c = ca - cb;
+    let f = std::f64::consts::SQRT_2 * a * b * c;
+
+    let denom_a = 3.0 * (1.0 + (1.0 - delta) * ca + delta * cb);
+    let denom_b = 3.0 * (1.0 + (1.0 - delta) * cb + delta * ca);
+
+    let rho_a = if denom_a.abs() > 1e-10 { (2.0 + f) / denom_a } else { 1.0 / 3.0 };
+    let rho_b = if denom_b.abs() > 1e-10 { (2.0 - f) / denom_b } else { 1.0 / 3.0 };
+
+    (rho_a.max(0.0), rho_b.max(0.0))
 }
 
-/// Signed angle between two 2D vectors
-fn angle_between(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let cross = a.0 * b.1 - a.1 * b.0;
-    let dot = a.0 * b.0 + a.1 * b.1;
-    cross.atan2(dot)
+fn normalize_angle(mut a: f64) -> f64 {
+    while a > std::f64::consts::PI { a -= 2.0 * std::f64::consts::PI; }
+    while a < -std::f64::consts::PI { a += 2.0 * std::f64::consts::PI; }
+    a
 }
 
-fn normalize(v: (f64, f64)) -> (f64, f64) {
-    let len = (v.0 * v.0 + v.1 * v.1).sqrt().max(1e-10);
-    (v.0 / len, v.1 / len)
-}
-
-fn rotate(v: (f64, f64), angle: f64) -> (f64, f64) {
-    let (s, c) = angle.sin_cos();
-    (v.0 * c - v.1 * s, v.0 * s + v.1 * c)
-}
-
-/// Thomas algorithm for tridiagonal matrix
-fn thomas(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
-    let n = b.len() - 1;
-    let mut cp = vec![0.0; n + 1];
-    let mut dp = vec![0.0; n + 1];
-
-    cp[0] = c[0] / b[0];
-    dp[0] = d[0] / b[0];
-
-    for i in 1..=n {
-        let denom = b[i] - cp[i - 1] * a[i];
-        cp[i] = c[i] / denom;
-        dp[i] = (d[i] - dp[i - 1] * a[i]) / denom;
-    }
-
-    let mut x = vec![0.0; n + 1];
-    x[n] = dp[n];
-    for i in (0..n).rev() {
-        x[i] = dp[i] - cp[i] * x[i + 1];
-    }
-    x
+fn rotate_unit(angle: f64) -> (f64, f64) {
+    (angle.cos(), angle.sin())
 }
 
 /// Sample a cubic Bézier at parameter t ∈ [0, 1]
