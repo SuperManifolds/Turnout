@@ -203,7 +203,7 @@ pub struct Track {
     pub node_id: i64,                        // +0x00 i64z (v>=1)
     pub node_type: u8,                       // +0x20 raw u8 (v>=30)
     pub track_type: i32,                     // +0x24 i32z (v>=30), index into TrackKind map
-    pub max_speed: i32,                      // +0x28 i32z (v>=45)
+    pub layer: i32,                           // +0x28 i32z (v>=45), elevation level (0=ground, +N=elevated, -N=underground)
     pub winding: Option<u8>,                 // +0x2C raw u8 (v>=122), curve winding direction
     pub prev_node: i64,                      // +0x08 i64z (v>=1), zigzag(-1) = null
     pub next_node: i64,                      // +0x10 i64z (v>=1)
@@ -247,8 +247,8 @@ pub struct Track {
 
 impl fmt::Display for Track {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Track {} type={} tt={} speed={} prev={} next={} ({:.4}, {:.4})",
-            self.node_id, self.node_type, self.track_type, self.max_speed,
+        write!(f, "Track {} type={} tt={} layer={} prev={} next={} ({:.4}, {:.4})",
+            self.node_id, self.node_type, self.track_type, self.layer,
             self.prev_node, self.next_node, self.x, self.y)
     }
 }
@@ -576,7 +576,7 @@ fn parse_track(r: &mut PayloadReader<'_>, ver: u32) -> Result<Track> {
     if ver < 30 { r.read_i64z()?; } // v1-29 migration
     let track_type = if ver >= 30 { r.read_i32z()? } else { 0 };
     if ver < 30 { r.read_i64z()?; } // v1-29 migration
-    let max_speed = if ver >= 45 { r.read_i32z()? } else { 0 };
+    let layer = if ver >= 45 { r.read_i32z()? } else { 0 };
     let winding = if ver >= 122 { Some(r.read_raw_u8()?) } else { None };
     let prev_node = r.read_i64z()?;
     let next_node = r.read_i64z()?;
@@ -649,7 +649,7 @@ fn parse_track(r: &mut PayloadReader<'_>, ver: u32) -> Result<Track> {
     let proximity_diamond = if ver >= 192 { Some(r.read_f32()?) } else { None };
 
     Ok(Track {
-        node_id, node_type, track_type, max_speed, winding,
+        node_id, node_type, track_type, layer, winding,
         prev_node, next_node, group_id,
         user_max_speed, x, y, user_tangent_delta, next_spline_t,
         station_group_id, blueprint, name, station_platform_auto_name,

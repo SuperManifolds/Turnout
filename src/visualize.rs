@@ -92,10 +92,18 @@ fn main() -> Result<()> {
     let bg = Rgb([24u8, 24, 32]);
     let mut img = RgbImage::from_pixel(img_size, img_size, bg);
 
-    let track_color = Rgb([140u8, 165, 210]);
     let node_color = Rgb([255u8, 120, 60]);
     let station_color = Rgb([60u8, 255, 120]);
     let endpoint_color = Rgb([255u8, 255, 80]);
+
+    // Collect layer stats for reporting
+    let mut layer_counts = HashMap::new();
+    for t in &all_tracks {
+        *layer_counts.entry(t.layer).or_insert(0usize) += 1;
+    }
+    if layer_counts.len() > 1 || !layer_counts.contains_key(&0) {
+        println!("  Layers: {:?}", layer_counts);
+    }
 
     // Draw spline-interpolated track chains
     for chain in &chains {
@@ -104,11 +112,13 @@ fn main() -> Result<()> {
         let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
 
         for i in 0..points.len() - 1 {
+            // Color by elevation layer of the segment start node
+            let track_color = layer_color(chain[i].layer);
+
             let is_straight = chain[i].straight.unwrap_or(0) != 0
                 || chain[i + 1].straight.unwrap_or(0) != 0;
 
             if is_straight {
-                // Straight mode: linear segment
                 let (x1, y1) = to_px(points[i].0, points[i].1);
                 let (x2, y2) = to_px(points[i + 1].0, points[i + 1].1);
                 draw_line(&mut img, x1 as i32, y1 as i32, x2 as i32, y2 as i32, track_color);
@@ -173,6 +183,23 @@ fn main() -> Result<()> {
     println!("  Scale: {:.2} px/unit", scale);
 
     Ok(())
+}
+
+/// Map elevation layer to a color.
+/// Ground (0) = white, elevated (>0) = green, underground (<0) = blue.
+fn layer_color(layer: i32) -> Rgb<u8> {
+    match layer {
+        0 => Rgb([210, 210, 220]),          // ground: white
+        1 => Rgb([80, 220, 80]),            // elevated +1: green
+        2 => Rgb([50, 255, 50]),            // elevated +2: bright green
+        3 => Rgb([30, 255, 100]),           // elevated +3: vivid green
+        -1 => Rgb([80, 130, 220]),          // underground -1: blue
+        -2 => Rgb([50, 100, 255]),          // underground -2: brighter blue
+        -3 => Rgb([30, 70, 255]),           // underground -3: vivid blue
+        n if n > 3 => Rgb([20, 255, 120]),  // very elevated: bright green
+        n if n < -3 => Rgb([20, 50, 255]),  // deep underground: deep blue
+        _ => Rgb([210, 210, 220]),
+    }
 }
 
 /// Catmull-Rom spline interpolation between p1 and p2,
