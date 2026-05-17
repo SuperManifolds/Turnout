@@ -9,6 +9,7 @@ binrw = "0.15.0"
 half = "2.4.1"
 image = "0.25"
 wyhash = "0.6.0"
+serde_json = "1"
 zstd = "0.13.3"
 
 [[bin]]
@@ -30,3 +31,7 @@ path = "src/inject.rs"
 [[bin]]
 name = "hashtest"
 path = "src/hashtest.rs"
+
+[[bin]]
+name = "import_orm"
+path = "src/import_orm.rs"
