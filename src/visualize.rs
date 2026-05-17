@@ -106,26 +106,81 @@ fn main() -> Result<()> {
         println!("  Layers: {:?}", layer_counts);
     }
 
-    // Draw track chains using Hobby splines (matching game's point-mode v1.9 renderer)
+    // Two-pass rendering: compute parent splines first, then branches inherit tangents
+    // Pass 1: compute splines for non-branch chains (through-routes)
+    let track_map: HashMap<i64, &Track> = all_tracks.iter().map(|t| (t.node_id, *t)).collect();
+    let mut node_splines: HashMap<i64, Vec<hobby::BezierSegment>> = HashMap::new();
+
     for chain in &chains {
         if chain.len() < 2 { continue; }
+        let is_branch_start = chain[0].attached_to_id != 0;
+        let is_branch_end = chain.last().unwrap().attached_to_id != 0;
+        if is_branch_start || is_branch_end { continue; } // defer branches
 
         let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
         let segments = hobby::hobby_spline(&points, 0.0);
+        // Store spline indexed by first node ID
+        node_splines.insert(chain[0].node_id, segments);
+    }
 
-        for (i, seg) in segments.iter().enumerate() {
-            let track_color = layer_color(chain[i].layer);
-            let subdiv = 16;
-            let mut prev_px = to_px(seg.p0.0, seg.p0.1);
-            for s in 1..=subdiv {
-                let t = s as f64 / subdiv as f64;
-                let pt = hobby::bezier_point(seg, t);
-                let cur_px = to_px(pt.0, pt.1);
-                draw_line(&mut img,
-                    prev_px.0 as i32, prev_px.1 as i32,
-                    cur_px.0 as i32, cur_px.1 as i32,
-                    track_color);
-                prev_px = cur_px;
+    // Pass 2: compute branch splines with inherited tangent from parent
+    for chain in &chains {
+        if chain.len() < 2 { continue; }
+        let is_branch_start = chain[0].attached_to_id != 0;
+        let is_branch_end = chain.last().unwrap().attached_to_id != 0;
+        if !is_branch_start && !is_branch_end { continue; } // already done
+
+        let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
+
+        // Look up parent's spline to inherit tangent
+        let start_tangent = if is_branch_start {
+            let att = &chain[0];
+            // Find which chain the parent belongs to
+            let parent_spline = node_splines.iter()
+                .find(|(_, segs)| !segs.is_empty() && {
+                    // Check if parent node is in this chain's spline
+                    track_map.get(&att.attached_to_id).is_some()
+                });
+            parent_spline.map(|(_, segs)| {
+                let dir = hobby::spline_direction_at(segs, att.attached_to_t);
+                dir.1.atan2(dir.0)
+            })
+        } else { None };
+
+        let end_tangent = if is_branch_end {
+            let att = chain.last().unwrap();
+            let parent_spline = node_splines.iter()
+                .find(|(_, segs)| !segs.is_empty() && {
+                    track_map.get(&att.attached_to_id).is_some()
+                });
+            parent_spline.map(|(_, segs)| {
+                let dir = hobby::spline_direction_at(segs, att.attached_to_t);
+                dir.1.atan2(dir.0)
+            })
+        } else { None };
+
+        let segments = hobby::hobby_spline_with_tangents(&points, start_tangent, end_tangent);
+        node_splines.insert(chain[0].node_id, segments);
+    }
+
+    // Draw all splines
+    for chain in &chains {
+        if chain.len() < 2 { continue; }
+        if let Some(segments) = node_splines.get(&chain[0].node_id) {
+            for (i, seg) in segments.iter().enumerate() {
+                let track_color = layer_color(chain[i.min(chain.len()-1)].layer);
+                let subdiv = 16;
+                let mut prev_px = to_px(seg.p0.0, seg.p0.1);
+                for s in 1..=subdiv {
+                    let t = s as f64 / subdiv as f64;
+                    let pt = hobby::bezier_point(seg, t);
+                    let cur_px = to_px(pt.0, pt.1);
+                    draw_line(&mut img,
+                        prev_px.0 as i32, prev_px.1 as i32,
+                        cur_px.0 as i32, cur_px.1 as i32,
+                        track_color);
+                    prev_px = cur_px;
+                }
             }
         }
     }
