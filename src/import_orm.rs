@@ -328,6 +328,10 @@ fn main() -> Result<()> {
 
     // Now handle branches: for each route that starts or ends at a junction node,
     // if that junction is owned by a DIFFERENT route, create an attachment.
+    // The branch root is OFFSET along the branch direction (not at the junction node),
+    // and attached_to_t reflects where on the parent segment it actually sits.
+    const BRANCH_OFFSET: f64 = 5.0; // meters along branch direction
+
     for (ri, simp) in simplified.iter().enumerate() {
         if simp.is_empty() { continue; }
 
@@ -335,30 +339,35 @@ fn main() -> Result<()> {
         let start_osm = routes[ri][simp[0].0];
         if junction_nodes.contains(&start_osm) {
             if let Some(&(parent_ri, parent_si)) = junction_to_route.get(&start_osm) {
-                if parent_ri != ri {
-                    // This route starts at a junction owned by another route
-                    // Find the parent segment and compute att_t
+                if parent_ri != ri && simp.len() >= 2 {
                     let parent_chain = &route_game_nodes[parent_ri];
                     let parent_node_id = parent_chain[parent_si].game_id;
-                    let branch_node_idx = route_game_nodes[ri][0].game_id;
+                    let branch_node_id = route_game_nodes[ri][0].game_id;
 
-                    // Compute att_t: fraction along the parent segment
-                    // The parent segment goes from parent_si to parent_si+1 (or parent_si-1)
+                    // Offset branch root along branch direction (toward second node)
+                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
+                    let next_id = route_game_nodes[ri][1].game_id;
+                    let next_idx = track_nodes.iter().position(|n| n.id == next_id).unwrap();
+                    let dx = track_nodes[next_idx].x - track_nodes[br_idx].x;
+                    let dy = track_nodes[next_idx].y - track_nodes[br_idx].y;
+                    let len = (dx * dx + dy * dy).sqrt().max(1e-10);
+                    let offset = BRANCH_OFFSET.min(len * 0.3); // don't offset more than 30% of segment
+                    track_nodes[br_idx].x += dx / len * offset;
+                    track_nodes[br_idx].y += dy / len * offset;
+
+                    // Compute att_t from the offset position
+                    let branch_pos = (track_nodes[br_idx].x, track_nodes[br_idx].y);
                     let (att_t, att_dir) = compute_att_t(
-                        &track_nodes, parent_chain, parent_si,
-                        &route_coords[ri][simp[0].0],
+                        &track_nodes, parent_chain, parent_si, &branch_pos,
                     );
 
-                    // Set attachment on the branch's first node
-                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_idx).unwrap();
                     track_nodes[br_idx].attached_to_id = parent_node_id;
                     track_nodes[br_idx].attached_to_t = att_t;
                     track_nodes[br_idx].attached_to_dir = att_dir;
-                    track_nodes[br_idx].tangential = 0; // point mode for branch roots
+                    track_nodes[br_idx].tangential = 0;
 
-                    // Add to parent's attached_by
                     let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
-                    track_nodes[par_idx].attached_by.push(branch_node_idx);
+                    track_nodes[par_idx].attached_by.push(branch_node_id);
                 }
             }
         }
@@ -367,17 +376,27 @@ fn main() -> Result<()> {
         let end_osm = routes[ri][simp.last().unwrap().0];
         if junction_nodes.contains(&end_osm) {
             if let Some(&(parent_ri, parent_si)) = junction_to_route.get(&end_osm) {
-                if parent_ri != ri {
+                if parent_ri != ri && simp.len() >= 2 {
                     let parent_chain = &route_game_nodes[parent_ri];
                     let parent_node_id = parent_chain[parent_si].game_id;
                     let branch_node_id = route_game_nodes[ri].last().unwrap().game_id;
 
+                    // Offset branch root along branch direction (toward second-to-last node)
+                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
+                    let prev_id = route_game_nodes[ri][route_game_nodes[ri].len() - 2].game_id;
+                    let prev_idx = track_nodes.iter().position(|n| n.id == prev_id).unwrap();
+                    let dx = track_nodes[prev_idx].x - track_nodes[br_idx].x;
+                    let dy = track_nodes[prev_idx].y - track_nodes[br_idx].y;
+                    let len = (dx * dx + dy * dy).sqrt().max(1e-10);
+                    let offset = BRANCH_OFFSET.min(len * 0.3);
+                    track_nodes[br_idx].x += dx / len * offset;
+                    track_nodes[br_idx].y += dy / len * offset;
+
+                    let branch_pos = (track_nodes[br_idx].x, track_nodes[br_idx].y);
                     let (att_t, att_dir) = compute_att_t(
-                        &track_nodes, parent_chain, parent_si,
-                        &route_coords[ri][simp.last().unwrap().0],
+                        &track_nodes, parent_chain, parent_si, &branch_pos,
                     );
 
-                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
                     track_nodes[br_idx].attached_to_id = parent_node_id;
                     track_nodes[br_idx].attached_to_t = att_t;
                     track_nodes[br_idx].attached_to_dir = att_dir;
