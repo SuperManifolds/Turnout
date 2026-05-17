@@ -1,3 +1,6 @@
 target/
 .DS_Store
 *.i64
+*.nrclip
+*.png
+--empty
