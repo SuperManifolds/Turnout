@@ -19,8 +19,8 @@ mod nrclip;
 use encode::PayloadWriter;
 
 const MODEL_VERSION: u32 = 226;
-const MAX_SPACING: f64 = 500.0;
-const ANGLE_THRESHOLD: f64 = 3.0 * std::f64::consts::PI / 180.0;
+const MAX_SPACING: f64 = 300.0;
+const ANGLE_THRESHOLD: f64 = 1.0 * std::f64::consts::PI / 180.0; // 1 degree — keep more curve detail
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
         way_used[start_wi] = true;
         let mut route = ways[start_wi].clone();
 
-        // Extend forward
+        // Extend forward (only if direction is consistent — no near-reversals)
         loop {
             let last = *route.last().unwrap();
             if !continuations.contains(&last) { break; }
@@ -90,17 +90,29 @@ fn main() -> Result<()> {
                 .find(|&&(wi, _)| !way_used[wi]);
             match next {
                 Some(&(wi, pi)) => {
-                    way_used[wi] = true;
-                    if pi == 0 {
-                        route.extend_from_slice(&ways[wi][1..]);
+                    let candidate: Vec<u64> = if pi == 0 {
+                        ways[wi][1..].to_vec()
                     } else {
-                        route.extend(ways[wi][..ways[wi].len()-1].iter().rev());
+                        ways[wi][..ways[wi].len()-1].iter().rev().copied().collect()
+                    };
+                    // Check direction consistency: does this create a near-reversal?
+                    if route.len() >= 2 && !candidate.is_empty() {
+                        let a = &osm_nodes[route.get(route.len()-2).unwrap()];
+                        let b = &osm_nodes[&last];
+                        let c = &osm_nodes[&candidate[0]];
+                        let h1 = (b.0 - a.0).atan2(b.1 - a.1);
+                        let h2 = (c.0 - b.0).atan2(c.1 - b.1);
+                        let mut diff = (h2 - h1).abs();
+                        if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
+                        if diff > 2.5 { break; } // >143° = likely not a continuation
                     }
+                    way_used[wi] = true;
+                    route.extend_from_slice(&candidate);
                 }
                 None => break,
             }
         }
-        // Extend backward
+        // Extend backward (only if direction is consistent)
         loop {
             let first = route[0];
             if !continuations.contains(&first) { break; }
@@ -108,13 +120,25 @@ fn main() -> Result<()> {
                 .find(|&&(wi, _)| !way_used[wi]);
             match prev {
                 Some(&(wi, pi)) => {
-                    way_used[wi] = true;
                     let mut prefix: Vec<u64> = if pi == ways[wi].len() - 1 {
                         ways[wi][..ways[wi].len()-1].to_vec()
                     } else {
                         ways[wi][1..].iter().rev().copied().collect()
                     };
-                    prefix.extend_from_slice(&route);
+                    // Check direction consistency
+                    if route.len() >= 2 && !prefix.is_empty() {
+                        let a = &osm_nodes[prefix.last().unwrap()];
+                        let b = &osm_nodes[&first];
+                        let c = &osm_nodes[route.get(1).unwrap()];
+                        let h1 = (b.0 - a.0).atan2(b.1 - a.1);
+                        let h2 = (c.0 - b.0).atan2(c.1 - b.1);
+                        let mut diff = (h2 - h1).abs();
+                        if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
+                        if diff > 2.5 { break; }
+                    }
+                    way_used[wi] = true;
+                    prefix.push(first); // re-add the shared node
+                    prefix.extend_from_slice(&route[1..]); // skip duplicate
                     route = prefix;
                 }
                 None => break,
