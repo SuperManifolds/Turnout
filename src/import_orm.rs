@@ -261,7 +261,7 @@ fn main() -> Result<()> {
                 id: gid, x, y, layer: 0,
                 prev,
                 next: 0, // filled in next iteration
-                tangential: 1,  // tangent mode for through-routes
+                tangential: 0,  // point mode: nodes ARE on the track
                 tangent_delta: 0.0,
                 attached_to_id: 0, attached_to_t: 0.0, attached_to_dir: 0,
                 attached_by: Vec::new(),
@@ -564,7 +564,7 @@ fn build_payload(tracks: &[TrackNode], center_x: f64, center_y: f64) -> Result<V
         w.write_raw_u8(0);
         w.write_raw_u8(0);            // straight
         w.write_raw_u8(t.tangential);
-        w.write_raw_u8(if t.tangential == 1 { 1 } else { 0 }); // limited_shapes for tangent mode
+        w.write_raw_u8(0);            // limited_shapes
         for _ in 0..4 { w.write_varint(0); }
         w.write_vec_set_i64(&[]);
         w.write_i64z(t.attached_to_id);
