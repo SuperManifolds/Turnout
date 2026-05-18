@@ -58,95 +58,96 @@ fn main() -> Result<()> {
         }
     }
 
-    // Classify shared nodes
+    // Classify shared nodes: continuations vs junctions
+    let mut continuations: HashSet<u64> = HashSet::new();
     let mut junction_nodes: HashSet<u64> = HashSet::new();
-    let mut shared_nodes: HashSet<u64> = HashSet::new();
     for (&nid, refs) in &node_ways {
         let n_ways = refs.iter().map(|&(wi,_)| wi).collect::<HashSet<_>>().len();
-        if n_ways >= 2 { shared_nodes.insert(nid); }
-        if n_ways >= 3 || (n_ways == 2 && refs.iter().any(|&(wi, pi)| pi != 0 && pi != ways[wi].len() - 1)) {
+        if n_ways < 2 { continue; }
+        let all_endpoints = refs.iter().all(|&(wi, pi)| pi == 0 || pi == ways[wi].len() - 1);
+        if n_ways == 2 && all_endpoints {
+            continuations.insert(nid);
+        } else {
             junction_nodes.insert(nid);
         }
     }
+    println!("{} continuations, {} junctions", continuations.len(), junction_nodes.len());
 
-    // Merge ways into routes. The LONGEST possible routes get priority and
-    // merge THROUGH junctions (not stopping at them). Shorter routes stop
-    // at junctions and become branches. This ensures junction points fall
-    // mid-route on the through-route, giving branches proper mid-segment
-    // attached_to_t values.
+    // Merge ways into routes through continuation points
     let mut way_used = vec![false; ways.len()];
-
-    // Sort ways by length (longest first) so through-routes claim junctions
-    let mut way_order: Vec<usize> = (0..ways.len()).collect();
-    way_order.sort_by(|&a, &b| ways[b].len().cmp(&ways[a].len()));
-
     let mut routes: Vec<Vec<u64>> = Vec::new();
 
-    for &start_wi in &way_order {
+    for start_wi in 0..ways.len() {
         if way_used[start_wi] { continue; }
         way_used[start_wi] = true;
         let mut route = ways[start_wi].clone();
 
-        // Extend forward through shared nodes (including junctions)
+        // Extend forward (only if direction is consistent — no near-reversals)
         loop {
             let last = *route.last().unwrap();
-            if !shared_nodes.contains(&last) { break; }
-            // Find an unused way that continues from this node
+            if !continuations.contains(&last) { break; }
             let next = node_ways[&last].iter()
                 .find(|&&(wi, _)| !way_used[wi]);
-            let Some(&(wi, pi)) = next else { break };
-
-            let candidate: Vec<u64> = if pi == 0 {
-                ways[wi][1..].to_vec()
-            } else {
-                ways[wi][..ways[wi].len()-1].iter().rev().copied().collect()
-            };
-            // Direction consistency check
-            if route.len() >= 2 && !candidate.is_empty() {
-                let a = &osm_nodes[route.get(route.len()-2).unwrap()];
-                let b = &osm_nodes[&last];
-                let c = &osm_nodes[&candidate[0]];
-                let h1 = (b.0 - a.0).atan2(b.1 - a.1);
-                let h2 = (c.0 - b.0).atan2(c.1 - b.1);
-                let mut diff = (h2 - h1).abs();
-                if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
-                if diff > 2.5 { break; } // near-reversal
+            match next {
+                Some(&(wi, pi)) => {
+                    let candidate: Vec<u64> = if pi == 0 {
+                        ways[wi][1..].to_vec()
+                    } else {
+                        ways[wi][..ways[wi].len()-1].iter().rev().copied().collect()
+                    };
+                    // Check direction consistency: does this create a near-reversal?
+                    if route.len() >= 2 && !candidate.is_empty() {
+                        let a = &osm_nodes[route.get(route.len()-2).unwrap()];
+                        let b = &osm_nodes[&last];
+                        let c = &osm_nodes[&candidate[0]];
+                        let h1 = (b.0 - a.0).atan2(b.1 - a.1);
+                        let h2 = (c.0 - b.0).atan2(c.1 - b.1);
+                        let mut diff = (h2 - h1).abs();
+                        if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
+                        if diff > 2.5 { break; } // >143° = likely not a continuation
+                    }
+                    way_used[wi] = true;
+                    route.extend_from_slice(&candidate);
+                }
+                None => break,
             }
-            way_used[wi] = true;
-            route.extend_from_slice(&candidate);
         }
-        // Extend backward
+        // Extend backward (only if direction is consistent)
         loop {
             let first = route[0];
-            if !shared_nodes.contains(&first) { break; }
+            if !continuations.contains(&first) { break; }
             let prev = node_ways[&first].iter()
                 .find(|&&(wi, _)| !way_used[wi]);
-            let Some(&(wi, pi)) = prev else { break };
-
-            let mut prefix: Vec<u64> = if pi == ways[wi].len() - 1 {
-                ways[wi][..ways[wi].len()-1].to_vec()
-            } else {
-                ways[wi][1..].iter().rev().copied().collect()
-            };
-            if route.len() >= 2 && !prefix.is_empty() {
-                let a = &osm_nodes[prefix.last().unwrap()];
-                let b = &osm_nodes[&first];
-                let c = &osm_nodes[route.get(1).unwrap()];
-                let h1 = (b.0 - a.0).atan2(b.1 - a.1);
-                let h2 = (c.0 - b.0).atan2(c.1 - b.1);
-                let mut diff = (h2 - h1).abs();
-                if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
-                if diff > 2.5 { break; }
+            match prev {
+                Some(&(wi, pi)) => {
+                    let mut prefix: Vec<u64> = if pi == ways[wi].len() - 1 {
+                        ways[wi][..ways[wi].len()-1].to_vec()
+                    } else {
+                        ways[wi][1..].iter().rev().copied().collect()
+                    };
+                    // Check direction consistency
+                    if route.len() >= 2 && !prefix.is_empty() {
+                        let a = &osm_nodes[prefix.last().unwrap()];
+                        let b = &osm_nodes[&first];
+                        let c = &osm_nodes[route.get(1).unwrap()];
+                        let h1 = (b.0 - a.0).atan2(b.1 - a.1);
+                        let h2 = (c.0 - b.0).atan2(c.1 - b.1);
+                        let mut diff = (h2 - h1).abs();
+                        if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
+                        if diff > 2.5 { break; }
+                    }
+                    way_used[wi] = true;
+                    prefix.push(first); // re-add the shared node
+                    prefix.extend_from_slice(&route[1..]); // skip duplicate
+                    route = prefix;
+                }
+                None => break,
             }
-            way_used[wi] = true;
-            prefix.push(first);
-            prefix.extend_from_slice(&route[1..]);
-            route = prefix;
         }
         routes.push(route);
     }
 
-    // Sort routes by length (longest first = through-routes)
+    // Sort routes by length (longest = most important = through-routes)
     routes.sort_by(|a, b| b.len().cmp(&a.len()));
     println!("Merged into {} routes", routes.len());
 
