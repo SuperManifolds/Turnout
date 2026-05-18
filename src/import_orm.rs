@@ -165,10 +165,11 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Keep junction nodes
-            for (i, &nid) in route.iter().enumerate() {
-                if junction_nodes.contains(&nid) { keep[i] = true; }
-            }
+            // DON'T keep junction nodes on through-routes. The through-route
+            // should be a smooth curve through the junction. Branches attach
+            // mid-segment via attached_to_t. Only keep junctions that are at
+            // the route's own endpoints (where the route starts/ends at a junction).
+            // Interior junctions are handled by branches attaching mid-segment.
 
             // Enforce max spacing
             let mut last_kept = 0;
@@ -273,95 +274,77 @@ fn main() -> Result<()> {
             }
             chain.push(RouteNodeInfo { game_id: gid, orig_idx });
 
-            // If this is a junction node, register it
+            // Register junction nodes with their original coordinate index
             let osm_nid = routes[ri][orig_idx];
             if junction_nodes.contains(&osm_nid) {
-                junction_to_route.entry(osm_nid).or_insert((ri, si));
+                junction_to_route.entry(osm_nid).or_insert((ri, orig_idx));
             }
         }
         route_game_nodes.push(chain);
     }
 
-    // Now handle branches: for each route that starts or ends at a junction node,
-    // if that junction is owned by a DIFFERENT route, create an attachment.
-    // The branch root is OFFSET along the branch direction (not at the junction node),
-    // and attached_to_t reflects where on the parent segment it actually sits.
-    const BRANCH_OFFSET: f64 = 5.0; // meters along branch direction
-
+    // Handle branches: for each route that starts or ends at a junction node
+    // owned by a DIFFERENT route, attach it mid-segment on the parent route.
+    // The branch root sits at the junction position (where tracks diverge).
+    // attached_to_id points to the parent node BEFORE the junction,
+    // attached_to_t is the fraction along that segment where the junction falls.
     for (ri, simp) in simplified.iter().enumerate() {
         if simp.is_empty() { continue; }
 
-        // Check start of route
-        let start_osm = routes[ri][simp[0].0];
-        if junction_nodes.contains(&start_osm) {
-            if let Some(&(parent_ri, parent_si)) = junction_to_route.get(&start_osm) {
-                if parent_ri != ri && simp.len() >= 2 {
-                    let parent_chain = &route_game_nodes[parent_ri];
-                    let parent_node_id = parent_chain[parent_si].game_id;
-                    let branch_node_id = route_game_nodes[ri][0].game_id;
+        for &is_start in &[true, false] {
+            let endpoint_orig_idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
+            let endpoint_osm = routes[ri][endpoint_orig_idx];
+            if !junction_nodes.contains(&endpoint_osm) { continue; }
 
-                    // Offset branch root along branch direction (toward second node)
-                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
-                    let next_id = route_game_nodes[ri][1].game_id;
-                    let next_idx = track_nodes.iter().position(|n| n.id == next_id).unwrap();
-                    let dx = track_nodes[next_idx].x - track_nodes[br_idx].x;
-                    let dy = track_nodes[next_idx].y - track_nodes[br_idx].y;
-                    let len = (dx * dx + dy * dy).sqrt().max(1e-10);
-                    let offset = BRANCH_OFFSET.min(len * 0.3); // don't offset more than 30% of segment
-                    track_nodes[br_idx].x += dx / len * offset;
-                    track_nodes[br_idx].y += dy / len * offset;
+            let Some(&(parent_ri, junction_orig_idx)) = junction_to_route.get(&endpoint_osm) else { continue };
+            if parent_ri == ri || simp.len() < 2 { continue; }
 
-                    // Compute att_t from the offset position
-                    let branch_pos = (track_nodes[br_idx].x, track_nodes[br_idx].y);
-                    let (att_t, att_dir) = compute_att_t(
-                        &track_nodes, parent_chain, parent_si, &branch_pos,
-                    );
+            // Find which simplified segment of the parent contains the junction point
+            let parent_chain = &route_game_nodes[parent_ri];
+            let parent_simp = &simplified[parent_ri];
+            let junction_pos = route_coords[parent_ri][junction_orig_idx];
 
-                    track_nodes[br_idx].attached_to_id = parent_node_id;
-                    track_nodes[br_idx].attached_to_t = att_t;
-                    track_nodes[br_idx].attached_to_dir = att_dir;
-                    track_nodes[br_idx].tangential = 0;
-
-                    let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
-                    track_nodes[par_idx].attached_by.push(branch_node_id);
+            // Search parent's simplified segments for the one containing the junction
+            let mut best_seg = 0usize;
+            let mut best_t = 0.5f64;
+            let mut best_dist = f64::MAX;
+            for si in 0..parent_simp.len().saturating_sub(1) {
+                let (_, ax, ay) = parent_simp[si];
+                let (_, bx, by) = parent_simp[si + 1];
+                let sx = bx - ax;
+                let sy = by - ay;
+                let len_sq = sx * sx + sy * sy;
+                if len_sq < 1e-10 { continue; }
+                let t = ((junction_pos.0 - ax) * sx + (junction_pos.1 - ay) * sy) / len_sq;
+                let t = t.clamp(0.01, 0.99);
+                let px = ax + t * sx;
+                let py = ay + t * sy;
+                let d = ((junction_pos.0 - px).powi(2) + (junction_pos.1 - py).powi(2)).sqrt();
+                if d < best_dist {
+                    best_dist = d;
+                    best_seg = si;
+                    best_t = t;
                 }
             }
-        }
 
-        // Check end of route
-        let end_osm = routes[ri][simp.last().unwrap().0];
-        if junction_nodes.contains(&end_osm) {
-            if let Some(&(parent_ri, parent_si)) = junction_to_route.get(&end_osm) {
-                if parent_ri != ri && simp.len() >= 2 {
-                    let parent_chain = &route_game_nodes[parent_ri];
-                    let parent_node_id = parent_chain[parent_si].game_id;
-                    let branch_node_id = route_game_nodes[ri].last().unwrap().game_id;
+            let parent_node_id = parent_chain[best_seg].game_id;
+            let branch_node_id = if is_start {
+                route_game_nodes[ri][0].game_id
+            } else {
+                route_game_nodes[ri].last().unwrap().game_id
+            };
 
-                    // Offset branch root along branch direction (toward second-to-last node)
-                    let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
-                    let prev_id = route_game_nodes[ri][route_game_nodes[ri].len() - 2].game_id;
-                    let prev_idx = track_nodes.iter().position(|n| n.id == prev_id).unwrap();
-                    let dx = track_nodes[prev_idx].x - track_nodes[br_idx].x;
-                    let dy = track_nodes[prev_idx].y - track_nodes[br_idx].y;
-                    let len = (dx * dx + dy * dy).sqrt().max(1e-10);
-                    let offset = BRANCH_OFFSET.min(len * 0.3);
-                    track_nodes[br_idx].x += dx / len * offset;
-                    track_nodes[br_idx].y += dy / len * offset;
+            // Branch root position = the junction point (where tracks diverge)
+            let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
+            track_nodes[br_idx].x = junction_pos.0;
+            track_nodes[br_idx].y = junction_pos.1;
+            track_nodes[br_idx].attached_to_id = parent_node_id;
+            track_nodes[br_idx].attached_to_t = best_t;
+            track_nodes[br_idx].attached_to_dir = 1; // game derives direction geometrically
+            track_nodes[br_idx].tangential = 0;
 
-                    let branch_pos = (track_nodes[br_idx].x, track_nodes[br_idx].y);
-                    let (att_t, att_dir) = compute_att_t(
-                        &track_nodes, parent_chain, parent_si, &branch_pos,
-                    );
-
-                    track_nodes[br_idx].attached_to_id = parent_node_id;
-                    track_nodes[br_idx].attached_to_t = att_t;
-                    track_nodes[br_idx].attached_to_dir = att_dir;
-                    track_nodes[br_idx].tangential = 0;
-
-                    let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
-                    track_nodes[par_idx].attached_by.push(branch_node_id);
-                }
-            }
+            let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
+            track_nodes[par_idx].attached_by.push(branch_node_id);
         }
     }
 
