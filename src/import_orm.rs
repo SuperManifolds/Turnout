@@ -158,9 +158,32 @@ fn main() -> Result<()> {
         }).collect()
     }).collect();
 
-    // Simplify routes: keep endpoints, junctions, direction changes, max spacing
-    let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter())
-        .map(|(route, coords)| {
+    // Compute junction ownership: first (longest) route through each junction owns it.
+    // Other routes will branch from it. Through-routes must avoid nodes near foreign junctions.
+    let mut junction_owner: HashMap<u64, usize> = HashMap::new(); // osm_nid → route_idx
+    for (ri, route) in routes.iter().enumerate() {
+        for &nid in route {
+            if junction_nodes.contains(&nid) {
+                junction_owner.entry(nid).or_insert(ri); // first route wins (longest)
+            }
+        }
+    }
+    // For each route, collect junction positions where OTHER routes will branch from it.
+    // The owning route must avoid nodes near these so branches get mid-segment attached_to_t.
+    let branch_junctions: Vec<Vec<(f64, f64)>> = routes.iter().enumerate().map(|(ri, route)| {
+        route.iter().enumerate().filter_map(|(i, &nid)| {
+            // This route OWNS this junction AND other routes also pass through it
+            if junction_nodes.contains(&nid) && junction_owner.get(&nid) == Some(&ri) {
+                Some(route_coords[ri][i])
+            } else {
+                None
+            }
+        }).collect()
+    }).collect();
+
+    // Simplify routes
+    let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
+        .map(|(ri, (route, coords))| {
             let mut keep = vec![false; coords.len()];
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
@@ -193,15 +216,22 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Enforce max spacing
+            // Enforce max spacing (but not near foreign junctions)
             let mut last_kept = 0;
             for i in 1..coords.len() {
                 if keep[i] { last_kept = i; continue; }
                 let dx = coords[i].0 - coords[last_kept].0;
                 let dy = coords[i].1 - coords[last_kept].1;
                 if dx * dx + dy * dy >= MAX_SPACING * MAX_SPACING {
-                    keep[i] = true;
-                    last_kept = i;
+                    let near_foreign = branch_junctions[ri].iter().any(|&(fx, fy)| {
+                        let ddx = coords[i].0 - fx;
+                        let ddy = coords[i].1 - fy;
+                        ddx * ddx + ddy * ddy < 50.0 * 50.0
+                    });
+                    if !near_foreign {
+                        keep[i] = true;
+                        last_kept = i;
+                    }
                 }
             }
 
@@ -243,8 +273,16 @@ fn main() -> Result<()> {
                     }
 
                     if worst_dev > 1.0 {
-                        keep[worst_orig] = true;
-                        added = true;
+                        // Don't add nodes near foreign junctions — branches attach mid-segment there
+                        let near_foreign = branch_junctions[ri].iter().any(|&(fx, fy)| {
+                            let dx = coords[worst_orig].0 - fx;
+                            let dy = coords[worst_orig].1 - fy;
+                            dx * dx + dy * dy < 50.0 * 50.0
+                        });
+                        if !near_foreign {
+                            keep[worst_orig] = true;
+                            added = true;
+                        }
                     }
                 }
 
