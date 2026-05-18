@@ -344,20 +344,26 @@ fn main() -> Result<()> {
             }
             chain.push(RouteNodeInfo { game_id: gid, orig_idx });
 
-            // Register junction nodes with their original coordinate index
-            let osm_nid = routes[ri][orig_idx];
-            if junction_nodes.contains(&osm_nid) {
-                junction_to_route.entry(osm_nid).or_insert((ri, orig_idx));
-            }
+            // (junction registration happens in a separate pass below)
         }
         route_game_nodes.push(chain);
     }
 
-    // Register ALL junction nodes across ALL routes (not just simplified ones).
-    // Some junctions are excluded from simplified chains by the exclusion zone,
-    // but branches still need to find them for attachment.
+    // Register junction nodes — prefer routes where the junction is INTERIOR
+    // (not at an endpoint). This ensures branches can find a DIFFERENT parent route.
+    // First pass: register interior junctions
     for (ri, route) in routes.iter().enumerate() {
         for (i, &nid) in route.iter().enumerate() {
+            if i == 0 || i == route.len() - 1 { continue; } // skip endpoints
+            if junction_nodes.contains(&nid) {
+                junction_to_route.entry(nid).or_insert((ri, i));
+            }
+        }
+    }
+    // Second pass: register endpoint junctions (fallback if no interior route found)
+    for (ri, route) in routes.iter().enumerate() {
+        for &i in &[0, route.len() - 1] {
+            let nid = route[i];
             if junction_nodes.contains(&nid) {
                 junction_to_route.entry(nid).or_insert((ri, i));
             }
@@ -428,6 +434,25 @@ fn main() -> Result<()> {
             track_nodes[par_idx].attached_by.push(branch_node_id);
         }
     }
+
+    // Debug branch detection
+    let short = simplified.iter().filter(|s| s.len() < 2).count();
+    let mut dbg_no_junc = 0; let mut dbg_same = 0; let mut dbg_found = 0;
+    for (ri, simp) in simplified.iter().enumerate() {
+        if simp.is_empty() { continue; }
+        for &is_start in &[true, false] {
+            let idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
+            let osm = routes[ri][idx];
+            if !junction_nodes.contains(&osm) { dbg_no_junc += 1; continue; }
+            match junction_to_route.get(&osm) {
+                None => { dbg_no_junc += 1; }
+                Some(&(pri, _)) if pri == ri => { dbg_same += 1; }
+                _ => { dbg_found += 1; }
+            }
+        }
+    }
+    println!("Branch debug: {} short routes, endpoints: {} not-junction, {} same-route, {} eligible",
+             short, dbg_no_junc, dbg_same, dbg_found);
 
     let n_branches = track_nodes.iter().filter(|n| n.attached_to_id != 0).count();
     let n_junctions = track_nodes.iter().filter(|n| !n.attached_by.is_empty()).count();
