@@ -165,11 +165,33 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // DON'T keep junction nodes on through-routes. The through-route
-            // should be a smooth curve through the junction. Branches attach
-            // mid-segment via attached_to_t. Only keep junctions that are at
-            // the route's own endpoints (where the route starts/ends at a junction).
-            // Interior junctions are handled by branches attaching mid-segment.
+            // DON'T keep junction nodes on through-routes — branches attach mid-segment.
+            // But DO keep a node close (~30m) to each endpoint that's at a junction,
+            // so the branch spline stays tight near the switch instead of curving early.
+            let start_is_junction = junction_nodes.contains(&route[0]);
+            let end_is_junction = junction_nodes.contains(route.last().unwrap());
+            if start_is_junction && coords.len() > 2 {
+                // Find the first node that's ~30m from the start
+                for i in 1..coords.len() - 1 {
+                    let dx = coords[i].0 - coords[0].0;
+                    let dy = coords[i].1 - coords[0].1;
+                    if dx * dx + dy * dy >= 30.0 * 30.0 {
+                        keep[i] = true;
+                        break;
+                    }
+                }
+            }
+            if end_is_junction && coords.len() > 2 {
+                let last = coords.len() - 1;
+                for i in (1..last).rev() {
+                    let dx = coords[i].0 - coords[last].0;
+                    let dy = coords[i].1 - coords[last].1;
+                    if dx * dx + dy * dy >= 30.0 * 30.0 {
+                        keep[i] = true;
+                        break;
+                    }
+                }
+            }
 
             // Enforce max spacing
             let mut last_kept = 0;
