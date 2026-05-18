@@ -165,30 +165,9 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Keep junction nodes and neighbors within 50m
-            let mut junction_indices = Vec::new();
+            // Keep junction nodes
             for (i, &nid) in route.iter().enumerate() {
-                if junction_nodes.contains(&nid) {
-                    keep[i] = true;
-                    junction_indices.push(i);
-                }
-            }
-            for &ji in &junction_indices {
-                let (jx, jy) = coords[ji];
-                for i in 0..coords.len() {
-                    let dx = coords[i].0 - jx;
-                    let dy = coords[i].1 - jy;
-                    if dx * dx + dy * dy < 50.0 * 50.0 { keep[i] = true; }
-                }
-            }
-
-            // Douglas-Peucker on segments BETWEEN kept nodes.
-            // This preserves junction detail while simplifying long runs.
-            let kept_indices: Vec<usize> = (0..coords.len()).filter(|&i| keep[i]).collect();
-            for w in kept_indices.windows(2) {
-                if w[1] - w[0] > 2 {
-                    douglas_peucker(coords, &mut keep, w[0], w[1], 2.0);
-                }
+                if junction_nodes.contains(&nid) { keep[i] = true; }
             }
 
             // Enforce max spacing
@@ -203,34 +182,12 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Remove noise on long segments: if a node creates <0.5° turn
-            // AND both adjacent segments are >100m, it's just GPS noise
-            // that the spline amplifies into visible curves.
-            {
-                let kept_idx: Vec<usize> = (0..coords.len()).filter(|&i| keep[i]).collect();
-                for w in kept_idx.windows(3) {
-                    let (i, j, k) = (w[0], w[1], w[2]);
-                    if j == 0 || j == coords.len() - 1 { continue; }
-                    if route.get(j).map_or(false, |nid| junction_nodes.contains(nid)) { continue; }
-
-                    let d1 = ((coords[j].0-coords[i].0).powi(2) + (coords[j].1-coords[i].1).powi(2)).sqrt();
-                    let d2 = ((coords[k].0-coords[j].0).powi(2) + (coords[k].1-coords[j].1).powi(2)).sqrt();
-                    if d1 < 100.0 || d2 < 100.0 { continue; } // only filter long segments
-
-                    let h1 = (coords[j].1 - coords[i].1).atan2(coords[j].0 - coords[i].0);
-                    let h2 = (coords[k].1 - coords[j].1).atan2(coords[k].0 - coords[j].0);
-                    let mut turn = (h2 - h1).abs();
-                    if turn > std::f64::consts::PI { turn = 2.0 * std::f64::consts::PI - turn; }
-                    if turn < 0.5_f64.to_radians() {
-                        keep[j] = false;
-                    }
-                }
-            }
-
-            // Iterative spline refinement: compute the actual spline for
-            // the kept points, measure deviation from the original polyline,
-            // and add nodes where deviation exceeds threshold.
-            for _ in 0..3 { // max 3 refinement passes
+            // Spline-first simplification: start with just endpoints/junctions/spacing,
+            // then iteratively add nodes only where the SPLINE deviates from the
+            // original OSM polyline. Straight sections need 0 extra nodes (spline
+            // through 2 aligned points = straight). Curves get the minimum nodes
+            // needed for the spline to track within tolerance.
+            for _ in 0..20 {
                 let kept_pts: Vec<(f64, f64)> = (0..coords.len())
                     .filter(|&i| keep[i]).map(|i| coords[i]).collect();
                 let kept_idx: Vec<usize> = (0..coords.len())
@@ -245,12 +202,11 @@ fn main() -> Result<()> {
                     let orig_end = kept_idx[si + 1];
                     if orig_end - orig_start <= 1 { continue; }
 
-                    // Sample spline points and find max deviation from original polyline
+                    // Find the original node that deviates most from this spline segment
                     let mut worst_dev = 0.0f64;
                     let mut worst_orig = orig_start;
                     for oi in (orig_start + 1)..orig_end {
                         let (ox, oy) = coords[oi];
-                        // Find nearest point on this spline segment
                         let mut best_d = f64::MAX;
                         for s in 0..=32 {
                             let pt = hobby::bezier_point(seg, s as f64 / 32.0);
@@ -263,7 +219,7 @@ fn main() -> Result<()> {
                         }
                     }
 
-                    if worst_dev > 3.0 { // 3m spline deviation threshold
+                    if worst_dev > 1.0 {
                         keep[worst_orig] = true;
                         added = true;
                     }
