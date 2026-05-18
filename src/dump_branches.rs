@@ -43,7 +43,51 @@ fn main() -> Result<()> {
                     println!("  branch={} parent={} PARENT_MISSING", t.node_id, t.attached_to_id);
                 }
             }
+            dump_chains(clip);
         }
     }
     Ok(())
+}
+
+fn dump_chains(clip: &nrclip::Clip) {
+    use std::collections::{HashMap, HashSet};
+    let tmap: HashMap<i64, &nrclip::Track> = clip.tracks.iter().map(|t| (t.node_id, t)).collect();
+    
+    let mut visited = HashSet::new();
+    let mut chains: Vec<Vec<i64>> = Vec::new();
+    for t in &clip.tracks {
+        if visited.contains(&t.node_id) { continue; }
+        let mut cur = t.node_id;
+        while let Some(p) = tmap.get(&cur) {
+            if p.prev_node == 0 || visited.contains(&p.prev_node) { break; }
+            cur = p.prev_node;
+        }
+        let mut ch = Vec::new();
+        while let Some(node) = tmap.get(&cur) {
+            if visited.contains(&cur) { break; }
+            visited.insert(cur);
+            ch.push(cur);
+            cur = node.next_node;
+        }
+        chains.push(ch);
+    }
+    
+    chains.sort_by(|a, b| b.len().cmp(&a.len()));
+    println!("\nChains: {}", chains.len());
+    println!("Lengths: {:?}", chains.iter().take(20).map(|c| c.len()).collect::<Vec<_>>());
+    println!("1-node: {}, 2-node: {}, 3+: {}", 
+        chains.iter().filter(|c| c.len() == 1).count(),
+        chains.iter().filter(|c| c.len() == 2).count(),
+        chains.iter().filter(|c| c.len() >= 3).count());
+    
+    // Show first few multi-node chains with detail
+    for ch in chains.iter().filter(|c| c.len() >= 2).take(3) {
+        println!("\n  Chain ({} nodes):", ch.len());
+        for &nid in ch {
+            let t = tmap[&nid];
+            let att = if t.attached_to_id != 0 { format!(" ATT={}@{:.3}", t.attached_to_id, t.attached_to_t) } else { String::new() };
+            let by = if !t.attached_by.is_empty() { format!(" BY={}", t.attached_by.len()) } else { String::new() };
+            println!("    {} ({:.1},{:.1}) p={} n={}{}{}", nid, t.x, t.y, t.prev_node, t.next_node, att, by);
+        }
+    }
 }
