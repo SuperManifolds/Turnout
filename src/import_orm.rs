@@ -236,7 +236,7 @@ fn main() -> Result<()> {
                     let near_foreign = branch_junctions[ri].iter().any(|&(fx, fy)| {
                         let ddx = coords[i].0 - fx;
                         let ddy = coords[i].1 - fy;
-                        ddx * ddx + ddy * ddy < 50.0 * 50.0
+                        ddx * ddx + ddy * ddy < 150.0 * 150.0
                     });
                     if !near_foreign {
                         keep[i] = true;
@@ -287,7 +287,7 @@ fn main() -> Result<()> {
                         let near_foreign = branch_junctions[ri].iter().any(|&(fx, fy)| {
                             let dx = coords[worst_orig].0 - fx;
                             let dy = coords[worst_orig].1 - fy;
-                            dx * dx + dy * dy < 50.0 * 50.0
+                            dx * dx + dy * dy < 150.0 * 150.0
                         });
                         if !near_foreign {
                             keep[worst_orig] = true;
@@ -391,22 +391,38 @@ fn main() -> Result<()> {
             let parent_simp = &simplified[parent_ri];
             let junction_pos = route_coords[parent_ri][junction_orig_idx];
 
-            // Search parent's simplified segments for the one containing the junction
+            // Compute parent's Hobby spline, then find nearest point on it
+            let parent_pts: Vec<(f64, f64)> = parent_simp.iter().map(|&(_, x, y)| (x, y)).collect();
+            let parent_segs = hobby::hobby_spline(&parent_pts, 0.0);
+
             let mut best_seg = 0usize;
             let mut best_t = 0.5f64;
             let mut best_dist = f64::MAX;
-            for si in 0..parent_simp.len().saturating_sub(1) {
-                let (_, ax, ay) = parent_simp[si];
-                let (_, bx, by) = parent_simp[si + 1];
-                let sx = bx - ax;
-                let sy = by - ay;
-                let len_sq = sx * sx + sy * sy;
-                if len_sq < 1e-10 { continue; }
-                let t = ((junction_pos.0 - ax) * sx + (junction_pos.1 - ay) * sy) / len_sq;
-                let t = t.clamp(0.01, 0.99);
-                let px = ax + t * sx;
-                let py = ay + t * sy;
-                let d = ((junction_pos.0 - px).powi(2) + (junction_pos.1 - py).powi(2)).sqrt();
+            for (si, seg) in parent_segs.iter().enumerate() {
+                // Sample 32 points along this Bézier segment
+                for s in 0..=32 {
+                    let t = s as f64 / 32.0;
+                    let pt = hobby::bezier_point(seg, t);
+                    let d = ((junction_pos.0 - pt.0).powi(2) + (junction_pos.1 - pt.1).powi(2)).sqrt();
+                    if d < best_dist {
+                        best_dist = d;
+                        best_seg = si;
+                        best_t = t;
+                    }
+                }
+                // Refine with Newton's method (3 iterations)
+                let mut t = best_t;
+                for _ in 0..3 {
+                    let p = hobby::bezier_point(seg, t);
+                    let dp = bezier_deriv(seg, t);
+                    let num = (p.0 - junction_pos.0) * dp.0 + (p.1 - junction_pos.1) * dp.1;
+                    let den = dp.0 * dp.0 + dp.1 * dp.1;
+                    if den.abs() > 1e-10 {
+                        t = (t - num / den).clamp(0.01, 0.99);
+                    }
+                }
+                let pt = hobby::bezier_point(seg, t);
+                let d = ((junction_pos.0 - pt.0).powi(2) + (junction_pos.1 - pt.1).powi(2)).sqrt();
                 if d < best_dist {
                     best_dist = d;
                     best_seg = si;
@@ -612,6 +628,18 @@ fn douglas_peucker(coords: &[(f64, f64)], keep: &mut [bool], start: usize, end: 
         douglas_peucker(coords, keep, start, max_idx, tolerance);
         douglas_peucker(coords, keep, max_idx, end, tolerance);
     }
+}
+
+/// Cubic Bézier derivative at parameter t
+fn bezier_deriv(seg: &hobby::BezierSegment, t: f64) -> (f64, f64) {
+    let mt = 1.0 - t;
+    let dx = 3.0 * mt * mt * (seg.c0.0 - seg.p0.0)
+           + 6.0 * mt * t * (seg.c1.0 - seg.c0.0)
+           + 3.0 * t * t * (seg.p1.0 - seg.c1.0);
+    let dy = 3.0 * mt * mt * (seg.c0.1 - seg.p0.1)
+           + 6.0 * mt * t * (seg.c1.1 - seg.c0.1)
+           + 3.0 * t * t * (seg.p1.1 - seg.c1.1);
+    (dx, dy)
 }
 
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
