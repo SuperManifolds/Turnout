@@ -95,21 +95,25 @@ fn main() -> Result<()> {
                 (b.0 - a.0).atan2(b.1 - a.1)
             } else { 0.0 };
 
-            // Find best-aligned unused way
-            let mut best: Option<(usize, usize, f64)> = None; // (way_idx, pos, angle_diff)
+            // Find best-aligned unused way. The continuation way's OUTGOING
+            // direction should match our current heading (not be opposite).
+            let mut best: Option<(usize, usize, f64)> = None;
             for &(wi, pi) in &node_ways[&last] {
                 if way_used[wi] { continue; }
-                let next_nid = if pi == 0 { ways[wi].get(1) } else { ways[wi].len().checked_sub(2).and_then(|i| ways[wi].get(i)) };
-                let Some(&next_nid) = next_nid else { continue };
-                let c = &osm_nodes[&next_nid];
+                // The continuation will be appended after the shared node.
+                // Its first node after the shared node determines the outgoing direction.
+                let cont_first = if pi == 0 { ways[wi].get(1) } else { ways[wi].len().checked_sub(2).and_then(|i| ways[wi].get(i)) };
+                let Some(&cont_nid) = cont_first else { continue };
+                let c = &osm_nodes[&cont_nid];
                 let b = &osm_nodes[&last];
+                // Heading FROM shared node TOWARD the continuation
                 let h = (c.0 - b.0).atan2(c.1 - b.1);
                 let mut diff = (h - cur_heading).abs();
                 if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
                 if best.is_none() || diff < best.unwrap().2 { best = Some((wi, pi, diff)); }
             }
             let Some((wi, pi, diff)) = best else { break };
-            if diff > 1.2 { break; } // >69° too sharp for through-route
+            if diff > 2.5 { break; } // >143° = near-reversal, not a continuation
 
             way_used[wi] = true;
             if pi == 0 { route.extend_from_slice(&ways[wi][1..]); }
@@ -129,6 +133,7 @@ fn main() -> Result<()> {
             let mut best: Option<(usize, usize, f64)> = None;
             for &(wi, pi) in &node_ways[&first] {
                 if way_used[wi] { continue; }
+                // Heading FROM the shared node TOWARD the prepended way's interior
                 let prev_nid = if pi == ways[wi].len()-1 { ways[wi].len().checked_sub(2).and_then(|i| ways[wi].get(i)) } else { ways[wi].get(1) };
                 let Some(&prev_nid) = prev_nid else { continue };
                 let c = &osm_nodes[&prev_nid];
@@ -139,7 +144,7 @@ fn main() -> Result<()> {
                 if best.is_none() || diff < best.unwrap().2 { best = Some((wi, pi, diff)); }
             }
             let Some((wi, pi, diff)) = best else { break };
-            if diff > 1.2 { break; }
+            if diff > 2.5 { break; }
 
             way_used[wi] = true;
             let mut prefix: Vec<u64> = if pi == ways[wi].len()-1 { ways[wi][..ways[wi].len()-1].to_vec() }
@@ -153,7 +158,8 @@ fn main() -> Result<()> {
     }
 
     routes.sort_by(|a, b| b.len().cmp(&a.len()));
-    println!("Merged into {} routes", routes.len());
+    let interior_junctions: usize = routes.iter().map(|r| r[1..r.len().saturating_sub(1)].iter().filter(|n| junction_nodes.contains(n)).count()).sum();
+    println!("Merged into {} routes ({} interior junctions)", routes.len(), interior_junctions);
 
     // Convert routes to Mercator coordinates
     let route_coords: Vec<Vec<(f64, f64)>> = routes.iter().map(|route| {
@@ -345,6 +351,17 @@ fn main() -> Result<()> {
             }
         }
         route_game_nodes.push(chain);
+    }
+
+    // Register ALL junction nodes across ALL routes (not just simplified ones).
+    // Some junctions are excluded from simplified chains by the exclusion zone,
+    // but branches still need to find them for attachment.
+    for (ri, route) in routes.iter().enumerate() {
+        for (i, &nid) in route.iter().enumerate() {
+            if junction_nodes.contains(&nid) {
+                junction_to_route.entry(nid).or_insert((ri, i));
+            }
+        }
     }
 
     // Handle branches: for each route that starts or ends at a junction node
