@@ -414,6 +414,9 @@ fn main() -> Result<()> {
                 }
             }
 
+            // Reject if junction is too far from the parent segment (wrong parent)
+            if best_dist > 5.0 { continue; }
+
             let parent_node_id = parent_chain[best_seg].game_id;
             let branch_node_id = if is_start {
                 route_game_nodes[ri][0].game_id
