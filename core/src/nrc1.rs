@@ -1,6 +1,6 @@
 /// NRC1 container: header + zstd + wyhash checksum.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crate::wire::{PayloadReader, PayloadWriter};
 use crate::types::{Collection, NrclipRead, NrclipWrite};
 
