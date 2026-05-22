@@ -67,7 +67,7 @@ function update_orm_paint() {
     if (!_map || !_map.getLayer("orm-layer")) return;
     if (is_dark()) {
         _map.setPaintProperty("orm-layer", "raster-brightness-max", 0.7);
-        _map.setPaintProperty("orm-layer", "raster-brightness-min", 0.0);
+        _map.setPaintProperty("orm-layer", "raster-brightness-min", 0.25);
         _map.setPaintProperty("orm-layer", "raster-contrast", 0.0);
         _map.setPaintProperty("orm-layer", "raster-saturation", 0.3);
         _map.setPaintProperty("orm-layer", "raster-opacity", 0.85);

@@ -1,5 +1,6 @@
 use leptos::*;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
 const BBOX_COLOR: &str = "#4a9eff";
@@ -19,6 +20,7 @@ extern "C" {
     fn map_set_geojson(source_id: &str, geojson_str: &str);
     fn map_set_cursor(cursor: &str);
     fn map_set_drag_pan(enabled: bool);
+    fn map_fly_to(lng: f64, lat: f64, zoom: f64);
     fn map_on_mousedown(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_on_mousemove(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_on_mouseup(callback: &Closure<dyn Fn(f64, f64)>);
@@ -122,6 +124,22 @@ pub fn Map() -> impl IntoView {
 
     let mode = store_value(Mode::Idle);
     let draw_start = store_value::<Option<(f64, f64)>>(None);
+
+    // Listen for paste events on the window to handle ORM links
+    create_effect(move |_| {
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
+            let Some(clipboard_ev) = ev.dyn_ref::<web_sys::ClipboardEvent>() else { return };
+            let Some(data) = clipboard_ev.clipboard_data() else { return };
+            let Ok(text) = data.get_data("text/plain") else { return };
+            if let Some((zoom, lat, lng)) = parse_orm_link(&text) {
+                ev.prevent_default();
+                map_fly_to(lng, lat, zoom);
+            }
+        });
+        let window = web_sys::window().unwrap();
+        let _ = window.add_event_listener_with_callback("paste", closure.as_ref().unchecked_ref());
+        closure.forget();
+    });
 
     create_effect(move |_| {
         let Some(div) = map_ref.get() else { return };
@@ -262,5 +280,24 @@ pub fn Map() -> impl IntoView {
                 </Show>
             </nav>
         </div>
+    }
+}
+
+/// Parse an OpenRailwayMap link like:
+/// `https://openrailwaymap.app/#view=9.49/34.1997/-117.2839`
+/// Returns (zoom, lat, lng) if valid.
+fn parse_orm_link(text: &str) -> Option<(f64, f64, f64)> {
+    let text = text.trim();
+    // Match #view=zoom/lat/lng pattern anywhere in the string
+    let hash_pos = text.find("#view=")?;
+    let fragment = &text[hash_pos + 6..];
+    let parts: Vec<&str> = fragment.split('/').collect();
+    if parts.len() >= 3 {
+        let zoom = parts[0].parse::<f64>().ok()?;
+        let lat = parts[1].parse::<f64>().ok()?;
+        let lng = parts[2].parse::<f64>().ok()?;
+        Some((zoom, lat, lng))
+    } else {
+        None
     }
 }
