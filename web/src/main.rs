@@ -11,12 +11,9 @@ fn main() {
 fn App() -> impl IntoView {
     view! {
         <main>
-            <header>
-                <h1>"Nimby Gen"</h1>
-                <p>"Import OpenRailwayMap tracks into Nimby Rails blueprints"</p>
-            </header>
             <section id="map-container">
                 <components::Map />
+                <components::Search />
             </section>
         </main>
     }

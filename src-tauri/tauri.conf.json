@@ -15,8 +15,7 @@
         "title": "Nimby Gen",
         "width": 1200,
         "height": 800,
-        "resizable": true,
-        "theme": "Dark"
+        "resizable": true
       }
     ],
     "security": {
