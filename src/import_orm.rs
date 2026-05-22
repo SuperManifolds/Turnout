@@ -12,12 +12,9 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
-mod encode;
-mod hobby;
-mod wyhash_nrc1;
-mod nrclip;
-
-use encode::PayloadWriter;
+use nimby_gen::hobby;
+use nimby_gen::nrc1::NrclipFile;
+use nimby_gen::types::{Collection, Clip, Track};
 
 const MODEL_VERSION: u32 = 226;
 const MAX_SPACING: f64 = 200.0;
@@ -26,6 +23,9 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let json_path = args.get(1).context("usage: import_orm <tracks.json> [output.nrclip]")?;
     let output = args.get(2).map(|s| s.as_str()).unwrap_or("orm_import.nrclip");
+    let blueprint_name = std::path::Path::new(output)
+        .file_stem().and_then(|s| s.to_str()).unwrap_or("orm_import")
+        .replace('_', " ");
 
     let raw = fs::read_to_string(json_path).context("read JSON")?;
     let data: serde_json::Value = serde_json::from_str(&raw).context("parse JSON")?;
@@ -280,7 +280,7 @@ fn main() -> Result<()> {
     println!("Simplified: {} → {} nodes", total_before, total_after);
 
     // Build game track nodes
-    let mut track_nodes: Vec<TrackNode> = Vec::new();
+    let mut track_nodes: Vec<Track> = Vec::new();
     let mut node_id_counter: i64 = 100;
 
     // For each route, create a chain of game nodes
@@ -297,18 +297,14 @@ fn main() -> Result<()> {
             let gid = node_id_counter;
             node_id_counter += 100;
             let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
-            track_nodes.push(TrackNode {
-                id: gid, x, y, layer: 0,
-                prev,
-                next: 0, // filled in next iteration
-                tangential: 0,  // point mode: nodes ARE on the track
-                tangent_delta: 0.0,
-                attached_to_id: 0, attached_to_t: 0.0, attached_to_dir: 0,
-                attached_by: Vec::new(),
+            track_nodes.push(Track {
+                node_id: gid, x, y,
+                prev_node: prev,
+                ..Track::default()
             });
             if si > 0 {
                 let prev_idx = track_nodes.len() - 2;
-                track_nodes[prev_idx].next = gid;
+                track_nodes[prev_idx].next_node = gid;
             }
             chain.push(RouteNodeInfo { game_id: gid, orig_idx });
 
@@ -355,8 +351,8 @@ fn main() -> Result<()> {
             let mut best_dist = f64::MAX;
 
             for si in 0..parent_chain.len() - 1 {
-                let pi = track_nodes.iter().position(|n| n.id == parent_chain[si].game_id).unwrap();
-                let qi = track_nodes.iter().position(|n| n.id == parent_chain[si + 1].game_id).unwrap();
+                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[si].game_id).unwrap();
+                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[si + 1].game_id).unwrap();
                 let (px, py) = (track_nodes[pi].x, track_nodes[pi].y);
                 let (qx, qy) = (track_nodes[qi].x, track_nodes[qi].y);
                 let sx = qx - px;
@@ -380,8 +376,8 @@ fn main() -> Result<()> {
 
             // Debug: show junction attachment quality
             if best_dist > 5.0 || best_t > 0.98 || best_t < 0.02 {
-                let pi = track_nodes.iter().position(|n| n.id == parent_chain[best_seg].game_id).unwrap();
-                let qi = track_nodes.iter().position(|n| n.id == parent_chain[best_seg + 1].game_id).unwrap();
+                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg].game_id).unwrap();
+                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg + 1].game_id).unwrap();
                 eprintln!("  WARN branch={} parent={} seg={} t={:.3} dist={:.1}m junc=({:.1},{:.1}) p=({:.1},{:.1}) q=({:.1},{:.1})",
                     branch_gid, parent_chain[best_seg].game_id, best_seg, best_t, best_dist,
                     junction_pos.0, junction_pos.1,
@@ -415,13 +411,13 @@ fn main() -> Result<()> {
             let parent_node_id = parent_chain[parent_seg_idx].game_id;
 
             // Determine direction: does branch go forward or backward along parent?
-            let br_idx = track_nodes.iter().position(|n| n.id == branch_gid).unwrap();
-            let pi = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
+            let br_idx = track_nodes.iter().position(|n| n.node_id == branch_gid).unwrap();
+            let pi = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
             // Parent segment direction: from parent_seg_idx toward next node
             let next_idx = if parent_seg_idx + 1 < parent_chain.len() { parent_seg_idx + 1 }
                 else if parent_seg_idx > 0 { parent_seg_idx - 1 }
                 else { continue; };
-            let qi = track_nodes.iter().position(|n| n.id == parent_chain[next_idx].game_id).unwrap();
+            let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[next_idx].game_id).unwrap();
             let seg_dx = track_nodes[qi].x - track_nodes[pi].x;
             let seg_dy = track_nodes[qi].y - track_nodes[pi].y;
 
@@ -432,7 +428,7 @@ fn main() -> Result<()> {
                 let len = route_game_nodes[ri].len();
                 if len > 1 { route_game_nodes[ri][len - 2].game_id } else { continue; }
             };
-            let ni = track_nodes.iter().position(|n| n.id == neighbor_gid).unwrap();
+            let ni = track_nodes.iter().position(|n| n.node_id == neighbor_gid).unwrap();
             let br_dx = track_nodes[ni].x - track_nodes[br_idx].x;
             let br_dy = track_nodes[ni].y - track_nodes[br_idx].y;
             let dot = br_dx * seg_dx + br_dy * seg_dy;
@@ -447,10 +443,10 @@ fn main() -> Result<()> {
             // Set branch attachment
             track_nodes[br_idx].attached_to_id = parent_node_id;
             track_nodes[br_idx].attached_to_t = t as f64;
-            track_nodes[br_idx].attached_to_dir = dir;
+            track_nodes[br_idx].attached_to_direction = Some(dir);
 
             // Register in parent's attached_by
-            let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
+            let par_idx = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
             track_nodes[par_idx].attached_by.push(branch_gid);
         }
     }
@@ -490,32 +486,33 @@ fn main() -> Result<()> {
         t.y = (t.y - cy) * cos_lat;
     }
 
-    // Build payload
-    let payload = build_payload(&track_nodes, cx, cy)?;
-    println!("Payload: {} bytes", payload.len());
-
-    let compressed = {
-        let mut enc = zstd::stream::Encoder::new(Vec::new(), 3)?;
-        enc.include_contentsize(true)?;
-        enc.set_pledged_src_size(Some(payload.len() as u64))?;
-        std::io::copy(&mut payload.as_slice(), &mut enc)?;
-        enc.finish()?
+    // Build NrclipFile and serialize
+    let name_hash = blueprint_name.bytes().fold(0x1234567890u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+    let file = NrclipFile {
+        version: MODEL_VERSION,
+        collections: vec![Collection {
+            id_a: name_hash,
+            id_b: name_hash.wrapping_mul(7),
+            name: blueprint_name.clone(),
+            clips: vec![Clip {
+                guid: blueprint_name.clone(),
+                clip_id: name_hash.wrapping_mul(13),
+                center_x: cx,
+                center_y: cy,
+                tracks: track_nodes,
+                ..Clip::default()
+            }],
+            ..Collection::default()
+        }],
     };
-    let checksum = wyhash_nrc1::checksum(&payload);
 
-    let mut file_data = Vec::new();
-    file_data.extend_from_slice(b"NRC1");
-    file_data.extend_from_slice(&MODEL_VERSION.to_le_bytes());
-    file_data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    file_data.extend_from_slice(&(compressed.len() as u64).to_le_bytes());
-    file_data.extend_from_slice(&checksum.to_le_bytes());
-    file_data.extend_from_slice(&compressed);
-
+    let file_data = file.to_bytes()?;
     fs::write(output, &file_data)?;
     println!("Wrote {} bytes to {}", file_data.len(), output);
 
-    let decoded = nrclip::parse_payload(&payload, MODEL_VERSION)?;
-    let total: usize = decoded.iter().flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
+    // Verify round-trip
+    let decoded = NrclipFile::from_bytes(&file_data)?;
+    let total: usize = decoded.collections.iter().flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
     println!("Verified: {} tracks", total);
 
     // Run comparison (prints deviation stats + renders overlay)
@@ -532,21 +529,6 @@ fn main() -> Result<()> {
 struct RouteNodeInfo {
     game_id: i64,
     orig_idx: usize,
-}
-
-struct TrackNode {
-    id: i64,
-    x: f64,
-    y: f64,
-    layer: i32,
-    prev: i64,
-    next: i64,
-    tangential: u8,
-    tangent_delta: f32,
-    attached_to_id: i64,
-    attached_to_t: f64,
-    attached_to_dir: i32,
-    attached_by: Vec<i64>,
 }
 
 /// Douglas-Peucker polyline simplification. Marks points to keep in `keep[]`.
@@ -596,67 +578,3 @@ fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     (x, y)
 }
 
-fn build_payload(tracks: &[TrackNode], center_x: f64, center_y: f64) -> Result<Vec<u8>> {
-    let mut w = PayloadWriter::new();
-
-    w.write_varint(1);
-    w.write_varint(7777777777u64);
-    w.write_varint(8888888888u64);
-    w.write_optional_mod_source(&None);
-    w.write_string("ORM Import");
-
-    w.write_varint(1);
-    w.write_string("orm-import");
-    w.write_varint(0x08120001u64);
-    w.write_f64(center_x);
-    w.write_f64(center_y);
-
-    w.write_varint(tracks.len() as u64);
-    for t in tracks {
-        w.write_i64z(t.id);
-        w.write_raw_u8(1);
-        w.write_i32z(0);
-        w.write_i32z(t.layer);
-        w.write_raw_u8(1);            // winding
-        w.write_i64z(t.prev);
-        w.write_i64z(t.next);
-        w.write_i64z(0);
-        w.write_f32(0.0);
-        w.write_f64(t.x);
-        w.write_f64(t.y);
-        w.write_f32(t.tangent_delta);
-        w.write_f32(0.5);
-        w.write_i64z(0);
-        w.write_i32z(0);
-        w.write_string("");
-        w.write_raw_u8(0);
-        w.write_raw_u8(0);            // straight
-        w.write_raw_u8(t.tangential);
-        w.write_raw_u8(0);            // limited_shapes
-        for _ in 0..4 { w.write_varint(0); }
-        w.write_vec_set_i64(&[]);
-        w.write_i64z(t.attached_to_id);
-        w.write_f64(t.attached_to_t);
-        w.write_i32z(t.attached_to_dir);
-        w.write_vec_set_i64(&t.attached_by);
-        w.write_vec_set_i64(&[]);
-        w.write_i64z(0);
-        w.write_i64z(0);
-        w.write_f32(0.0);
-        w.write_i32z(0);
-        w.write_f32(0.0);
-        w.write_f32(0.0);
-        w.write_vec_set_i64(&[]);
-        w.write_f32(2.0);             // proximity_diamond
-    }
-
-    w.write_varint(0); // signals
-    w.write_varint(0); // station_groups
-    w.write_varint(0); // buildings
-    w.write_varint(0); // track_kinds
-    w.write_varint(0); // building_kinds
-    w.write_varint(0); // demands
-    w.write_varint(0); // mod_metas
-
-    Ok(w.into_bytes())
-}
