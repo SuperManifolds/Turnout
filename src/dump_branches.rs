@@ -1,18 +1,17 @@
 use anyhow::Result;
 use std::collections::HashMap;
-
-mod nrclip;
+use nimby_gen::nrc1::NrclipFile;
+use nimby_gen::types::Track;
 
 fn main() -> Result<()> {
     let path = std::env::args().nth(1).unwrap();
     let raw = std::fs::read(&path)?;
-    let ver = u32::from_le_bytes(raw[4..8].try_into().unwrap());
-    let payload = zstd::stream::decode_all(&raw[32..])?;
-    let colls = nrclip::parse_payload(&payload, ver)?;
+    let file = NrclipFile::from_bytes(&raw)?;
+    let colls = &file.collections;
     
-    for coll in &colls {
+    for coll in colls {
         for clip in &coll.clips {
-            let tmap: HashMap<i64, &nrclip::Track> = clip.tracks.iter().map(|t| (t.node_id, t)).collect();
+            let tmap: HashMap<i64, &Track> = clip.tracks.iter().map(|t| (t.node_id, t)).collect();
             
             println!("Clip: {} tracks", clip.tracks.len());
             
@@ -70,7 +69,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn dump_track(t: &nrclip::Track) {
+fn dump_track(t: &Track) {
     println!("    pos:            ({:.4}, {:.4})", t.x, t.y);
     println!("    prev/next:      {} / {}", t.prev_node, t.next_node);
     println!("    winding:        {:?}", t.winding);
@@ -88,9 +87,10 @@ fn dump_track(t: &nrclip::Track) {
     println!("    junc_group:     {}", t.station_group_id);
 }
 
-fn dump_chains(clip: &nrclip::Clip) {
+fn dump_chains(clip: &nimby_gen::types::Clip) {
+    use nimby_gen::types::Track;
     use std::collections::{HashMap, HashSet};
-    let tmap: HashMap<i64, &nrclip::Track> = clip.tracks.iter().map(|t| (t.node_id, t)).collect();
+    let tmap: HashMap<i64, &Track> = clip.tracks.iter().map(|t| (t.node_id, t)).collect();
     
     let mut visited = HashSet::new();
     let mut chains: Vec<Vec<i64>> = Vec::new();

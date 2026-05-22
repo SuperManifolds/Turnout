@@ -3,6 +3,10 @@ name = "nimby_gen"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "nimby_gen"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.99"
 binrw = "0.15.0"
