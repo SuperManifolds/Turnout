@@ -1,13 +1,37 @@
 use leptos::*;
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
+#[wasm_bindgen(inline_js = r#"
+export function init_map(container) {
+    if (!window.maplibregl) {
+        console.error("MapLibre GL JS not loaded");
+        return null;
+    }
+    const map = new maplibregl.Map({
+        container: container,
+        style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        center: [-4.254, 55.859],
+        zoom: 13,
+    });
+    map.on("load", () => {
+        map.addSource("orm-tiles", {
+            type: "raster",
+            tiles: ["https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "&copy; OpenRailwayMap",
+        });
+        map.addLayer({
+            id: "orm-layer",
+            type: "raster",
+            source: "orm-tiles",
+            paint: { "raster-opacity": 0.7 },
+        });
+    });
+    return map;
+}
+"#)]
 extern "C" {
-    #[wasm_bindgen(js_namespace = maplibregl, js_name = Map)]
-    type MapLibreMap;
-
-    #[wasm_bindgen(constructor, js_namespace = maplibregl, js_name = Map)]
-    fn new(options: &JsValue) -> MapLibreMap;
+    fn init_map(container: &web_sys::HtmlElement) -> JsValue;
 }
 
 #[component]
@@ -16,22 +40,8 @@ pub fn Map() -> impl IntoView {
 
     create_effect(move |_| {
         if let Some(div) = map_ref.get() {
-            let options = js_sys::Object::new();
-            js_sys::Reflect::set(&options, &"container".into(), &div.into_any()).ok();
-            js_sys::Reflect::set(
-                &options,
-                &"style".into(),
-                &"https://basemaps.cartocdn.com/gl/positron-gl-style/style.json".into(),
-            ).ok();
-            js_sys::Reflect::set(&options, &"center".into(), &{
-                let arr = js_sys::Array::new();
-                arr.push(&JsValue::from_f64(-117.514));
-                arr.push(&JsValue::from_f64(34.012));
-                arr
-            }.into()).ok();
-            js_sys::Reflect::set(&options, &"zoom".into(), &JsValue::from_f64(13.0)).ok();
-
-            let _map = MapLibreMap::new(&options);
+            let element: &web_sys::HtmlElement = &div;
+            let _map = init_map(element);
         }
     });
 
