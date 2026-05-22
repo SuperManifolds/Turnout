@@ -268,7 +268,7 @@ fn main() -> Result<()> {
                         }
                     }
 
-                    if worst_dev > 1.0 {
+                    if worst_dev > 5.0 {
                         keep[worst_orig] = true;
                         added = true;
                     }
@@ -283,30 +283,62 @@ fn main() -> Result<()> {
                 .collect()
         }).collect();
 
-    // Subdivide long segments — OSM data may have sparse nodes on straight stretches.
-    // Insert interpolated points so no segment exceeds MAX_SPACING.
-    let simplified: Vec<Vec<(usize, f64, f64)>> = simplified.into_iter().map(|simp| {
-        let mut result = Vec::new();
-        for i in 0..simp.len() {
-            result.push(simp[i]);
-            if i + 1 < simp.len() {
+    // Subdivide long segments by interpolating along the original OSM polyline.
+    // This preserves curve shape instead of inserting straight-line midpoints.
+    let simplified: Vec<Vec<(usize, f64, f64)>> = simplified.into_iter().zip(route_coords.iter())
+        .map(|(simp, coords)| {
+            let mut result = Vec::new();
+            for i in 0..simp.len() {
+                result.push(simp[i]);
+                if i + 1 >= simp.len() { continue; }
+                let (idx0, _, _) = simp[i];
+                let (idx1, _, _) = simp[i + 1];
                 let (_, x0, y0) = simp[i];
                 let (_, x1, y1) = simp[i + 1];
-                let dx = x1 - x0;
-                let dy = y1 - y0;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist > MAX_SPACING {
-                    let n = (dist / MAX_SPACING).ceil() as usize;
+                let seg_dist = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                if seg_dist <= MAX_SPACING { continue; }
+
+                // Walk the original OSM polyline between idx0 and idx1, compute arc lengths
+                let (start, end) = if idx0 != usize::MAX && idx1 != usize::MAX && idx0 < idx1 {
+                    (idx0, idx1)
+                } else {
+                    // Fallback to straight-line interpolation for interpolated endpoints
+                    let n = (seg_dist / MAX_SPACING).ceil() as usize;
                     for j in 1..n {
                         let t = j as f64 / n as f64;
-                        // Use usize::MAX as sentinel for interpolated nodes (no OSM original)
-                        result.push((usize::MAX, x0 + dx * t, y0 + dy * t));
+                        result.push((usize::MAX, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
                     }
+                    continue;
+                };
+
+                // Build cumulative arc-length along original OSM nodes
+                let mut cum_len = vec![0.0f64];
+                for k in start..end {
+                    let dx = coords[k + 1].0 - coords[k].0;
+                    let dy = coords[k + 1].1 - coords[k].1;
+                    cum_len.push(cum_len.last().unwrap() + (dx * dx + dy * dy).sqrt());
+                }
+                let total_len = *cum_len.last().unwrap();
+                if total_len < 1.0 { continue; }
+
+                let n = (total_len / MAX_SPACING).ceil() as usize;
+                for j in 1..n {
+                    let target = total_len * j as f64 / n as f64;
+                    // Find the OSM segment containing this arc-length position
+                    let seg = cum_len.partition_point(|&l| l < target).min(cum_len.len() - 1).max(1) - 1;
+                    let seg_start_len = cum_len[seg];
+                    let seg_end_len = cum_len[seg + 1];
+                    let local_t = if seg_end_len > seg_start_len {
+                        (target - seg_start_len) / (seg_end_len - seg_start_len)
+                    } else { 0.0 };
+                    let oi = start + seg;
+                    let px = coords[oi].0 + (coords[oi + 1].0 - coords[oi].0) * local_t;
+                    let py = coords[oi].1 + (coords[oi + 1].1 - coords[oi].1) * local_t;
+                    result.push((usize::MAX, px, py));
                 }
             }
-        }
-        result
-    }).collect();
+            result
+        }).collect();
 
     let total_before: usize = route_coords.iter().map(|c| c.len()).sum();
     let total_after: usize = simplified.iter().map(|s| s.len()).sum();
