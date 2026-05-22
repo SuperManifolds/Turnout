@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "cli", "web"]
+members = ["core", "cli", "web", "src-tauri"]
 resolver = "3"
 
 [workspace.lints.clippy]

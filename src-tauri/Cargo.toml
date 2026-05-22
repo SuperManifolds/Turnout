@@ -1,0 +1,19 @@
+[package]
+name = "nimby-gen-tauri"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+nimby-gen-core = { path = "../core" }
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs-next = "2.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
