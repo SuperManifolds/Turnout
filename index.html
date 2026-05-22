@@ -8,10 +8,20 @@
     <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: system-ui, -apple-system, sans-serif; }
-        header { padding: 1rem; background: #1a1a2e; color: white; }
-        header h1 { font-size: 1.4rem; }
-        header p { font-size: 0.85rem; opacity: 0.7; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+        header {
+            padding: 0.6rem 1rem;
+            padding-top: calc(0.6rem + env(titlebar-area-height, 0px));
+            background: #1a1a2e;
+            color: white;
+            -webkit-app-region: drag;
+        }
+        header h1 { font-size: 1.2rem; display: inline; }
+        header p { font-size: 0.8rem; opacity: 0.6; display: inline; margin-left: 1rem; }
     </style>
     <link data-trunk rel="rust" data-wasm-opt="z" href="web/Cargo.toml" />
 </head>
