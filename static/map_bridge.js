@@ -2,14 +2,46 @@
 
 let _map = null;
 
-window.map_init = function(container, style_url) {
+var STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+var STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+var CUSTOM_SOURCE_IDS = ["orm-tiles", "bbox", "handles"];
+var CUSTOM_LAYER_IDS = ["orm-layer", "bbox-fill", "bbox-outline", "handles-layer"];
+
+function get_preferred_style() {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? STYLE_DARK : STYLE_LIGHT;
+}
+
+function preserve_custom_layers(prev, next) {
+    if (!prev) return next;
+    var sources = Object.assign({}, next.sources);
+    CUSTOM_SOURCE_IDS.forEach(function(id) {
+        if (prev.sources[id]) sources[id] = prev.sources[id];
+    });
+    var customLayers = prev.layers.filter(function(l) {
+        return CUSTOM_LAYER_IDS.indexOf(l.id) >= 0;
+    });
+    return Object.assign({}, next, {
+        sources: sources,
+        layers: next.layers.concat(customLayers),
+    });
+}
+
+window.map_init = function(container) {
     _map = new maplibregl.Map({
         container: container,
-        style: style_url,
+        style: get_preferred_style(),
         center: [8.534, 52.033],
         zoom: 14,
     });
     _map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    // Follow system theme changes
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function() {
+        _map.setStyle(get_preferred_style(), { transformStyle: preserve_custom_layers });
+        // Update ORM layer paint for new theme after style settles
+        _map.once("styledata", update_orm_paint);
+    });
+
     return _map;
 };
 
@@ -27,6 +59,27 @@ window.map_add_raster_source = function(id, url, attribution) {
     });
 };
 
+function is_dark() {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function update_orm_paint() {
+    if (!_map || !_map.getLayer("orm-layer")) return;
+    if (is_dark()) {
+        _map.setPaintProperty("orm-layer", "raster-brightness-max", 0.7);
+        _map.setPaintProperty("orm-layer", "raster-brightness-min", 0.0);
+        _map.setPaintProperty("orm-layer", "raster-contrast", 0.0);
+        _map.setPaintProperty("orm-layer", "raster-saturation", 0.3);
+        _map.setPaintProperty("orm-layer", "raster-opacity", 0.85);
+    } else {
+        _map.setPaintProperty("orm-layer", "raster-brightness-max", 1.0);
+        _map.setPaintProperty("orm-layer", "raster-brightness-min", 0.0);
+        _map.setPaintProperty("orm-layer", "raster-contrast", 0.0);
+        _map.setPaintProperty("orm-layer", "raster-saturation", 0.0);
+        _map.setPaintProperty("orm-layer", "raster-opacity", 0.7);
+    }
+}
+
 window.map_add_raster_layer = function(id, source, opacity) {
     if (!_map) return;
     _map.addLayer({
@@ -35,6 +88,7 @@ window.map_add_raster_layer = function(id, source, opacity) {
         source: source,
         paint: { "raster-opacity": opacity },
     });
+    update_orm_paint();
 };
 
 window.map_add_geojson_source = function(id) {

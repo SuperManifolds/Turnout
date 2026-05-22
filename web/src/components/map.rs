@@ -1,7 +1,6 @@
 use leptos::*;
 use wasm_bindgen::prelude::*;
 
-const BASE_STYLE: &str = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
 const BBOX_COLOR: &str = "#4a9eff";
 const HANDLE_COLOR: &str = "#4a9eff";
@@ -9,7 +8,7 @@ const HANDLE_RADIUS: f64 = 6.0;
 
 #[wasm_bindgen]
 extern "C" {
-    fn map_init(container: &web_sys::HtmlElement, style_url: &str) -> JsValue;
+    fn map_init(container: &web_sys::HtmlElement) -> JsValue;
     fn map_on_load(callback: &Closure<dyn Fn()>);
     fn map_add_raster_source(id: &str, url: &str, attribution: &str);
     fn map_add_raster_layer(id: &str, source: &str, opacity: f64);
@@ -127,7 +126,7 @@ pub fn Map() -> impl IntoView {
     create_effect(move |_| {
         let Some(div) = map_ref.get() else { return };
         let element: &web_sys::HtmlElement = &div;
-        map_init(element, BASE_STYLE);
+        map_init(element);
 
         let on_load = Closure::new(move || {
             map_add_raster_source("orm", ORM_TILES, "\u{00a9} OpenRailwayMap");
