@@ -283,6 +283,31 @@ fn main() -> Result<()> {
                 .collect()
         }).collect();
 
+    // Subdivide long segments — OSM data may have sparse nodes on straight stretches.
+    // Insert interpolated points so no segment exceeds MAX_SPACING.
+    let simplified: Vec<Vec<(usize, f64, f64)>> = simplified.into_iter().map(|simp| {
+        let mut result = Vec::new();
+        for i in 0..simp.len() {
+            result.push(simp[i]);
+            if i + 1 < simp.len() {
+                let (_, x0, y0) = simp[i];
+                let (_, x1, y1) = simp[i + 1];
+                let dx = x1 - x0;
+                let dy = y1 - y0;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > MAX_SPACING {
+                    let n = (dist / MAX_SPACING).ceil() as usize;
+                    for j in 1..n {
+                        let t = j as f64 / n as f64;
+                        // Use usize::MAX as sentinel for interpolated nodes (no OSM original)
+                        result.push((usize::MAX, x0 + dx * t, y0 + dy * t));
+                    }
+                }
+            }
+        }
+        result
+    }).collect();
+
     let total_before: usize = route_coords.iter().map(|c| c.len()).sum();
     let total_after: usize = simplified.iter().map(|s| s.len()).sum();
     println!("Simplified: {} → {} nodes", total_before, total_after);
@@ -316,10 +341,12 @@ fn main() -> Result<()> {
             }
             chain.push(RouteNodeInfo { game_id: gid });
 
-            // Record junction game IDs for owning route
-            let osm_nid = routes[ri][orig_idx];
-            if junction_nodes.contains(&osm_nid) && junction_owner.get(&osm_nid) == Some(&ri) {
-                junction_game_ids.insert(osm_nid, gid);
+            // Record junction game IDs for owning route (skip interpolated nodes)
+            if orig_idx != usize::MAX {
+                let osm_nid = routes[ri][orig_idx];
+                if junction_nodes.contains(&osm_nid) && junction_owner.get(&osm_nid) == Some(&ri) {
+                    junction_game_ids.insert(osm_nid, gid);
+                }
             }
         }
         route_game_nodes.push(chain);
