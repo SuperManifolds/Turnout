@@ -4,3 +4,4 @@ target/
 *.nrclip
 *.png
 --empty
+dist/
