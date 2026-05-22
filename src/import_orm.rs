@@ -180,7 +180,7 @@ fn main() -> Result<()> {
     }
     // Simplify routes
     let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
-        .map(|(ri, (route, coords))| {
+        .map(|(_, (route, coords))| {
             let mut keep = vec![false; coords.len()];
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
@@ -306,7 +306,7 @@ fn main() -> Result<()> {
                 let prev_idx = track_nodes.len() - 2;
                 track_nodes[prev_idx].next_node = gid;
             }
-            chain.push(RouteNodeInfo { game_id: gid, orig_idx });
+            chain.push(RouteNodeInfo { game_id: gid });
 
             // Record junction game IDs for owning route
             let osm_nid = routes[ri][orig_idx];
@@ -528,48 +528,6 @@ fn main() -> Result<()> {
 
 struct RouteNodeInfo {
     game_id: i64,
-    orig_idx: usize,
-}
-
-/// Douglas-Peucker polyline simplification. Marks points to keep in `keep[]`.
-/// Recursively finds the point farthest from the line between start and end;
-/// if it exceeds `tolerance`, keeps it and recurses on both halves.
-fn douglas_peucker(coords: &[(f64, f64)], keep: &mut [bool], start: usize, end: usize, tolerance: f64) {
-    if end <= start + 1 { return; }
-
-    let (ax, ay) = coords[start];
-    let (bx, by) = coords[end];
-    let dx = bx - ax;
-    let dy = by - ay;
-    let len_sq = dx * dx + dy * dy;
-
-    let mut max_dist = 0.0f64;
-    let mut max_idx = start;
-
-    for i in (start + 1)..end {
-        // Skip already-kept nodes (junctions) — they split the recursion naturally
-        let dist = if len_sq < 1e-10 {
-            let px = coords[i].0 - ax;
-            let py = coords[i].1 - ay;
-            (px * px + py * py).sqrt()
-        } else {
-            let t = ((coords[i].0 - ax) * dx + (coords[i].1 - ay) * dy) / len_sq;
-            let t = t.clamp(0.0, 1.0);
-            let proj_x = ax + t * dx;
-            let proj_y = ay + t * dy;
-            ((coords[i].0 - proj_x).powi(2) + (coords[i].1 - proj_y).powi(2)).sqrt()
-        };
-        if dist > max_dist {
-            max_dist = dist;
-            max_idx = i;
-        }
-    }
-
-    if max_dist > tolerance {
-        keep[max_idx] = true;
-        douglas_peucker(coords, keep, start, max_idx, tolerance);
-        douglas_peucker(coords, keep, max_idx, end, tolerance);
-    }
 }
 
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
