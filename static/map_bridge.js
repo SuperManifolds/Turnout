@@ -4,7 +4,7 @@ let _map = null;
 
 var STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 var STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-var CUSTOM_SOURCE_IDS = ["orm-tiles", "bbox", "handles"];
+var CUSTOM_SOURCE_IDS = ["orm", "bbox", "handles"];
 var CUSTOM_LAYER_IDS = ["orm-layer", "bbox-fill", "bbox-outline", "handles-layer"];
 
 function get_preferred_style() {
@@ -88,6 +88,28 @@ window.map_add_raster_layer = function(id, source, opacity) {
         source: source,
         paint: { "raster-opacity": opacity },
     });
+    update_orm_paint();
+};
+
+window.map_set_orm_style = function(style_name) {
+    if (!_map) return;
+    // Remove existing ORM layer and source, then re-add with new tiles
+    if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
+    if (_map.getSource("orm")) _map.removeSource("orm");
+    _map.addSource("orm", {
+        type: "raster",
+        tiles: ["https://tiles.openrailwaymap.org/" + style_name + "/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "&copy; OpenRailwayMap",
+    });
+    // Insert below bbox layers so selection draws on top
+    var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
+    _map.addLayer({
+        id: "orm-layer",
+        type: "raster",
+        source: "orm",
+        paint: { "raster-opacity": 0.7 },
+    }, beforeLayer);
     update_orm_paint();
 };
 

@@ -112,6 +112,32 @@ body {
     }
 }
 
+#layer-switcher {
+    position: absolute;
+    top: var(--spacing-lg);
+    right: 60px; // clear the nav controls
+    display: flex;
+    gap: 1px;
+    background: var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+    z-index: 10;
+
+    button {
+        border: none;
+        border-radius: 0;
+        background: var(--color-bg-secondary);
+        box-shadow: none;
+        padding: var(--spacing-xs) var(--spacing-sm);
+
+        &.active {
+            background: var(--color-accent);
+            color: #fff;
+        }
+    }
+}
+
 // MapLibre navigation controls — follow app theme
 .maplibregl-ctrl-group {
     background: var(--color-bg-secondary) !important;

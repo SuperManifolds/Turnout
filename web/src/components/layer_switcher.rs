@@ -1,0 +1,43 @@
+use leptos::*;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    fn map_set_orm_style(style_name: &str);
+}
+
+const ORM_STYLES: &[(&str, &str)] = &[
+    ("standard", "Infrastructure"),
+    ("maxspeed", "Speed"),
+    ("signals", "Signals"),
+    ("electrification", "Electrification"),
+    ("gauge", "Gauge"),
+];
+
+#[component]
+pub fn LayerSwitcher() -> impl IntoView {
+    let (active, set_active) = create_signal("standard".to_string());
+
+    let on_change = move |style: &str| {
+        let s = style.to_string();
+        set_active.set(s.clone());
+        map_set_orm_style(&s);
+    };
+
+    view! {
+        <nav id="layer-switcher">
+            {ORM_STYLES.iter().map(|&(id, label)| {
+                let id_owned = id.to_string();
+                let id2 = id.to_string();
+                view! {
+                    <button
+                        class:active=move || active.get() == id_owned
+                        on:click=move |_| on_change(&id2)
+                    >
+                        {label}
+                    </button>
+                }
+            }).collect_view()}
+        </nav>
+    }
+}

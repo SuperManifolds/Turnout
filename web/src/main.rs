@@ -14,6 +14,7 @@ fn App() -> impl IntoView {
             <section id="map-container">
                 <components::Map />
                 <components::Search />
+                <components::LayerSwitcher />
             </section>
         </main>
     }
