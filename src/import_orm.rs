@@ -115,9 +115,18 @@ fn main() -> Result<()> {
             let Some((wi, pi, diff)) = best else { break };
             if diff > 2.5 { break; } // >143° = near-reversal, not a continuation
 
+            // Check for fold-back: does the continuation duplicate any node
+            // already in the route? This prevents routes that double back.
+            let new_nodes: Vec<u64> = if pi == 0 {
+                ways[wi][1..].to_vec()
+            } else {
+                ways[wi][..ways[wi].len()-1].iter().rev().copied().collect()
+            };
+            let route_set: HashSet<u64> = route.iter().copied().collect();
+            if new_nodes.iter().any(|n| route_set.contains(n)) { break; }
+
             way_used[wi] = true;
-            if pi == 0 { route.extend_from_slice(&ways[wi][1..]); }
-            else { route.extend(ways[wi][..ways[wi].len()-1].iter().rev()); }
+            route.extend_from_slice(&new_nodes);
         }
 
         // Extend backward
@@ -146,9 +155,17 @@ fn main() -> Result<()> {
             let Some((wi, pi, diff)) = best else { break };
             if diff > 2.5 { break; }
 
+            // Check for fold-back
+            let new_nodes: Vec<u64> = if pi == ways[wi].len()-1 {
+                ways[wi][..ways[wi].len()-1].to_vec()
+            } else {
+                ways[wi][1..].iter().rev().copied().collect()
+            };
+            let route_set: HashSet<u64> = route.iter().copied().collect();
+            if new_nodes.iter().any(|n| route_set.contains(n)) { break; }
+
             way_used[wi] = true;
-            let mut prefix: Vec<u64> = if pi == ways[wi].len()-1 { ways[wi][..ways[wi].len()-1].to_vec() }
-                else { ways[wi][1..].iter().rev().copied().collect() };
+            let mut prefix = new_nodes;
             prefix.push(first);
             prefix.extend_from_slice(&route[1..]);
             route = prefix;
@@ -508,8 +525,7 @@ fn main() -> Result<()> {
             let dot = br_dx * seg_dx + br_dy * seg_dy;
             let dir = if dot >= 0.0 { 1 } else { -1 };
 
-            // Nudge branch root slightly (5m) along its outgoing direction
-            // so it's not at the exact same position as the parent node
+            // Nudge branch root 5m along its outgoing direction
             let br_len = (br_dx * br_dx + br_dy * br_dy).sqrt().max(1e-10);
             track_nodes[br_idx].x += (br_dx / br_len) * 5.0;
             track_nodes[br_idx].y += (br_dy / br_len) * 5.0;

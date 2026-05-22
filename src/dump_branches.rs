@@ -119,8 +119,11 @@ fn dump_chains(clip: &nimby_gen::types::Clip) {
         chains.iter().filter(|c| c.len() == 2).count(),
         chains.iter().filter(|c| c.len() >= 3).count());
     
-    // Show first few multi-node chains with detail
-    for ch in chains.iter().filter(|c| c.len() >= 2).take(3) {
+    // Show all chains that have junction nodes (BY= or ATT=)
+    for ch in chains.iter().filter(|c| c.len() >= 2 && c.iter().any(|&nid| {
+        let t = tmap[&nid];
+        !t.attached_by.is_empty() || t.attached_to_id != 0
+    })) {
         println!("\n  Chain ({} nodes):", ch.len());
         for &nid in ch {
             let t = tmap[&nid];
