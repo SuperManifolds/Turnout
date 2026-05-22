@@ -180,10 +180,18 @@ fn main() -> Result<()> {
     }
     // Simplify routes
     let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
-        .map(|(_, (route, coords))| {
+        .map(|(ri, (route, coords))| {
             let mut keep = vec![false; coords.len()];
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
+
+            // Force keep junction nodes owned by this route so branches
+            // can attach to a segment that passes through the junction position.
+            for (i, &nid) in route.iter().enumerate() {
+                if junction_nodes.contains(&nid) && junction_owner.get(&nid) == Some(&ri) {
+                    keep[i] = true;
+                }
+            }
 
             // Keep a node ~30m from junction endpoints for tight splines
             let start_is_junction = junction_nodes.contains(&route[0]);
@@ -362,10 +370,15 @@ fn main() -> Result<()> {
 
                 let bx = junction_pos.0 - px;
                 let by = junction_pos.1 - py;
-                let t = ((bx * sx + by * sy) / seg_len_sq).clamp(0.0, 1.0);
+                let t_raw = (bx * sx + by * sy) / seg_len_sq;
+                let t = t_raw.clamp(0.0, 1.0);
                 let proj_x = px + t * sx;
                 let proj_y = py + t * sy;
-                let d = ((junction_pos.0 - proj_x).powi(2) + (junction_pos.1 - proj_y).powi(2)).sqrt();
+                let perp = ((junction_pos.0 - proj_x).powi(2) + (junction_pos.1 - proj_y).powi(2)).sqrt();
+                // Penalize segments where the projection falls outside [0,1]
+                // (junction is past the segment end — likely wrong segment)
+                let overshoot = (t_raw - t_raw.clamp(0.0, 1.0)).abs() * seg_len_sq.sqrt();
+                let d = perp + overshoot;
 
                 if d < best_dist {
                     best_dist = d;
@@ -385,8 +398,8 @@ fn main() -> Result<()> {
                     track_nodes[qi].x, track_nodes[qi].y);
             }
 
-            // Reject if too far from parent (wrong parent route)
-            if best_dist > 20.0 { continue; }
+            // No reject — always create junction, even if geometry is imperfect.
+            // The game recomputes spline parameters on load.
 
             // Junction often coincides with a parent node (shared OSM node).
             // In that case best_t≈0 or best_t≈1. Use the segment where the junction
