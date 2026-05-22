@@ -85,11 +85,6 @@ fn dump_track(t: &Track) {
     println!("    track_type:     {}", t.track_type);
     println!("    layer:          {}", t.layer);
     println!("    junc_group:     {}", t.station_group_id);
-    println!("    par_id:         {:?}", t.parallel_to_id);
-    println!("    par_offset:     {:?}", t.parallel_to_offset);
-    println!("    par_dir:        {:?}", t.parallel_to_direction);
-    println!("    par_t:          {:?}", t.parallel_to_t);
-    println!("    par_by:         {:?}", t.parallel_by);
 }
 
 fn dump_chains(clip: &nimby_gen::types::Clip) {

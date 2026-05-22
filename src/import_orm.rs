@@ -197,7 +197,7 @@ fn main() -> Result<()> {
     }
     // Simplify routes
     let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
-        .map(|(_, (route, coords))| {
+        .map(|(ri, (route, coords))| {
             let mut keep = vec![false; coords.len()];
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
@@ -538,123 +538,6 @@ fn main() -> Result<()> {
             // Register in parent's attached_by
             let par_idx = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
             track_nodes[par_idx].attached_by.push(branch_gid);
-        }
-    }
-
-    // Detect parallel tracks: chains running within 6m of each other for 3+ nodes.
-    // The longer chain becomes the parent, shorter becomes child with parallel_to fields.
-    // Note: at this point coords are raw Mercator (not ground meters).
-    // Mercator distances are ~1/cos(lat) × ground distances.
-    // At lat 34°: 1/cos(34°) ≈ 1.21, so 6m ground ≈ 7.2m Mercator.
-    const PARALLEL_MAX_DIST: f64 = 8.0; // ~6.6m ground at lat 34°
-    const PARALLEL_MIN_NODES: usize = 3;
-    {
-        // Build chain list: Vec<Vec<usize>> where each inner vec is indices into track_nodes
-        let mut chains_idx: Vec<Vec<usize>> = Vec::new();
-        let mut visited_par = HashSet::new();
-        for (ti, t) in track_nodes.iter().enumerate() {
-            if visited_par.contains(&t.node_id) { continue; }
-            // Walk to chain start
-            let mut cur_idx = ti;
-            loop {
-                let prev = track_nodes[cur_idx].prev_node;
-                if prev == 0 { break; }
-                match track_nodes.iter().position(|n| n.node_id == prev) {
-                    Some(pi) if !visited_par.contains(&track_nodes[pi].node_id) => cur_idx = pi,
-                    _ => break,
-                }
-            }
-            let mut chain = Vec::new();
-            loop {
-                if visited_par.contains(&track_nodes[cur_idx].node_id) { break; }
-                visited_par.insert(track_nodes[cur_idx].node_id);
-                chain.push(cur_idx);
-                let next = track_nodes[cur_idx].next_node;
-                if next == 0 { break; }
-                match track_nodes.iter().position(|n| n.node_id == next) {
-                    Some(ni) => cur_idx = ni,
-                    None => break,
-                }
-            }
-            if chain.len() >= PARALLEL_MIN_NODES { chains_idx.push(chain); }
-        }
-
-        let mut n_parallel = 0;
-        let mut parallel_assigned: HashSet<i64> = HashSet::new();
-
-        // Compare each pair of chains
-        for ai in 0..chains_idx.len() {
-            for bi in (ai + 1)..chains_idx.len() {
-                let chain_a = &chains_idx[ai];
-                let chain_b = &chains_idx[bi];
-
-                // For each node in chain_a, find nearest in chain_b
-                let mut matches: Vec<(usize, usize, f64)> = Vec::new(); // (a_idx, b_idx, dist)
-                for &a_ti in chain_a {
-                    let ax = track_nodes[a_ti].x;
-                    let ay = track_nodes[a_ti].y;
-                    let mut best_bi = 0;
-                    let mut best_d = f64::MAX;
-                    for &b_ti in chain_b {
-                        let d = ((track_nodes[b_ti].x - ax).powi(2) + (track_nodes[b_ti].y - ay).powi(2)).sqrt();
-                        if d < best_d { best_d = d; best_bi = b_ti; }
-                    }
-                    if best_d < PARALLEL_MAX_DIST {
-                        matches.push((a_ti, best_bi, best_d));
-                    }
-                }
-
-                // Enough close matches? (no need for strict consecutiveness —
-                // parallel chains have different node spacings)
-                if matches.len() < PARALLEL_MIN_NODES { continue; }
-
-                // Determine parent (longer chain) and child
-                let child_indices: Vec<(usize, usize)> = if chain_a.len() >= chain_b.len() {
-                    // A is parent, B is child: (child_ti, parent_ti)
-                    matches.iter().map(|&(a, b, _)| (b, a)).collect()
-                } else {
-                    // B is parent, A is child
-                    matches.iter().map(|&(a, b, _)| (a, b)).collect()
-                };
-
-                // Determine direction: do the chains go the same way or opposite?
-                let first_child = child_indices[0].0;
-                let last_child = child_indices.last().unwrap().0;
-                let first_parent = child_indices[0].1;
-                let last_parent = child_indices.last().unwrap().1;
-                let child_dx = track_nodes[last_child].x - track_nodes[first_child].x;
-                let child_dy = track_nodes[last_child].y - track_nodes[first_child].y;
-                let parent_dx = track_nodes[last_parent].x - track_nodes[first_parent].x;
-                let parent_dy = track_nodes[last_parent].y - track_nodes[first_parent].y;
-                let par_dir = if child_dx * parent_dx + child_dy * parent_dy >= 0.0 { 1 } else { -1 };
-
-                // Set parallel fields on child nodes
-                for &(child_ti, parent_ti) in &child_indices {
-                    let child_id = track_nodes[child_ti].node_id;
-                    if parallel_assigned.contains(&child_id) { continue; }
-                    let parent_id = track_nodes[parent_ti].node_id;
-                    let dx = track_nodes[child_ti].x - track_nodes[parent_ti].x;
-                    let dy = track_nodes[child_ti].y - track_nodes[parent_ti].y;
-                    let offset = (dx * dx + dy * dy).sqrt();
-
-                    track_nodes[child_ti].parallel_to_id = Some(parent_id);
-                    track_nodes[child_ti].parallel_to_offset = Some(offset as f32);
-                    track_nodes[child_ti].parallel_to_direction = Some(par_dir);
-                    track_nodes[child_ti].parallel_to_t = Some(0.0);
-                    track_nodes[child_ti].parallel_to_disp = Some(0.0);
-
-                    // Register in parent's parallel_by
-                    if let Some(ref mut pby) = track_nodes[parent_ti].parallel_by {
-                        pby.push(child_id);
-                    }
-
-                    parallel_assigned.insert(child_id);
-                    n_parallel += 1;
-                }
-            }
-        }
-        if n_parallel > 0 {
-            println!("Parallel tracks: {} nodes paired", n_parallel);
         }
     }
 
