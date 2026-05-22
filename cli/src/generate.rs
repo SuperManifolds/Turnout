@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use std::fs;
 
-use nimby_gen::nrc1::NrclipFile;
-use nimby_gen::types::{Collection, Clip, Track};
+use nimby_gen_core::nrc1::NrclipFile;
+use nimby_gen_core::types::{Collection, Clip, Track};
 
 const MODEL_VERSION: u32 = 226;
 

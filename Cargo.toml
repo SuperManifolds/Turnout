@@ -1,43 +1,21 @@
-[package]
-name = "nimby_gen"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["core", "cli"]
+resolver = "3"
 
-[lib]
-name = "nimby_gen"
-path = "src/lib.rs"
-
-[dependencies]
-anyhow = "1.0.99"
-image = "0.25"
-serde_json = "1"
-zstd = "0.13.3"
-
-[[bin]]
-name = "nimby_gen"
-path = "src/main.rs"
-
-
-[[bin]]
-name = "generate"
-path = "src/generate.rs"
-
-[[bin]]
-name = "inject"
-path = "src/inject.rs"
-
-[[bin]]
-name = "hashtest"
-path = "src/hashtest.rs"
-
-[[bin]]
-name = "import_orm"
-path = "src/import_orm.rs"
-
-[[bin]]
-name = "dump_branches"
-path = "src/dump_branches.rs"
-
-[[bin]]
-name = "compare_orm"
-path = "src/compare_orm.rs"
+[workspace.lints.clippy]
+complexity = "warn"
+perf = "warn"
+style = "warn"
+suspicious = "warn"
+pedantic = "warn"
+unwrap_used = { level = "warn", priority = 1 }
+implicit_hasher = { level = "allow", priority = 1 }
+manual_midpoint = { level = "allow", priority = 1 }
+float_cmp = { level = "allow", priority = 1 }
+module_name_repetitions = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }

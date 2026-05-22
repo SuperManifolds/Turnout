@@ -1,4 +1,4 @@
-use nimby_gen::wyhash_nrc1;
+use nimby_gen_core::wyhash_nrc1;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

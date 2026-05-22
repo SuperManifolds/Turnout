@@ -5,9 +5,9 @@ use image::{Rgb, RgbImage};
 use std::collections::HashMap;
 use std::env;
 
-use nimby_gen::hobby;
-use nimby_gen::nrc1::NrclipFile;
-use nimby_gen::types::Track;
+use nimby_gen_core::hobby;
+use nimby_gen_core::nrc1::NrclipFile;
+use nimby_gen_core::types::Track;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
