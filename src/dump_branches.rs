@@ -16,11 +16,12 @@ fn main() -> Result<()> {
             
             println!("Clip: {} tracks", clip.tracks.len());
             
+            let mut first_junction = true;
             for t in &clip.tracks {
                 if t.attached_to_id == 0 { continue; }
                 let dir = t.attached_to_direction.unwrap_or(0);
                 let parent = tmap.get(&t.attached_to_id);
-                
+
                 if let Some(p) = parent {
                     let seg_end_id = if dir >= 0 { p.next_node } else { p.prev_node };
                     if let Some(e) = tmap.get(&seg_end_id) {
@@ -33,8 +34,28 @@ fn main() -> Result<()> {
                         let perp_dist = if seg_len > 0.001 {
                             ((bx*sy - by*sx) / seg_len).abs()
                         } else { 0.0 };
-                        println!("  branch={} parent={} stored_t={:.6} geo_t={:.6} dir={} seg={:.1}m perp={:.2}m",
-                            t.node_id, t.attached_to_id, t.attached_to_t, geo_t, dir, seg_len, perp_dist);
+                        let p_tang = p.tangential.unwrap_or(255);
+                        let b_tang = t.tangential.unwrap_or(255);
+                        println!("  branch={} parent={} stored_t={:.6} geo_t={:.6} dir={} seg={:.1}m perp={:.2}m b_tang={} p_tang={}",
+                            t.node_id, t.attached_to_id, t.attached_to_t, geo_t, dir, seg_len, perp_dist, b_tang, p_tang);
+
+                        // Dump full fields for first junction pair
+                        if first_junction {
+                            first_junction = false;
+                            println!("\n  --- BRANCH #{} ALL FIELDS ---", t.node_id);
+                            dump_track(t);
+                            println!("  --- PARENT #{} ALL FIELDS ---", p.node_id);
+                            dump_track(p);
+                            if let Some(pn) = tmap.get(&p.next_node) {
+                                println!("  --- PARENT->NEXT #{} ---", pn.node_id);
+                                println!("    pos: ({:.2}, {:.2})", pn.x, pn.y);
+                            }
+                            if let Some(pp) = tmap.get(&p.prev_node) {
+                                println!("  --- PARENT->PREV #{} ---", pp.node_id);
+                                println!("    pos: ({:.2}, {:.2})", pp.x, pp.y);
+                            }
+                            println!();
+                        }
                     } else {
                         println!("  branch={} parent={} stored_t={:.6} dir={} seg_end={} MISSING",
                             t.node_id, t.attached_to_id, t.attached_to_t, dir, seg_end_id);
@@ -47,6 +68,24 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn dump_track(t: &nrclip::Track) {
+    println!("    pos:            ({:.4}, {:.4})", t.x, t.y);
+    println!("    prev/next:      {} / {}", t.prev_node, t.next_node);
+    println!("    winding:        {:?}", t.winding);
+    println!("    tangent_delta:  {:?}", t.user_tangent_delta);
+    println!("    next_spline_t:  {:?}", t.next_spline_t);
+    println!("    straight:       {:?}", t.straight);
+    println!("    tangential:     {:?}", t.tangential);
+    println!("    limited_shapes: {:?}", t.limited_shapes);
+    println!("    att_id:         {}", t.attached_to_id);
+    println!("    att_t:          {:.6}", t.attached_to_t);
+    println!("    att_dir:        {:?}", t.attached_to_direction);
+    println!("    att_by:         {:?}", t.attached_by);
+    println!("    track_type:     {}", t.track_type);
+    println!("    layer:          {}", t.layer);
+    println!("    junc_group:     {}", t.station_group_id);
 }
 
 fn dump_chains(clip: &nrclip::Clip) {

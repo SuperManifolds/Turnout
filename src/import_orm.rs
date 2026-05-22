@@ -178,19 +178,6 @@ fn main() -> Result<()> {
             }
         }
     }
-    // For each route, collect junction positions where OTHER routes will branch from it.
-    // The owning route must avoid nodes near these so branches get mid-segment attached_to_t.
-    let branch_junctions: Vec<Vec<(f64, f64)>> = routes.iter().enumerate().map(|(ri, route)| {
-        route.iter().enumerate().filter_map(|(i, &nid)| {
-            // This route OWNS this junction AND other routes also pass through it
-            if junction_nodes.contains(&nid) && junction_owner.get(&nid) == Some(&ri) {
-                Some(route_coords[ri][i])
-            } else {
-                None
-            }
-        }).collect()
-    }).collect();
-
     // Simplify routes
     let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
         .map(|(ri, (route, coords))| {
@@ -198,9 +185,7 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // DON'T keep junction nodes on through-routes — branches attach mid-segment.
-            // But DO keep a node close (~30m) to each endpoint that's at a junction,
-            // so the branch spline stays tight near the switch instead of curving early.
+            // Keep a node ~30m from junction endpoints for tight splines
             let start_is_junction = junction_nodes.contains(&route[0]);
             let end_is_junction = junction_nodes.contains(route.last().unwrap());
             if start_is_junction && coords.len() > 2 {
@@ -233,15 +218,8 @@ fn main() -> Result<()> {
                 let dx = coords[i].0 - coords[last_kept].0;
                 let dy = coords[i].1 - coords[last_kept].1;
                 if dx * dx + dy * dy >= MAX_SPACING * MAX_SPACING {
-                    let near_foreign = branch_junctions[ri].iter().any(|&(fx, fy)| {
-                        let ddx = coords[i].0 - fx;
-                        let ddy = coords[i].1 - fy;
-                        ddx * ddx + ddy * ddy < 150.0 * 150.0
-                    });
-                    if !near_foreign {
-                        keep[i] = true;
-                        last_kept = i;
-                    }
+                    keep[i] = true;
+                    last_kept = i;
                 }
             }
 
@@ -283,16 +261,8 @@ fn main() -> Result<()> {
                     }
 
                     if worst_dev > 1.0 {
-                        // Don't add nodes near foreign junctions — branches attach mid-segment there
-                        let near_foreign = branch_junctions[ri].iter().any(|&(fx, fy)| {
-                            let dx = coords[worst_orig].0 - fx;
-                            let dy = coords[worst_orig].1 - fy;
-                            dx * dx + dy * dy < 150.0 * 150.0
-                        });
-                        if !near_foreign {
-                            keep[worst_orig] = true;
-                            added = true;
-                        }
+                        keep[worst_orig] = true;
+                        added = true;
                     }
                 }
 
@@ -317,9 +287,8 @@ fn main() -> Result<()> {
     // Track which game node corresponds to each (route_idx, original_osm_idx) for branch attachment
     let mut route_game_nodes: Vec<Vec<RouteNodeInfo>> = Vec::new();
 
-    // Also map junction OSM nodes to (route_idx, node position in simplified route)
-    // so branches can find their parent
-    let mut junction_to_route: HashMap<u64, (usize, usize)> = HashMap::new(); // osm_nid → (route_idx, simplified_pos)
+    // Map junction OSM nodes → game node IDs (populated during node creation)
+    let mut junction_game_ids: HashMap<u64, i64> = HashMap::new();
 
     for (ri, simp) in simplified.iter().enumerate() {
         let mut chain: Vec<RouteNodeInfo> = Vec::new();
@@ -337,92 +306,71 @@ fn main() -> Result<()> {
                 attached_to_id: 0, attached_to_t: 0.0, attached_to_dir: 0,
                 attached_by: Vec::new(),
             });
-            // Set previous node's next
             if si > 0 {
                 let prev_idx = track_nodes.len() - 2;
                 track_nodes[prev_idx].next = gid;
             }
             chain.push(RouteNodeInfo { game_id: gid, orig_idx });
 
-            // (junction registration happens in a separate pass below)
+            // Record junction game IDs for owning route
+            let osm_nid = routes[ri][orig_idx];
+            if junction_nodes.contains(&osm_nid) && junction_owner.get(&osm_nid) == Some(&ri) {
+                junction_game_ids.insert(osm_nid, gid);
+            }
         }
         route_game_nodes.push(chain);
     }
 
-    // Register junction nodes — prefer routes where the junction is INTERIOR
-    // (not at an endpoint). This ensures branches can find a DIFFERENT parent route.
-    // First pass: register interior junctions
-    for (ri, route) in routes.iter().enumerate() {
-        for (i, &nid) in route.iter().enumerate() {
-            if i == 0 || i == route.len() - 1 { continue; } // skip endpoints
-            if junction_nodes.contains(&nid) {
-                junction_to_route.entry(nid).or_insert((ri, i));
-            }
-        }
-    }
-    // Second pass: register endpoint junctions (fallback if no interior route found)
-    for (ri, route) in routes.iter().enumerate() {
-        for &i in &[0, route.len() - 1] {
-            let nid = route[i];
-            if junction_nodes.contains(&nid) {
-                junction_to_route.entry(nid).or_insert((ri, i));
-            }
-        }
-    }
-
-    // Handle branches: for each route that starts or ends at a junction node
-    // owned by a DIFFERENT route, attach it mid-segment on the parent route.
-    // The branch root sits at the junction position (where tracks diverge).
-    // attached_to_id points to the parent node BEFORE the junction,
-    // attached_to_t is the fraction along that segment where the junction falls.
+    // Attach branches mid-segment on parent route (like depot blueprint).
+    // Find the parent segment closest to the junction point, compute linear t.
     for (ri, simp) in simplified.iter().enumerate() {
-        if simp.is_empty() { continue; }
+        if simp.len() < 2 { continue; }
 
         for &is_start in &[true, false] {
             let endpoint_orig_idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
             let endpoint_osm = routes[ri][endpoint_orig_idx];
             if !junction_nodes.contains(&endpoint_osm) { continue; }
 
-            let Some(&(parent_ri, junction_orig_idx)) = junction_to_route.get(&endpoint_osm) else { continue };
-            if parent_ri == ri || simp.len() < 2 { continue; }
+            let Some(&owner_ri) = junction_owner.get(&endpoint_osm) else { continue };
+            if owner_ri == ri { continue; }
 
-            // Find which simplified segment of the parent contains the junction point
-            let parent_chain = &route_game_nodes[parent_ri];
-            let parent_simp = &simplified[parent_ri];
-            let junction_pos = route_coords[parent_ri][junction_orig_idx];
+            let branch_gid = if is_start {
+                route_game_nodes[ri][0].game_id
+            } else {
+                route_game_nodes[ri].last().unwrap().game_id
+            };
 
-            // Compute parent's Hobby spline, then find nearest point on it
-            let parent_pts: Vec<(f64, f64)> = parent_simp.iter().map(|&(_, x, y)| (x, y)).collect();
-            let parent_segs = hobby::hobby_spline(&parent_pts, 0.0);
+            // Junction position in Mercator
+            let junction_orig = routes[ri][endpoint_orig_idx];
+            let junction_pos = osm_nodes.get(&junction_orig)
+                .map(|&(lat, lon)| latlon_to_mercator(lat, lon))
+                .unwrap_or((0.0, 0.0));
+
+            // Find nearest segment on parent route's simplified chain
+            let parent_chain = &route_game_nodes[owner_ri];
+            if parent_chain.len() < 2 { continue; }
 
             let mut best_seg = 0usize;
             let mut best_t = 0.5f64;
             let mut best_dist = f64::MAX;
-            for (si, seg) in parent_segs.iter().enumerate() {
-                // Sample 32 points along this Bézier segment
-                for s in 0..=32 {
-                    let t = s as f64 / 32.0;
-                    let pt = hobby::bezier_point(seg, t);
-                    let d = ((junction_pos.0 - pt.0).powi(2) + (junction_pos.1 - pt.1).powi(2)).sqrt();
-                    if d < best_dist {
-                        best_dist = d;
-                        best_seg = si;
-                        best_t = t;
-                    }
-                }
-                // Refine with Newton's method (3 iterations)
-                let mut t = best_t;
-                for _ in 0..3 {
-                    let p = hobby::bezier_point(seg, t);
-                    let dp = bezier_deriv(seg, t);
-                    let num = (p.0 - junction_pos.0) * dp.0 + (p.1 - junction_pos.1) * dp.1;
-                    let den = dp.0 * dp.0 + dp.1 * dp.1;
-                    if den.abs() > 1e-10 {
-                        t = (t - num / den).clamp(0.01, 0.99);
-                    }
-                }
-                let pt = hobby::bezier_point(seg, t);
-                let d = ((junction_pos.0 - pt.0).powi(2) + (junction_pos.1 - pt.1).powi(2)).sqrt();
+
+            for si in 0..parent_chain.len() - 1 {
+                let pi = track_nodes.iter().position(|n| n.id == parent_chain[si].game_id).unwrap();
+                let qi = track_nodes.iter().position(|n| n.id == parent_chain[si + 1].game_id).unwrap();
+                let (px, py) = (track_nodes[pi].x, track_nodes[pi].y);
+                let (qx, qy) = (track_nodes[qi].x, track_nodes[qi].y);
+                let sx = qx - px;
+                let sy = qy - py;
+                let seg_len_sq = sx * sx + sy * sy;
+                if seg_len_sq < 0.01 { continue; }
+
+                let bx = junction_pos.0 - px;
+                let by = junction_pos.1 - py;
+                let t = ((bx * sx + by * sy) / seg_len_sq).clamp(0.0, 1.0);
+                let proj_x = px + t * sx;
+                let proj_y = py + t * sy;
+                let d = ((junction_pos.0 - proj_x).powi(2) + (junction_pos.1 - proj_y).powi(2)).sqrt();
+
                 if d < best_dist {
                     best_dist = d;
                     best_seg = si;
@@ -430,27 +378,80 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Reject if junction is too far from the parent segment (wrong parent)
-            if best_dist > 5.0 { continue; }
+            // Debug: show junction attachment quality
+            if best_dist > 5.0 || best_t > 0.98 || best_t < 0.02 {
+                let pi = track_nodes.iter().position(|n| n.id == parent_chain[best_seg].game_id).unwrap();
+                let qi = track_nodes.iter().position(|n| n.id == parent_chain[best_seg + 1].game_id).unwrap();
+                eprintln!("  WARN branch={} parent={} seg={} t={:.3} dist={:.1}m junc=({:.1},{:.1}) p=({:.1},{:.1}) q=({:.1},{:.1})",
+                    branch_gid, parent_chain[best_seg].game_id, best_seg, best_t, best_dist,
+                    junction_pos.0, junction_pos.1,
+                    track_nodes[pi].x, track_nodes[pi].y,
+                    track_nodes[qi].x, track_nodes[qi].y);
+            }
 
-            let parent_node_id = parent_chain[best_seg].game_id;
-            let branch_node_id = if is_start {
-                route_game_nodes[ri][0].game_id
+            // Reject if too far from parent (wrong parent route)
+            if best_dist > 20.0 { continue; }
+
+            // Junction often coincides with a parent node (shared OSM node).
+            // In that case best_t≈0 or best_t≈1. Use the segment where the junction
+            // is truly mid-segment. Pick a t of ~0.5 to place branch mid-segment.
+            // The game's stored_t is a spline parameter (not linear), but 0.5 is a
+            // reasonable default that puts the branch tangent at the segment midpoint.
+            let parent_seg_idx;
+            let t;
+            if best_t > 0.95 && best_seg + 1 < parent_chain.len() - 1 {
+                // At segment end → use NEXT segment, t=0.5
+                parent_seg_idx = best_seg + 1;
+                t = 0.5;
+            } else if best_t < 0.05 && best_seg > 0 {
+                // At segment start → use PREV segment, t=0.5
+                parent_seg_idx = best_seg - 1;
+                t = 0.5;
             } else {
-                route_game_nodes[ri].last().unwrap().game_id
+                // Truly mid-segment
+                parent_seg_idx = best_seg;
+                t = best_t.clamp(0.05, 0.95);
+            }
+            let parent_node_id = parent_chain[parent_seg_idx].game_id;
+
+            // Determine direction: does branch go forward or backward along parent?
+            let br_idx = track_nodes.iter().position(|n| n.id == branch_gid).unwrap();
+            let pi = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
+            // Parent segment direction: from parent_seg_idx toward next node
+            let next_idx = if parent_seg_idx + 1 < parent_chain.len() { parent_seg_idx + 1 }
+                else if parent_seg_idx > 0 { parent_seg_idx - 1 }
+                else { continue; };
+            let qi = track_nodes.iter().position(|n| n.id == parent_chain[next_idx].game_id).unwrap();
+            let seg_dx = track_nodes[qi].x - track_nodes[pi].x;
+            let seg_dy = track_nodes[qi].y - track_nodes[pi].y;
+
+            // Branch's outgoing direction (from branch root toward its chain)
+            let neighbor_gid = if is_start {
+                if route_game_nodes[ri].len() > 1 { route_game_nodes[ri][1].game_id } else { continue; }
+            } else {
+                let len = route_game_nodes[ri].len();
+                if len > 1 { route_game_nodes[ri][len - 2].game_id } else { continue; }
             };
+            let ni = track_nodes.iter().position(|n| n.id == neighbor_gid).unwrap();
+            let br_dx = track_nodes[ni].x - track_nodes[br_idx].x;
+            let br_dy = track_nodes[ni].y - track_nodes[br_idx].y;
+            let dot = br_dx * seg_dx + br_dy * seg_dy;
+            let dir = if dot >= 0.0 { 1 } else { -1 };
 
-            // Branch root position = the junction point (where tracks diverge)
-            let br_idx = track_nodes.iter().position(|n| n.id == branch_node_id).unwrap();
-            track_nodes[br_idx].x = junction_pos.0;
-            track_nodes[br_idx].y = junction_pos.1;
+            // Nudge branch root slightly (5m) along its outgoing direction
+            // so it's not at the exact same position as the parent node
+            let br_len = (br_dx * br_dx + br_dy * br_dy).sqrt().max(1e-10);
+            track_nodes[br_idx].x += (br_dx / br_len) * 5.0;
+            track_nodes[br_idx].y += (br_dy / br_len) * 5.0;
+
+            // Set branch attachment
             track_nodes[br_idx].attached_to_id = parent_node_id;
-            track_nodes[br_idx].attached_to_t = best_t;
-            track_nodes[br_idx].attached_to_dir = 1; // game derives direction geometrically
-            track_nodes[br_idx].tangential = 0;
+            track_nodes[br_idx].attached_to_t = t as f64;
+            track_nodes[br_idx].attached_to_dir = dir;
 
+            // Register in parent's attached_by
             let par_idx = track_nodes.iter().position(|n| n.id == parent_node_id).unwrap();
-            track_nodes[par_idx].attached_by.push(branch_node_id);
+            track_nodes[par_idx].attached_by.push(branch_gid);
         }
     }
 
@@ -463,9 +464,9 @@ fn main() -> Result<()> {
             let idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
             let osm = routes[ri][idx];
             if !junction_nodes.contains(&osm) { dbg_no_junc += 1; continue; }
-            match junction_to_route.get(&osm) {
+            match junction_owner.get(&osm) {
                 None => { dbg_no_junc += 1; }
-                Some(&(pri, _)) if pri == ri => { dbg_same += 1; }
+                Some(&pri) if pri == ri => { dbg_same += 1; }
                 _ => { dbg_found += 1; }
             }
         }
@@ -533,47 +534,6 @@ struct RouteNodeInfo {
     orig_idx: usize,
 }
 
-/// Compute attached_to_t: where along the parent's segment does the branch connect?
-/// Returns (att_t, att_dir).
-fn compute_att_t(
-    tracks: &[TrackNode],
-    parent_chain: &[RouteNodeInfo],
-    parent_si: usize,
-    branch_pos: &(f64, f64),
-) -> (f64, i32) {
-    // Try forward segment (parent_si → parent_si+1)
-    if parent_si + 1 < parent_chain.len() {
-        let p = tracks.iter().find(|n| n.id == parent_chain[parent_si].game_id).unwrap();
-        let q = tracks.iter().find(|n| n.id == parent_chain[parent_si + 1].game_id).unwrap();
-        let sx = q.x - p.x;
-        let sy = q.y - p.y;
-        let seg_len_sq = sx * sx + sy * sy;
-        if seg_len_sq > 0.001 {
-            let bx = branch_pos.0 - p.x;
-            let by = branch_pos.1 - p.y;
-            let t = (bx * sx + by * sy) / seg_len_sq;
-            let t = t.clamp(0.01, 0.99);
-            return (t, 1);
-        }
-    }
-    // Try backward segment (parent_si → parent_si-1)
-    if parent_si > 0 {
-        let p = tracks.iter().find(|n| n.id == parent_chain[parent_si].game_id).unwrap();
-        let q = tracks.iter().find(|n| n.id == parent_chain[parent_si - 1].game_id).unwrap();
-        let sx = q.x - p.x;
-        let sy = q.y - p.y;
-        let seg_len_sq = sx * sx + sy * sy;
-        if seg_len_sq > 0.001 {
-            let bx = branch_pos.0 - p.x;
-            let by = branch_pos.1 - p.y;
-            let t = (bx * sx + by * sy) / seg_len_sq;
-            let t = t.clamp(0.01, 0.99);
-            return (t, -1);
-        }
-    }
-    (0.5, 1) // fallback
-}
-
 struct TrackNode {
     id: i64,
     x: f64,
@@ -628,18 +588,6 @@ fn douglas_peucker(coords: &[(f64, f64)], keep: &mut [bool], start: usize, end: 
         douglas_peucker(coords, keep, start, max_idx, tolerance);
         douglas_peucker(coords, keep, max_idx, end, tolerance);
     }
-}
-
-/// Cubic Bézier derivative at parameter t
-fn bezier_deriv(seg: &hobby::BezierSegment, t: f64) -> (f64, f64) {
-    let mt = 1.0 - t;
-    let dx = 3.0 * mt * mt * (seg.c0.0 - seg.p0.0)
-           + 6.0 * mt * t * (seg.c1.0 - seg.c0.0)
-           + 3.0 * t * t * (seg.p1.0 - seg.c1.0);
-    let dy = 3.0 * mt * mt * (seg.c0.1 - seg.p0.1)
-           + 6.0 * mt * t * (seg.c1.1 - seg.c0.1)
-           + 3.0 * t * t * (seg.p1.1 - seg.c1.1);
-    (dx, dy)
 }
 
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
@@ -699,7 +647,7 @@ fn build_payload(tracks: &[TrackNode], center_x: f64, center_y: f64) -> Result<V
         w.write_f32(0.0);
         w.write_f32(0.0);
         w.write_vec_set_i64(&[]);
-        w.write_f32(0.0);
+        w.write_f32(2.0);             // proximity_diamond
     }
 
     w.write_varint(0); // signals
