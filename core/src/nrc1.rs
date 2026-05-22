@@ -49,24 +49,36 @@ impl NrclipFile {
 
     /// Decode NRC1 container: validate header, decompress zstd.
     pub fn decode_container(data: &[u8]) -> Result<(u32, Vec<u8>)> {
+        use zstd_pure_rs::prelude::*;
+
         if data.len() < 32 || &data[0..4] != b"NRC1" {
             anyhow::bail!("not an NRC1 file (too short or bad magic)");
         }
         let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let payload = zstd::stream::decode_all(&data[32..])
-            .context("zstd decompress")?;
+        let uncompressed_size = u64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
+
+        let compressed = &data[32..];
+        let mut payload = vec![0u8; uncompressed_size];
+        let decoded_size = ZSTD_decompress(&mut payload, compressed);
+        if ERR_isError(decoded_size) {
+            anyhow::bail!("zstd decompress failed");
+        }
+        payload.truncate(decoded_size);
+
         Ok((version, payload))
     }
 
     /// Encode NRC1 container: zstd compress + header + checksum.
     pub fn encode_container(payload: &[u8], version: u32) -> Result<Vec<u8>> {
-        let compressed = {
-            let mut enc = zstd::stream::Encoder::new(Vec::new(), 3)?;
-            enc.include_contentsize(true)?;
-            enc.set_pledged_src_size(Some(payload.len() as u64))?;
-            std::io::copy(&mut &payload[..], &mut enc)?;
-            enc.finish()?
-        };
+        use zstd_pure_rs::prelude::*;
+
+        let mut compressed = vec![0u8; ZSTD_compressBound(payload.len())];
+        let c_size = ZSTD_compress(&mut compressed, payload, 3);
+        if ERR_isError(c_size) {
+            anyhow::bail!("zstd compress failed");
+        }
+        compressed.truncate(c_size);
+
         let checksum = crate::wyhash_nrc1::checksum(payload);
         let mut out = Vec::with_capacity(32 + compressed.len());
         out.extend_from_slice(b"NRC1");
