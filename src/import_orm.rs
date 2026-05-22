@@ -222,13 +222,19 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Force keep ALL junction nodes on this route (not just owned ones).
-            // Every route through a junction needs the node so the spline passes
-            // through it — both the owning route (for branch attachment) and other
-            // routes (so their spline geometry is correct at the junction).
+            // Force keep junction nodes and layer-change boundaries.
             for (i, &nid) in route.iter().enumerate() {
                 if junction_nodes.contains(&nid) {
                     keep[i] = true;
+                }
+                // Keep nodes at layer transitions (bridge/tunnel boundaries)
+                if i > 0 {
+                    let prev_layer = node_layer.get(&route[i - 1]).copied().unwrap_or(0);
+                    let cur_layer = node_layer.get(&nid).copied().unwrap_or(0);
+                    if prev_layer != cur_layer {
+                        keep[i - 1] = true; // last node of old layer
+                        keep[i] = true;     // first node of new layer
+                    }
                 }
             }
 
