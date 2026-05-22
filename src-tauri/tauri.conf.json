@@ -16,8 +16,6 @@
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
         "theme": "Dark"
       }
     ],

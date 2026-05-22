@@ -9,19 +9,21 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #1a1a2e;
-            color: #e0e0e0;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
         }
         header {
-            padding: 0.6rem 1rem;
-            padding-top: calc(0.6rem + env(titlebar-area-height, 0px));
-            background: #1a1a2e;
-            color: white;
-            -webkit-app-region: drag;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.5rem 1rem;
+            background: #181825;
+            border-bottom: 1px solid #313244;
         }
-        header h1 { font-size: 1.2rem; display: inline; }
-        header p { font-size: 0.8rem; opacity: 0.6; display: inline; margin-left: 1rem; }
+        header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
+        header p { font-size: 0.8rem; opacity: 0.5; }
+        #map-container { height: calc(100vh - 2.5rem); }
     </style>
     <link data-trunk rel="rust" data-wasm-opt="z" href="web/Cargo.toml" />
 </head>

@@ -46,6 +46,6 @@ pub fn Map() -> impl IntoView {
     });
 
     view! {
-        <div node_ref=map_ref style="width: 100%; height: 80vh;"></div>
+        <div node_ref=map_ref style="width: 100%; height: 100%;"></div>
     }
 }
