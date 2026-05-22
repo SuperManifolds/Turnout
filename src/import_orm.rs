@@ -185,10 +185,12 @@ fn main() -> Result<()> {
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Force keep junction nodes owned by this route so branches
-            // can attach to a segment that passes through the junction position.
+            // Force keep ALL junction nodes on this route (not just owned ones).
+            // Every route through a junction needs the node so the spline passes
+            // through it — both the owning route (for branch attachment) and other
+            // routes (so their spline geometry is correct at the junction).
             for (i, &nid) in route.iter().enumerate() {
-                if junction_nodes.contains(&nid) && junction_owner.get(&nid) == Some(&ri) {
+                if junction_nodes.contains(&nid) {
                     keep[i] = true;
                 }
             }
