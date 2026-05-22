@@ -31,9 +31,11 @@ fn main() -> Result<()> {
     let data: serde_json::Value = serde_json::from_str(&raw).context("parse JSON")?;
     let elements = data["elements"].as_array().context("no elements")?;
 
-    // Parse OSM nodes and ways
+    // Parse OSM nodes and ways, including layer tags for elevation
     let mut osm_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
     let mut ways: Vec<Vec<u64>> = Vec::new();
+    let mut way_layers: Vec<i32> = Vec::new(); // OSM layer tag per way
+    let mut node_layer: HashMap<u64, i32> = HashMap::new(); // node → layer
     for e in elements {
         match e["type"].as_str() {
             Some("node") => {
@@ -43,12 +45,30 @@ fn main() -> Result<()> {
             Some("way") => {
                 let nids: Vec<u64> = e["nodes"].as_array().unwrap()
                     .iter().map(|n| n.as_u64().unwrap()).collect();
-                if nids.len() >= 2 { ways.push(nids); }
+                let layer: i32 = e.get("tags")
+                    .and_then(|t| t.get("layer"))
+                    .and_then(|l| l.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if nids.len() >= 2 {
+                    // Assign layer to all nodes in this way
+                    for &nid in &nids {
+                        node_layer.entry(nid)
+                            .and_modify(|existing| {
+                                // Keep the layer with highest absolute value
+                                if layer.abs() > existing.abs() { *existing = layer; }
+                            })
+                            .or_insert(layer);
+                    }
+                    way_layers.push(layer);
+                    ways.push(nids);
+                }
             }
             _ => {}
         }
     }
-    println!("Loaded {} OSM nodes, {} ways", osm_nodes.len(), ways.len());
+    let n_elevated: usize = node_layer.values().filter(|&&l| l != 0).count();
+    println!("Loaded {} OSM nodes, {} ways ({} nodes with layer!=0)", osm_nodes.len(), ways.len(), n_elevated);
 
     // Build node→way index
     let mut node_ways: HashMap<u64, Vec<(usize, usize)>> = HashMap::new(); // nid → [(way_idx, pos)]
@@ -376,13 +396,25 @@ fn main() -> Result<()> {
 
     for (ri, simp) in simplified.iter().enumerate() {
         let mut chain: Vec<RouteNodeInfo> = Vec::new();
+        let mut last_layer: i32 = 0; // for interpolated nodes
 
         for (si, &(orig_idx, x, y)) in simp.iter().enumerate() {
             let gid = node_id_counter;
             node_id_counter += 100;
             let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
+
+            // Look up elevation layer from OSM data
+            let layer = if orig_idx != usize::MAX {
+                let osm_nid = routes[ri][orig_idx];
+                let l = node_layer.get(&osm_nid).copied().unwrap_or(0);
+                last_layer = l;
+                l
+            } else {
+                last_layer // interpolated node inherits from previous
+            };
+
             track_nodes.push(Track {
-                node_id: gid, x, y,
+                node_id: gid, x, y, layer,
                 prev_node: prev,
                 ..Track::default()
             });
