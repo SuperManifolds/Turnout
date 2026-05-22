@@ -178,24 +178,15 @@ fn main() -> Result<()> {
             }
         }
     }
-    // Simplify routes with junction-aware verification.
-    // Algorithm: simplify normally (no force-kept junction nodes), then verify
-    // that the resulting Hobby spline passes within JUNCTION_TOLERANCE of every
-    // junction the route owns. If not, add the best nearby original node and
-    // re-simplify. One well-placed node can bring multiple nearby junctions
-    // within tolerance simultaneously.
-    const SPLINE_TOLERANCE: f64 = 5.0;
-
+    // Simplify routes
     let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
         .map(|(ri, (route, coords))| {
             let mut keep = vec![false; coords.len()];
             keep[0] = true;
             *keep.last_mut().unwrap() = true;
 
-            // Force keep junction nodes owned by this route. The spline must
-            // pass through these positions for branches to attach correctly.
-            // Combined with spline-based t projection, this produces correct
-            // tangent inheritance without the S-curves that constant t=0.5 caused.
+            // Force keep junction nodes owned by this route so branches
+            // can attach to a segment that passes through the junction position.
             for (i, &nid) in route.iter().enumerate() {
                 if junction_nodes.contains(&nid) && junction_owner.get(&nid) == Some(&ri) {
                     keep[i] = true;
@@ -206,10 +197,14 @@ fn main() -> Result<()> {
             let start_is_junction = junction_nodes.contains(&route[0]);
             let end_is_junction = junction_nodes.contains(route.last().unwrap());
             if start_is_junction && coords.len() > 2 {
+                // Find the first node that's ~30m from the start
                 for i in 1..coords.len() - 1 {
                     let dx = coords[i].0 - coords[0].0;
                     let dy = coords[i].1 - coords[0].1;
-                    if dx * dx + dy * dy >= 30.0 * 30.0 { keep[i] = true; break; }
+                    if dx * dx + dy * dy >= 30.0 * 30.0 {
+                        keep[i] = true;
+                        break;
+                    }
                 }
             }
             if end_is_junction && coords.len() > 2 {
@@ -217,11 +212,14 @@ fn main() -> Result<()> {
                 for i in (1..last).rev() {
                     let dx = coords[i].0 - coords[last].0;
                     let dy = coords[i].1 - coords[last].1;
-                    if dx * dx + dy * dy >= 30.0 * 30.0 { keep[i] = true; break; }
+                    if dx * dx + dy * dy >= 30.0 * 30.0 {
+                        keep[i] = true;
+                        break;
+                    }
                 }
             }
 
-            // Enforce max spacing
+            // Enforce max spacing (but not near foreign junctions)
             let mut last_kept = 0;
             for i in 1..coords.len() {
                 if keep[i] { last_kept = i; continue; }
@@ -233,12 +231,17 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Iterative spline-first simplification
+            // Spline-first simplification: start with just endpoints/junctions/spacing,
+            // then iteratively add nodes only where the SPLINE deviates from the
+            // original OSM polyline. Straight sections need 0 extra nodes (spline
+            // through 2 aligned points = straight). Curves get the minimum nodes
+            // needed for the spline to track within tolerance.
             for _ in 0..20 {
                 let kept_pts: Vec<(f64, f64)> = (0..coords.len())
                     .filter(|&i| keep[i]).map(|i| coords[i]).collect();
                 let kept_idx: Vec<usize> = (0..coords.len())
                     .filter(|&i| keep[i]).collect();
+
                 if kept_pts.len() < 2 { break; }
                 let segs = hobby::hobby_spline(&kept_pts, 0.0);
                 let mut added = false;
@@ -247,6 +250,8 @@ fn main() -> Result<()> {
                     let orig_start = kept_idx[si];
                     let orig_end = kept_idx[si + 1];
                     if orig_end - orig_start <= 1 { continue; }
+
+                    // Find the original node that deviates most from this spline segment
                     let mut worst_dev = 0.0f64;
                     let mut worst_orig = orig_start;
                     for oi in (orig_start + 1)..orig_end {
@@ -257,9 +262,13 @@ fn main() -> Result<()> {
                             let d = ((ox - pt.0).powi(2) + (oy - pt.1).powi(2)).sqrt();
                             if d < best_d { best_d = d; }
                         }
-                        if best_d > worst_dev { worst_dev = best_d; worst_orig = oi; }
+                        if best_d > worst_dev {
+                            worst_dev = best_d;
+                            worst_orig = oi;
+                        }
                     }
-                    if worst_dev > SPLINE_TOLERANCE {
+
+                    if worst_dev > 5.0 {
                         keep[worst_orig] = true;
                         added = true;
                     }
@@ -343,11 +352,13 @@ fn main() -> Result<()> {
     // Track which game node corresponds to each (route_idx, original_osm_idx) for branch attachment
     let mut route_game_nodes: Vec<Vec<RouteNodeInfo>> = Vec::new();
 
+    // Map junction OSM nodes → game node IDs (populated during node creation)
+    let mut junction_game_ids: HashMap<u64, i64> = HashMap::new();
 
-    for (_ri, simp) in simplified.iter().enumerate() {
+    for (ri, simp) in simplified.iter().enumerate() {
         let mut chain: Vec<RouteNodeInfo> = Vec::new();
 
-        for (si, &(_orig_idx, x, y)) in simp.iter().enumerate() {
+        for (si, &(orig_idx, x, y)) in simp.iter().enumerate() {
             let gid = node_id_counter;
             node_id_counter += 100;
             let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
@@ -362,18 +373,24 @@ fn main() -> Result<()> {
             }
             chain.push(RouteNodeInfo { game_id: gid });
 
+            // Record junction game IDs for owning route (skip interpolated nodes)
+            if orig_idx != usize::MAX {
+                let osm_nid = routes[ri][orig_idx];
+                if junction_nodes.contains(&osm_nid) && junction_owner.get(&osm_nid) == Some(&ri) {
+                    junction_game_ids.insert(osm_nid, gid);
+                }
+            }
         }
         route_game_nodes.push(chain);
     }
 
-    // Attach branches via spline projection onto parent's Hobby curve.
-    // Computes chord-length parameterized stored_t matching the game's knot vector.
+    // Attach branches mid-segment on parent route (like depot blueprint).
+    // Find the parent segment closest to the junction point, compute linear t.
     for (ri, simp) in simplified.iter().enumerate() {
         if simp.len() < 2 { continue; }
 
         for &is_start in &[true, false] {
             let endpoint_orig_idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
-            if endpoint_orig_idx == usize::MAX { continue; } // interpolated node
             let endpoint_osm = routes[ri][endpoint_orig_idx];
             if !junction_nodes.contains(&endpoint_osm) { continue; }
 
@@ -386,111 +403,97 @@ fn main() -> Result<()> {
                 route_game_nodes[ri].last().unwrap().game_id
             };
 
+            // Junction position in Mercator
             let junction_orig = routes[ri][endpoint_orig_idx];
             let junction_pos = osm_nodes.get(&junction_orig)
                 .map(|&(lat, lon)| latlon_to_mercator(lat, lon))
                 .unwrap_or((0.0, 0.0));
 
+            // Find nearest segment on parent route's simplified chain
             let parent_chain = &route_game_nodes[owner_ri];
             if parent_chain.len() < 2 { continue; }
 
-            // Build parent's Hobby spline
-            let parent_pts: Vec<(f64, f64)> = parent_chain.iter()
-                .map(|info| {
-                    let idx = track_nodes.iter().position(|n| n.node_id == info.game_id).unwrap();
-                    (track_nodes[idx].x, track_nodes[idx].y)
-                }).collect();
-            let parent_spline = hobby::hobby_spline(&parent_pts, 0.0);
-            if parent_spline.is_empty() { continue; }
-
-            // Step 1: Find nearest chord segment for locality
-            let mut chord_seg = 0usize;
-            let mut chord_dist = f64::MAX;
-            for si in 0..parent_pts.len() - 1 {
-                let (px, py) = parent_pts[si];
-                let (qx, qy) = parent_pts[si + 1];
-                let sx = qx - px; let sy = qy - py;
-                let len_sq = sx * sx + sy * sy;
-                if len_sq < 0.01 { continue; }
-                let t = ((junction_pos.0 - px) * sx + (junction_pos.1 - py) * sy) / len_sq;
-                let tc = t.clamp(0.0, 1.0);
-                let dx = junction_pos.0 - (px + tc * sx);
-                let dy = junction_pos.1 - (py + tc * sy);
-                let d = (dx * dx + dy * dy).sqrt() + (t - tc).abs() * len_sq.sqrt();
-                if d < chord_dist { chord_dist = d; chord_seg = si; }
-            }
-
-            // Step 2: Search spline in wide window around chord match
-            let window = 5.min(parent_spline.len());
-            let lo = chord_seg.saturating_sub(window);
-            let hi = (chord_seg + window + 1).min(parent_spline.len());
-            let mut best_seg = chord_seg.min(parent_spline.len() - 1);
-            let mut best_local_t = 0.5f64;
+            let mut best_seg = 0usize;
+            let mut best_t = 0.5f64;
             let mut best_dist = f64::MAX;
-            for si in lo..hi {
-                let seg = &parent_spline[si];
-                for s in 0..=32 {
-                    let t = s as f64 / 32.0;
-                    let pt = hobby::bezier_point(seg, t);
-                    let d = ((junction_pos.0 - pt.0).powi(2) + (junction_pos.1 - pt.1).powi(2)).sqrt();
-                    if d < best_dist { best_dist = d; best_seg = si; best_local_t = t; }
+
+            for si in 0..parent_chain.len() - 1 {
+                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[si].game_id).unwrap();
+                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[si + 1].game_id).unwrap();
+                let (px, py) = (track_nodes[pi].x, track_nodes[pi].y);
+                let (qx, qy) = (track_nodes[qi].x, track_nodes[qi].y);
+                let sx = qx - px;
+                let sy = qy - py;
+                let seg_len_sq = sx * sx + sy * sy;
+                if seg_len_sq < 0.01 { continue; }
+
+                let bx = junction_pos.0 - px;
+                let by = junction_pos.1 - py;
+                let t_raw = (bx * sx + by * sy) / seg_len_sq;
+                let t = t_raw.clamp(0.0, 1.0);
+                let proj_x = px + t * sx;
+                let proj_y = py + t * sy;
+                let perp = ((junction_pos.0 - proj_x).powi(2) + (junction_pos.1 - proj_y).powi(2)).sqrt();
+                // Penalize segments where the projection falls outside [0,1]
+                // (junction is past the segment end — likely wrong segment)
+                let overshoot = (t_raw - t_raw.clamp(0.0, 1.0)).abs() * seg_len_sq.sqrt();
+                let d = perp + overshoot;
+
+                if d < best_dist {
+                    best_dist = d;
+                    best_seg = si;
+                    best_t = t;
                 }
             }
 
-            // Step 3: Newton-Raphson refinement on the best segment
-            {
-                let seg = &parent_spline[best_seg];
-                let mut t = best_local_t;
-                for _ in 0..5 {
-                    let p = hobby::bezier_point(seg, t);
-                    let mt = 1.0 - t;
-                    let dx = 3.0*mt*mt*(seg.c0.0-seg.p0.0) + 6.0*mt*t*(seg.c1.0-seg.c0.0) + 3.0*t*t*(seg.p1.0-seg.c1.0);
-                    let dy = 3.0*mt*mt*(seg.c0.1-seg.p0.1) + 6.0*mt*t*(seg.c1.1-seg.c0.1) + 3.0*t*t*(seg.p1.1-seg.c1.1);
-                    let num = (p.0 - junction_pos.0) * dx + (p.1 - junction_pos.1) * dy;
-                    let den = dx * dx + dy * dy;
-                    if den.abs() > 1e-10 { t = (t - num / den).clamp(0.0, 1.0); }
-                }
-                best_local_t = t;
+            // Debug: show junction attachment quality
+            if best_dist > 5.0 || best_t > 0.98 || best_t < 0.02 {
+                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg].game_id).unwrap();
+                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg + 1].game_id).unwrap();
+                eprintln!("  WARN branch={} parent={} seg={} t={:.3} dist={:.1}m junc=({:.1},{:.1}) p=({:.1},{:.1}) q=({:.1},{:.1})",
+                    branch_gid, parent_chain[best_seg].game_id, best_seg, best_t, best_dist,
+                    junction_pos.0, junction_pos.1,
+                    track_nodes[pi].x, track_nodes[pi].y,
+                    track_nodes[qi].x, track_nodes[qi].y);
             }
 
-            // Step 4: Chord-length parameterized stored_t
-            // Build cumulative chord-length table (22 samples/segment, matching game)
-            let sps = 22usize; // samples per segment
-            let mut cum_len = vec![0.0f64];
-            for seg in &parent_spline {
-                for s in 1..=sps {
-                    let p0 = hobby::bezier_point(seg, (s - 1) as f64 / sps as f64);
-                    let p1 = hobby::bezier_point(seg, s as f64 / sps as f64);
-                    cum_len.push(cum_len.last().unwrap() + ((p1.0-p0.0).powi(2) + (p1.1-p0.1).powi(2)).sqrt());
-                }
+            // No reject — always create junction, even if geometry is imperfect.
+            // The game recomputes spline parameters on load.
+
+            // Junction often coincides with a parent node (shared OSM node).
+            // In that case best_t≈0 or best_t≈1. Use the segment where the junction
+            // is truly mid-segment. Pick a t of ~0.5 to place branch mid-segment.
+            // The game's stored_t is a spline parameter (not linear), but 0.5 is a
+            // reasonable default that puts the branch tangent at the segment midpoint.
+            let parent_seg_idx;
+            let t;
+            if best_t > 0.95 && best_seg + 1 < parent_chain.len() - 1 {
+                // At segment end → use NEXT segment, t=0.5
+                parent_seg_idx = best_seg + 1;
+                t = 0.5;
+            } else if best_t < 0.05 && best_seg > 0 {
+                // At segment start → use PREV segment, t=0.5
+                parent_seg_idx = best_seg - 1;
+                t = 0.5;
+            } else {
+                // Truly mid-segment
+                parent_seg_idx = best_seg;
+                t = best_t.clamp(0.05, 0.95);
             }
-            let total_len = *cum_len.last().unwrap();
+            let parent_node_id = parent_chain[parent_seg_idx].game_id;
 
-            // Arc-length at projected point
-            let sample_idx = best_seg * sps + (best_local_t * sps as f64).round() as usize;
-            let sample_idx = sample_idx.min(cum_len.len() - 1);
-            let arc_at_proj = cum_len[sample_idx];
-
-            // Map to the parent node's local range (prev-midpoint to next-midpoint).
-            // t≈0.5 = at the node itself.
-            let node_start = if best_seg > 0 { cum_len[best_seg * sps - sps / 2] } else { 0.0 };
-            let node_end = if best_seg + 1 < parent_spline.len() {
-                cum_len[best_seg * sps + sps + sps / 2]
-            } else { total_len };
-            let range = node_end - node_start;
-            let stored_t = if range > 0.01 {
-                ((arc_at_proj - node_start) / range).clamp(0.01, 0.99)
-            } else { 0.5 };
-
-            let parent_node_id = parent_chain[best_seg].game_id;
-
-            // Direction from spline tangent
+            // Determine direction: does branch go forward or backward along parent?
             let br_idx = track_nodes.iter().position(|n| n.node_id == branch_gid).unwrap();
-            let seg = &parent_spline[best_seg];
-            let mt = 1.0 - best_local_t;
-            let seg_dx = 3.0*mt*mt*(seg.c0.0-seg.p0.0) + 6.0*mt*best_local_t*(seg.c1.0-seg.c0.0) + 3.0*best_local_t*best_local_t*(seg.p1.0-seg.c1.0);
-            let seg_dy = 3.0*mt*mt*(seg.c0.1-seg.p0.1) + 6.0*mt*best_local_t*(seg.c1.1-seg.c0.1) + 3.0*best_local_t*best_local_t*(seg.p1.1-seg.c1.1);
+            let pi = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
+            // Parent segment direction: from parent_seg_idx toward next node
+            let next_idx = if parent_seg_idx + 1 < parent_chain.len() { parent_seg_idx + 1 }
+                else if parent_seg_idx > 0 { parent_seg_idx - 1 }
+                else { continue; };
+            let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[next_idx].game_id).unwrap();
+            let seg_dx = track_nodes[qi].x - track_nodes[pi].x;
+            let seg_dy = track_nodes[qi].y - track_nodes[pi].y;
 
+            // Branch's outgoing direction (from branch root toward its chain)
             let neighbor_gid = if is_start {
                 if route_game_nodes[ri].len() > 1 { route_game_nodes[ri][1].game_id } else { continue; }
             } else {
@@ -503,16 +506,18 @@ fn main() -> Result<()> {
             let dot = br_dx * seg_dx + br_dy * seg_dy;
             let dir = if dot >= 0.0 { 1 } else { -1 };
 
-            // Place branch root at the spline projection point + 5m nudge
-            let proj_pt = hobby::bezier_point(seg, best_local_t);
+            // Nudge branch root slightly (5m) along its outgoing direction
+            // so it's not at the exact same position as the parent node
             let br_len = (br_dx * br_dx + br_dy * br_dy).sqrt().max(1e-10);
-            track_nodes[br_idx].x = proj_pt.0 + (br_dx / br_len) * 5.0;
-            track_nodes[br_idx].y = proj_pt.1 + (br_dy / br_len) * 5.0;
+            track_nodes[br_idx].x += (br_dx / br_len) * 5.0;
+            track_nodes[br_idx].y += (br_dy / br_len) * 5.0;
 
+            // Set branch attachment
             track_nodes[br_idx].attached_to_id = parent_node_id;
-            track_nodes[br_idx].attached_to_t = stored_t;
+            track_nodes[br_idx].attached_to_t = t as f64;
             track_nodes[br_idx].attached_to_direction = Some(dir);
 
+            // Register in parent's attached_by
             let par_idx = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
             track_nodes[par_idx].attached_by.push(branch_gid);
         }
