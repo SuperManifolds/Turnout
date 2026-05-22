@@ -4,10 +4,8 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-mod encode;
-mod hobby;
-mod nrclip;
-mod wyhash_nrc1;
+use nimby_gen::hobby;
+use nimby_gen::nrc1::NrclipFile;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -39,11 +37,9 @@ fn main() -> Result<()> {
 
     // Load blueprint
     let raw = std::fs::read(nrclip_path)?;
-    let ver = u32::from_le_bytes(raw[4..8].try_into().unwrap());
-    let payload = zstd::stream::decode_all(&raw[32..])?;
-    let colls = nrclip::parse_payload(&payload, ver)?;
+    let file = NrclipFile::from_bytes(&raw)?;
 
-    let clip = &colls[0].clips[0];
+    let clip = &file.collections[0].clips[0];
     let cx = clip.center_x;
     let cy = clip.center_y;
 
@@ -69,11 +65,11 @@ fn main() -> Result<()> {
     }
 
     // Walk chains from blueprint
-    let track_map: HashMap<i64, &nrclip::Track> = clip.tracks.iter()
+    let track_map: HashMap<i64, &nimby_gen::types::Track> = clip.tracks.iter()
         .map(|t| (t.node_id, t)).collect();
 
     let mut visited = std::collections::HashSet::new();
-    let mut chains: Vec<Vec<&nrclip::Track>> = Vec::new();
+    let mut chains: Vec<Vec<&nimby_gen::types::Track>> = Vec::new();
     for t in &clip.tracks {
         if visited.contains(&t.node_id) { continue; }
         let mut cur = t.node_id;
@@ -159,8 +155,8 @@ fn main() -> Result<()> {
 }
 
 fn render_overlay(
-    tracks: &[nrclip::Track],
-    chains: &[Vec<&nrclip::Track>],
+    tracks: &[nimby_gen::types::Track],
+    chains: &[Vec<&nimby_gen::types::Track>],
     osm_ways: &[Vec<u64>],
     osm_rel: &HashMap<u64, (f64, f64)>,
     path: &str,

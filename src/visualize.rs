@@ -1,24 +1,13 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
-use binrw::BinRead;
 use image::{Rgb, RgbImage};
 use std::collections::HashMap;
-use std::io::{Seek, SeekFrom};
-use std::{env, fs::File, io::BufReader};
+use std::env;
 
-mod nrclip;
-mod hobby;
-use nrclip::{parse_payload, Track};
-
-#[derive(BinRead)]
-#[br(little, magic = b"NRC1")]
-struct NrcHeader {
-    version: u32,
-    uncompressed_size: u64,
-    compressed_size: u64,
-    checksum: u64,
-}
+use nimby_gen::hobby;
+use nimby_gen::nrc1::NrclipFile;
+use nimby_gen::types::Track;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -28,18 +17,10 @@ fn main() -> Result<()> {
         .unwrap_or("tracks.png");
     let img_size: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2048);
 
-    // Decode
-    let f = File::open(path).with_context(|| format!("open {}", path))?;
-    let mut r = BufReader::new(f);
-    let header: NrcHeader = BinRead::read(&mut r).context("NRC1 header")?;
-    let zstd_offset = r.stream_position()?;
-    r.seek(SeekFrom::Start(zstd_offset))?;
-    let buf = zstd::stream::decode_all(&mut r).context("zstd")?;
-    let collections = parse_payload(&buf, header.version).context("payload")?;
+    let file = NrclipFile::from_bytes(&std::fs::read(path)?)?;
 
-    // Collect all tracks across all clips
     let mut all_tracks: Vec<&Track> = Vec::new();
-    for coll in &collections {
+    for coll in &file.collections {
         for clip in &coll.clips {
             all_tracks.extend(clip.tracks.iter());
         }
@@ -49,7 +30,7 @@ fn main() -> Result<()> {
         anyhow::bail!("no tracks found");
     }
 
-    println!("Rendering {} tracks from v{} file...", all_tracks.len(), header.version);
+    println!("Rendering {} tracks from v{} file...", all_tracks.len(), file.version);
 
     // Build node ID → track lookup
     let node_map: HashMap<i64, &Track> = all_tracks.iter()

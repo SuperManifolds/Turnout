@@ -1,59 +1,32 @@
 use anyhow::{Context, Result};
-use binrw::BinRead;
-use std::io::{Read, Seek, SeekFrom};
-use std::{env, fs::File, io::BufReader};
+use std::env;
 
-mod nrclip;
-use nrclip::parse_payload;
-
-#[derive(BinRead, Debug)]
-#[br(little, magic = b"NRC1")]
-struct NrcHeader {
-    version: u32,
-    uncompressed_size: u64,
-    compressed_size: u64,
-    checksum: u64,
-}
-
-const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
-
-fn decompress_zstd<R: Read + Seek>(mut r: R, header: &NrcHeader) -> Result<Vec<u8>> {
-    let zstd_offset = r.stream_position()?;
-    let mut magic = [0u8; 4];
-    r.read_exact(&mut magic).context("reading zstd magic")?;
-    if magic != ZSTD_MAGIC {
-        anyhow::bail!("zstd magic not found at 0x{:X} (got {:02X?})", zstd_offset, magic);
-    }
-    r.seek(SeekFrom::Start(zstd_offset))?;
-    let data = zstd::stream::decode_all(&mut r).context("zstd decode_all")?;
-    if data.len() != header.uncompressed_size as usize {
-        eprintln!("warning: decompressed {} bytes, header says {}", data.len(), header.uncompressed_size);
-    }
-    Ok(data)
-}
+use nimby_gen::nrc1::NrclipFile;
 
 fn main() -> Result<()> {
     let path = env::args()
         .nth(1)
         .unwrap_or_else(|| "2949234540/blueprints.nrclip".to_string());
 
-    let f = File::open(&path).with_context(|| format!("open {}", path))?;
-    let mut r = BufReader::new(f);
-    let header: NrcHeader = BinRead::read(&mut r).context("parse NRC1 header")?;
+    let data = std::fs::read(&path).with_context(|| format!("open {}", path))?;
 
-    println!("=== NRC1 Container ===");
-    println!("  Model version:     {}", header.version);
-    println!("  Uncompressed size: {} bytes", header.uncompressed_size);
-    println!("  Compressed size:   {} bytes", header.compressed_size);
-    println!("  Checksum:          {:#018X}\n", header.checksum);
+    // Show NRC1 header info
+    if data.len() >= 32 && &data[0..4] == b"NRC1" {
+        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let uncompressed = u64::from_le_bytes(data[8..16].try_into().unwrap());
+        let compressed = u64::from_le_bytes(data[16..24].try_into().unwrap());
+        let checksum = u64::from_le_bytes(data[24..32].try_into().unwrap());
+        println!("=== NRC1 Container ===");
+        println!("  Model version:     {}", version);
+        println!("  Uncompressed size: {} bytes", uncompressed);
+        println!("  Compressed size:   {} bytes", compressed);
+        println!("  Checksum:          {:#018X}\n", checksum);
+    }
 
-    let buf = decompress_zstd(&mut r, &header)?;
-    println!("Decompressed {} bytes\n", buf.len());
+    let file = NrclipFile::from_bytes(&data).context("parsing nrclip")?;
+    println!("Decompressed {} collections\n", file.collections.len());
 
-    let collections = parse_payload(&buf, header.version)
-        .context("parsing payload")?;
-
-    for (ci, coll) in collections.iter().enumerate() {
+    for (ci, coll) in file.collections.iter().enumerate() {
         println!("=== Collection {} ===", ci);
         println!("  ID: ({}, {})", coll.id_a, coll.id_b);
         println!("  Name: \"{}\"", coll.name);
@@ -67,7 +40,6 @@ fn main() -> Result<()> {
             println!("    ID: {}", clip.clip_id);
             println!("    Center: ({:.4}, {:.4})", clip.center_x, clip.center_y);
 
-            // Tracks
             println!("    Tracks: {}", clip.tracks.len());
             for t in clip.tracks.iter().take(3) {
                 println!("      {}", t);
@@ -79,7 +51,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Signals
             if !clip.signals.is_empty() {
                 println!("    Signals: {}", clip.signals.len());
                 for s in clip.signals.iter().take(3) {
@@ -90,7 +61,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Stations
             if !clip.station_groups.is_empty() {
                 println!("    Stations: {}", clip.station_groups.len());
                 for s in &clip.station_groups {
@@ -98,7 +68,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Buildings
             if !clip.buildings.is_empty() {
                 println!("    Buildings: {}", clip.buildings.len());
                 for b in clip.buildings.iter().take(3) {
@@ -109,7 +78,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Track kinds
             if !clip.track_kinds.is_empty() {
                 println!("    Track kinds: {}", clip.track_kinds.len());
                 for (k, v) in &clip.track_kinds {
@@ -118,7 +86,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Building kinds
             if !clip.building_kinds.is_empty() {
                 println!("    Building kinds: {}", clip.building_kinds.len());
                 for (k, v) in &clip.building_kinds {
@@ -126,12 +93,10 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Demands
             if !clip.demands.is_empty() {
                 println!("    Demands: {}", clip.demands.len());
             }
 
-            // Mods
             if !clip.mod_metas.is_empty() {
                 println!("    Mods: {}", clip.mod_metas.len());
                 for m in &clip.mod_metas {
