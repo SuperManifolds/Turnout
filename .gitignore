@@ -3,6 +3,8 @@ target/
 *.i64
 *.nrclip
 *.png
+!turnout.png
+!src-tauri/icons/*.png
 --empty
 dist/
 scratch/
