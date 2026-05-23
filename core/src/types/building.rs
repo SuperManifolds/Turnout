@@ -121,8 +121,8 @@ impl NrclipWrite for Building {
         w.write_f32(self.rotation_cos);
         w.write_f32(self.size_x);
         w.write_f32(self.size_y);
-        w.write_varint(self.color as u64);
-        if ver >= 69 { w.write_varint(self.decal_color.unwrap_or(0) as u64); }
+        w.write_varint(u64::from(self.color));
+        if ver >= 69 { w.write_varint(u64::from(self.decal_color.unwrap_or(0))); }
 
         if ver >= 67 {
             match &self.poi {
@@ -137,7 +137,7 @@ impl NrclipWrite for Building {
                             Some(v) => { w.write_raw_u8(1); w.write_varint(v); }
                             None => w.write_raw_u8(0),
                         }
-                        w.write_varint(poi.population.unwrap_or(0) as u64);
+                        w.write_varint(u64::from(poi.population.unwrap_or(0)));
                     }
                 }
                 None => w.write_raw_u8(0),

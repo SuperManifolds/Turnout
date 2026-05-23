@@ -1,25 +1,26 @@
-/// NRC1 checksum: custom wyhash variant from NIMBYRails.exe RVA 0x1FEB0.
-/// NOT standard wyhash — no initial seed mixing, different final mix.
+//! NRC1 checksum: custom wyhash variant from NIMBYRails.exe RVA 0x1FEB0.
+//! NOT standard wyhash — no initial seed mixing, different final mix.
 
-const SEED: u64 = 0x9c3805fc2c85cacc;
-const WYP1: u64 = 0xe7037ed1a0b428db;
-const WYP2: u64 = 0x8ebc6af09c88c6e3;
-const WYP3: u64 = 0x589965cc75374cc3;
-const WYP4: u64 = 0x1d8e4e27c47d124f;
+const SEED: u64 = 0x9c38_05fc_2c85_cacc;
+const WYP1: u64 = 0xe703_7ed1_a0b4_28db;
+const WYP2: u64 = 0x8ebc_6af0_9c88_c6e3;
+const WYP3: u64 = 0x5899_65cc_7537_4cc3;
+const WYP4: u64 = 0x1d8e_4e27_c47d_124f;
 
 fn wymum(a: u64, b: u64) -> (u64, u64) {
-    let r = (a as u128) * (b as u128);
+    let r = u128::from(a) * u128::from(b);
     (r as u64, (r >> 64) as u64)
 }
 
 fn read64(data: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes(data[off..off + 8].try_into().unwrap())
+    u64::from_le_bytes(data[off..off + 8].try_into().expect("8-byte slice"))
 }
 
 fn read32(data: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(data[off..off + 4].try_into().unwrap())
+    u32::from_le_bytes(data[off..off + 4].try_into().expect("4-byte slice"))
 }
 
+#[must_use] 
 pub fn checksum(data: &[u8]) -> u64 {
     let length = data.len();
     let mut r8 = SEED;
@@ -73,11 +74,11 @@ pub fn checksum(data: &[u8]) -> u64 {
     let (rdx_val, rax_val) = if remaining > 8 {
         (read64(data, pos), read64(data, pos + remaining - 8))
     } else if remaining >= 4 {
-        (read32(data, pos) as u64, read32(data, pos + remaining - 4) as u64)
+        (u64::from(read32(data, pos)), u64::from(read32(data, pos + remaining - 4)))
     } else if remaining > 0 {
-        let b0 = data[pos] as u64;
-        let b_mid = data[pos + (remaining >> 1)] as u64;
-        let b_last = data[pos + remaining - 1] as u64;
+        let b0 = u64::from(data[pos]);
+        let b_mid = u64::from(data[pos + (remaining >> 1)]);
+        let b_last = u64::from(data[pos + remaining - 1]);
         (((b0 << 8) | b_mid) << 8 | b_last, 0)
     } else {
         (0, 0)

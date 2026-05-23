@@ -1,10 +1,10 @@
-/// Track curve computation matching Nimby Rails' actual algorithm.
-/// NOT standard Hobby splines — uses local tangent computation
-/// (weighted bisector) instead of global tridiagonal solver.
-///
-/// Reverse engineered from NIMBYRails.exe:
-///   Tangent: RVA 0xBA490/0xBA5C0 (local bisector)
-///   Rho:     RVA 0xBD8E0 (golden-ratio based velocity function)
+//! Track curve computation matching Nimby Rails' actual algorithm.
+//! NOT standard Hobby splines — uses local tangent computation
+//! (weighted bisector) instead of global tridiagonal solver.
+//!
+//! Reverse engineered from NIMBYRails.exe:
+//!   Tangent: RVA 0xBA490/0xBA5C0 (local bisector)
+//!   Rho:     RVA 0xBD8E0 (golden-ratio based velocity function)
 
 /// A cubic Bézier segment: start, control1, control2, end
 pub struct BezierSegment {
@@ -16,6 +16,7 @@ pub struct BezierSegment {
 
 /// Compute track curves through a sequence of points using the game's
 /// actual algorithm: local bisector tangents + Hobby rho velocity function.
+#[must_use] 
 pub fn hobby_spline(points: &[(f64, f64)], _omega: f64) -> Vec<BezierSegment> {
     if points.len() < 2 {
         return Vec::new();
@@ -140,8 +141,9 @@ fn rotate_unit(angle: f64) -> (f64, f64) {
 }
 
 /// Get the tangent direction (unit vector) at parameter t along a spline.
-/// t is in [0, total_length] mapped to segment index + local t.
-/// For attached_to_t lookup: t ∈ [0, 1] maps across the entire chain.
+/// t is in [0, `total_length`] mapped to segment index + local t.
+/// For `attached_to_t` lookup: t ∈ [0, 1] maps across the entire chain.
+#[must_use] 
 pub fn spline_direction_at(segments: &[BezierSegment], t: f64) -> (f64, f64) {
     if segments.is_empty() {
         return (1.0, 0.0);
@@ -168,6 +170,7 @@ pub fn spline_direction_at(segments: &[BezierSegment], t: f64) -> (f64, f64) {
 /// Compute a spline with overridden tangent angles at specific endpoints.
 /// `start_tangent`: if Some, override the tangent at the first point.
 /// `end_tangent`: if Some, override the tangent at the last point.
+#[must_use] 
 pub fn hobby_spline_with_tangents(
     points: &[(f64, f64)],
     start_tangent: Option<f64>,
@@ -241,6 +244,7 @@ pub fn hobby_spline_with_tangents(
 }
 
 /// Sample a cubic Bézier at parameter t ∈ [0, 1]
+#[must_use] 
 pub fn bezier_point(seg: &BezierSegment, t: f64) -> (f64, f64) {
     let t2 = t * t;
     let t3 = t2 * t;

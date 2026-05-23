@@ -1,6 +1,6 @@
-/// Inject a generated blueprint into an existing collections.nrclip file.
-/// Decodes the original, appends our generated clip as a new collection,
-/// re-encodes with fresh checksum.
+//! Inject a generated blueprint into an existing collections.nrclip file.
+//! Decodes the original, appends our generated clip as a new collection,
+//! re-encodes with fresh checksum.
 
 use anyhow::{Context, Result};
 use std::{env, fs};
@@ -14,8 +14,7 @@ fn main() -> Result<()> {
     let collections_path = args.get(1)
         .context("usage: inject <collections.nrclip> [generated.nrclip]")?;
     let generated_path = args.get(2)
-        .map(|s| s.as_str())
-        .unwrap_or("generated.nrclip");
+        .map_or("generated.nrclip", std::string::String::as_str);
 
     let mut orig = NrclipFile::from_bytes(&fs::read(collections_path)?)?;
     println!("Original: {} collections, v{}", orig.collections.len(), orig.version);

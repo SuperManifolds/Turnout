@@ -46,7 +46,7 @@ impl fmt::Display for TrackKind {
 }
 
 impl NrclipRead for TrackKind {
-    fn nrclip_read(r: &mut PayloadReader, _ver: u32) -> Result<Self> {
+    fn nrclip_read(r: &mut PayloadReader, ver: u32) -> Result<Self> {
         let display_name = r.read_string()?;
         let speed_class_flag = r.read_raw_u8()?;
         let speed_class = r.read_i32z()?;
@@ -55,9 +55,9 @@ impl NrclipRead for TrackKind {
 
         let mut horizons_vec = Vec::with_capacity(3);
         for _ in 0..3 {
-            horizons_vec.push(TrackKindHorizon::nrclip_read(r, _ver)?);
+            horizons_vec.push(TrackKindHorizon::nrclip_read(r, ver)?);
         }
-        let horizons: [TrackKindHorizon; 3] = horizons_vec.try_into().unwrap();
+        let horizons: [TrackKindHorizon; 3] = horizons_vec.try_into().expect("3 horizons");
 
         Ok(TrackKind { display_name, speed_class_flag, speed_class, internal_name, secondary_name, horizons })
     }
@@ -97,7 +97,7 @@ impl NrclipRead for TrackKindHorizon {
             for _ in 0..4 {
                 files.push(r.read_mod_rel_file()?);
             }
-            let files: [ModRelFile; 4] = files.try_into().unwrap();
+            let files: [ModRelFile; 4] = files.try_into().expect("4 texture files");
             textures.push(TrackTexture { speed_class: tex_speed, files });
         }
         Ok(TrackKindHorizon {
@@ -196,7 +196,7 @@ impl NrclipRead for BuildingKind {
         let (lod_x, lod_y, sentinel, offset_neg, offset_pos) = if ver >= 69 {
             (r.read_f32()?, r.read_f32()?, r.read_varint()? as u32, r.read_f32()?, r.read_f32()?)
         } else {
-            (5.0, 5.0, 0xFFFFFFFF, -2.5, 2.5)
+            (5.0, 5.0, 0xFFFF_FFFF, -2.5, 2.5)
         };
         if ver >= 69 { r.read_raw_u8()?; }
         let scripts = if ver >= 69 {
@@ -252,7 +252,7 @@ impl NrclipWrite for BuildingKind {
         if ver >= 69 {
             w.write_f32(self.lod_x);
             w.write_f32(self.lod_y);
-            w.write_varint(self.sentinel as u64);
+            w.write_varint(u64::from(self.sentinel));
             w.write_f32(self.offset_neg);
             w.write_f32(self.offset_pos);
             w.write_raw_u8(self.decal_count.unwrap_or(0)); // re-read (game quirk)

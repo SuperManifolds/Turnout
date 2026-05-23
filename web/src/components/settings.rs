@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::{component, view, ReadSignal, WriteSignal, IntoView, SignalUpdate, SignalGet};
 
 #[component]
 pub fn Settings(

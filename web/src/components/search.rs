@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::{wasm_bindgen, component, view, web_sys, IntoView, create_signal, store_value, SignalSet, spawn_local, event_target_value, SignalGetUntracked, Show, SignalGet, CollectView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -80,12 +80,12 @@ pub fn Search() -> impl IntoView {
         // Debounce: cancel previous timer, start new one
         if let Some(handle) = debounce_handle.get_value() {
             web_sys::window()
-                .unwrap()
+                .expect("window")
                 .clear_timeout_with_handle(handle);
         }
         let cb = Closure::once(move || do_search(val));
         let handle = web_sys::window()
-            .unwrap()
+            .expect("window")
             .set_timeout_with_callback_and_timeout_and_arguments_0(
                 cb.as_ref().unchecked_ref(),
                 DEBOUNCE_MS,
@@ -134,7 +134,7 @@ pub fn Search() -> impl IntoView {
                     // Delay hide to allow click on results
                     let set_show = set_show_results;
                     let cb = Closure::once(move || set_show.set(false));
-                    let _ = web_sys::window().unwrap()
+                    let _ = web_sys::window().expect("window")
                         .set_timeout_with_callback_and_timeout_and_arguments_0(
                             cb.as_ref().unchecked_ref(), 200);
                     cb.forget();

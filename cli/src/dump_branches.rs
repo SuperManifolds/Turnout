@@ -1,10 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use nimby_gen_core::nrc1::NrclipFile;
 use nimby_gen_core::types::Track;
 
 fn main() -> Result<()> {
-    let path = std::env::args().nth(1).unwrap();
+    let path = std::env::args().nth(1).context("usage: dump_branches <path>")?;
     let raw = std::fs::read(&path)?;
     let file = NrclipFile::from_bytes(&raw)?;
     let colls = &file.collections;
@@ -111,9 +111,9 @@ fn dump_chains(clip: &nimby_gen_core::types::Clip) {
         chains.push(ch);
     }
     
-    chains.sort_by(|a, b| b.len().cmp(&a.len()));
+    chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
     println!("\nChains: {}", chains.len());
-    println!("Lengths: {:?}", chains.iter().take(20).map(|c| c.len()).collect::<Vec<_>>());
+    println!("Lengths: {:?}", chains.iter().take(20).map(std::vec::Vec::len).collect::<Vec<_>>());
     println!("1-node: {}, 2-node: {}, 3+: {}", 
         chains.iter().filter(|c| c.len() == 1).count(),
         chains.iter().filter(|c| c.len() == 2).count(),
@@ -121,14 +121,14 @@ fn dump_chains(clip: &nimby_gen_core::types::Clip) {
     
     // Show all chains that have junction nodes (BY= or ATT=)
     for ch in chains.iter().filter(|c| c.len() >= 2 && c.iter().any(|&nid| {
-        let t = tmap[&nid];
+        let t = tmap.get(&nid).expect("chain node in tmap");
         !t.attached_by.is_empty() || t.attached_to_id != 0
     })) {
         println!("\n  Chain ({} nodes):", ch.len());
         for &nid in ch {
-            let t = tmap[&nid];
+            let t = tmap.get(&nid).expect("chain node in tmap");
             let att = if t.attached_to_id != 0 { format!(" ATT={}@{:.3}", t.attached_to_id, t.attached_to_t) } else { String::new() };
-            let by = if !t.attached_by.is_empty() { format!(" BY={}", t.attached_by.len()) } else { String::new() };
+            let by = if t.attached_by.is_empty() { String::new() } else { format!(" BY={}", t.attached_by.len()) };
             println!("    {} ({:.1},{:.1}) p={} n={}{}{}", nid, t.x, t.y, t.prev_node, t.next_node, att, by);
         }
     }

@@ -1,4 +1,4 @@
-/// NRC1 container: header + zstd + wyhash checksum.
+//! NRC1 container: header + zstd + wyhash checksum.
 
 use anyhow::Result;
 use crate::wire::{PayloadReader, PayloadWriter};
@@ -38,6 +38,7 @@ impl NrclipFile {
     }
 
     /// Serialize to payload bytes (no NRC1 container).
+    #[must_use] 
     pub fn to_payload(&self) -> Vec<u8> {
         let mut w = PayloadWriter::new();
         w.write_varint(self.collections.len() as u64);
@@ -54,8 +55,8 @@ impl NrclipFile {
         if data.len() < 32 || &data[0..4] != b"NRC1" {
             anyhow::bail!("not an NRC1 file (too short or bad magic)");
         }
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let uncompressed_size = u64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
+        let version = u32::from_le_bytes(data[4..8].try_into().expect("4-byte slice"));
+        let uncompressed_size = u64::from_le_bytes(data[8..16].try_into().expect("8-byte slice")) as usize;
 
         let compressed = &data[32..];
         let mut payload = vec![0u8; uncompressed_size];

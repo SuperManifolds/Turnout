@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::{wasm_bindgen, component, view, IntoView, create_signal, SignalSet, CollectView, SignalGet};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]

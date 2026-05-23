@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes owned types
 fn import_orm(json: String, name: String, railway_types: Vec<String>, apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<Vec<u8>, String> {
     // Extract vanilla track kinds from game files
     let (track_kinds, mod_metas) = find_mods_dir()
@@ -26,6 +27,7 @@ fn get_mods_dir() -> Option<String> {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes owned types
 fn save_blueprint(name: String, data: Vec<u8>) -> Result<String, String> {
     let mods_dir = find_mods_dir()
         .ok_or_else(|| "Could not find Nimby Rails mods folder".to_string())?;

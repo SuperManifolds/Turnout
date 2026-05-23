@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::{component, view, mount_to_body, IntoView, create_signal, Callback, SignalSet, Show, SignalGet};
 
 mod components;
 
@@ -36,7 +36,7 @@ fn App() -> impl IntoView {
                 <Show when=move || has_selection.get()>
                     <div id="sidebar">
                         <components::TrackFilter
-                            available=available_types.into()
+                            available=available_types
                             on_change=on_filter_change
                         />
                         <components::Settings

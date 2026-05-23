@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use crate::wire::{PayloadReader, PayloadWriter};
-use super::*;
+use super::{Track, Signal, StationGroup, Building, TrackKind, BuildingKind, Demand, ModMeta, NrclipRead, NrclipWrite};
 
 #[derive(Debug)]
 pub struct Collection {
@@ -14,8 +14,8 @@ pub struct Collection {
 impl Default for Collection {
     fn default() -> Self {
         Collection {
-            id_a: 0x1234567890,
-            id_b: 0x0987654321,
+            id_a: 0x0012_3456_7890,
+            id_b: 0x0009_8765_4321,
             mod_source: None,
             name: String::new(),
             clips: Vec::new(),

@@ -1,4 +1,4 @@
-use leptos::*;
+use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, IntoView, create_node_ref, html, create_signal, store_value, create_effect, SignalGet, SignalGetUntracked, SignalSet, spawn_local, Callback, Show};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -145,7 +145,7 @@ pub fn Map(
                 map_fly_to(lng, lat, zoom);
             }
         });
-        let window = web_sys::window().unwrap();
+        let window = web_sys::window().expect("window");
         let _ = window.add_event_listener_with_callback("paste", closure.as_ref().unchecked_ref());
         closure.forget();
     });
@@ -176,13 +176,12 @@ pub fn Map(
                 Mode::Idle => {
                     // Check if clicking on a handle
                     let hit = map_query_features(lng, lat, "handles-layer");
-                    if let Some(handle_str) = hit.as_string() {
-                        if let Some(handle) = Handle::from_str(&handle_str) {
+                    if let Some(handle_str) = hit.as_string()
+                        && let Some(handle) = Handle::from_str(&handle_str) {
                             mode.set_value(Mode::Resizing(handle));
                             map_set_cursor(handle.cursor());
                             map_set_drag_pan(false);
                         }
-                    }
                 }
                 Mode::Resizing(_) => {}
             }
@@ -209,12 +208,11 @@ pub fn Map(
                     // Show resize cursor when hovering handles
                     if bbox.get_untracked().is_some() {
                         let hit = map_query_features(lng, lat, "handles-layer");
-                        if let Some(handle_str) = hit.as_string() {
-                            if let Some(handle) = Handle::from_str(&handle_str) {
+                        if let Some(handle_str) = hit.as_string()
+                            && let Some(handle) = Handle::from_str(&handle_str) {
                                 map_set_cursor(handle.cursor());
                                 return;
                             }
-                        }
                         map_set_cursor("");
                     }
                 }
@@ -270,13 +268,13 @@ pub fn Map(
             cached_bbox.set_value(None);
             return;
         }
-        let (s, w, n, e) = current_bbox.unwrap();
+        let (s, w, n, e) = current_bbox.expect("bbox is Some after is_none() check");
         // Skip if bbox unchanged
         if cached_bbox.get_value() == current_bbox { return; }
 
         // Cancel previous debounce
         if let Some(h) = preview_timeout.get_value() {
-            web_sys::window().unwrap().clear_timeout_with_handle(h);
+            web_sys::window().expect("window").clear_timeout_with_handle(h);
         }
         let cb = Closure::once(move || {
             spawn_local(async move {
@@ -304,7 +302,7 @@ pub fn Map(
                 }
             });
         });
-        let h = web_sys::window().unwrap()
+        let h = web_sys::window().expect("window")
             .set_timeout_with_callback_and_timeout_and_arguments_0(
                 cb.as_ref().unchecked_ref(), 500
             ).unwrap_or(0);
@@ -533,19 +531,17 @@ fn osm_json_to_geojson(json: &str, enabled_types: &[String], clip_bbox: Option<(
         Ok(d) => d,
         Err(_) => return empty_geojson().to_string(),
     };
-    let elements = match data["elements"].as_array() {
-        Some(e) => e,
-        None => return empty_geojson().to_string(),
+    let Some(elements) = data["elements"].as_array() else {
+        return empty_geojson().to_string();
     };
 
     // Build node lookup
     let mut nodes: std::collections::HashMap<u64, (f64, f64)> = std::collections::HashMap::new();
     for e in elements {
-        if e["type"].as_str() == Some("node") {
-            if let (Some(id), Some(lat), Some(lon)) = (e["id"].as_u64(), e["lat"].as_f64(), e["lon"].as_f64()) {
+        if e["type"].as_str() == Some("node")
+            && let (Some(id), Some(lat), Some(lon)) = (e["id"].as_u64(), e["lat"].as_f64(), e["lon"].as_f64()) {
                 nodes.insert(id, (lon, lat));
             }
-        }
     }
 
     // Build features from ways
@@ -554,7 +550,7 @@ fn osm_json_to_geojson(json: &str, enabled_types: &[String], clip_bbox: Option<(
         if e["type"].as_str() != Some("way") { continue; }
         let Some(node_ids) = e["nodes"].as_array() else { continue };
         let raw_coords: Vec<(f64, f64)> = node_ids.iter()
-            .filter_map(|n| n.as_u64())
+            .filter_map(serde_json::Value::as_u64)
             .filter_map(|id| nodes.get(&id).copied())
             .collect();
         if raw_coords.len() < 2 { continue; }
@@ -670,11 +666,10 @@ fn extract_railway_types(json: &str) -> Vec<String> {
     let mut types = std::collections::HashSet::new();
     if let Some(elements) = data["elements"].as_array() {
         for e in elements {
-            if e["type"].as_str() == Some("way") {
-                if let Some(rt) = e["tags"]["railway"].as_str() {
+            if e["type"].as_str() == Some("way")
+                && let Some(rt) = e["tags"]["railway"].as_str() {
                     types.insert(rt.to_string());
                 }
-            }
         }
     }
     let mut sorted: Vec<String> = types.into_iter().collect();
@@ -688,11 +683,10 @@ fn count_ways(json: &str) -> usize {
         Err(_) => return 0,
     };
     data["elements"].as_array()
-        .map(|e| e.iter().filter(|el| el["type"].as_str() == Some("way")).count())
-        .unwrap_or(0)
+        .map_or(0, |e| e.iter().filter(|el| el["type"].as_str() == Some("way")).count())
 }
 
-/// Parse an OpenRailwayMap link like:
+/// Parse an `OpenRailwayMap` link like:
 /// `https://openrailwaymap.app/#view=9.49/34.1997/-117.2839`
 /// Returns (zoom, lat, lng) if valid.
 fn parse_orm_link(text: &str) -> Option<(f64, f64, f64)> {

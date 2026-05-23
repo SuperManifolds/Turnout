@@ -4,7 +4,7 @@ use std::fs;
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let json_path = args.get(1).context("usage: import_orm <tracks.json> [output.nrclip]")?;
-    let output = args.get(2).map(|s| s.as_str()).unwrap_or("orm_import.nrclip");
+    let output = args.get(2).map_or("orm_import.nrclip", std::string::String::as_str);
     let blueprint_name = std::path::Path::new(output)
         .file_stem().and_then(|s| s.to_str()).unwrap_or("orm_import")
         .replace('_', " ");
@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     // Verify round-trip
     let decoded = nimby_gen_core::nrc1::NrclipFile::from_bytes(&file_data)?;
     let total: usize = decoded.collections.iter().flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
-    println!("Verified: {} tracks", total);
+    println!("Verified: {total} tracks");
 
     // Run comparison
     match std::process::Command::new("cargo")

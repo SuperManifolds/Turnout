@@ -82,8 +82,8 @@ impl NrclipWrite for StationGroup {
         if ver >= 4 { w.write_f32(self.size_factor.unwrap_or(1.0)); }
         if ver >= 163 { w.write_f32(self.walk_factor.unwrap_or(1.0)); }
         if ver >= 165 {
-            w.write_varint(self.max_platform_pax.unwrap_or(0) as u64);
-            w.write_varint(self.transfer_overflow_into_hall.unwrap_or(0) as u64);
+            w.write_varint(u64::from(self.max_platform_pax.unwrap_or(0)));
+            w.write_varint(u64::from(self.transfer_overflow_into_hall.unwrap_or(0)));
         }
         if ver >= 94 { w.write_i32z(self.label_mode.unwrap_or(0)); }
         if ver >= 208 { w.write_varint(self.scripts.unwrap_or(0)); }

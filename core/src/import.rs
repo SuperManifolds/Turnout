@@ -1,12 +1,12 @@
-/// Import OpenRailwayMap tracks into a Nimby Rails blueprint.
-///
-/// Pipeline:
-/// 1. Load Overpass JSON → OSM nodes + ways
-/// 2. Merge ways into continuous routes through shared endpoints
-/// 3. Identify junction points (where routes branch)
-/// 4. Simplify routes to tangent-mode control points (direction changes + max spacing)
-/// 5. For branches: compute attached_to_t along parent route segment
-/// 6. Generate .nrclip with proper junction topology
+//! Import `OpenRailwayMap` tracks into a Nimby Rails blueprint.
+//!
+//! Pipeline:
+//! 1. Load Overpass JSON → OSM nodes + ways
+//! 2. Merge ways into continuous routes through shared endpoints
+//! 3. Identify junction points (where routes branch)
+//! 4. Simplify routes to tangent-mode control points (direction changes + max spacing)
+//! 5. For branches: compute `attached_to_t` along parent route segment
+//! 6. Generate .nrclip with proper junction topology
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -17,6 +17,8 @@ use crate::types::{Collection, Clip, Track, TrackKind, ModMeta};
 
 const MODEL_VERSION: u32 = 226;
 const MAX_SPACING: f64 = 200.0;
+
+type VanillaTrackData = (Vec<(i32, TrackKind)>, Vec<ModMeta>);
 
 // Vanilla game track type keys
 const TRACK_TYPE_HIGH_SPEED: i32 = 1;
@@ -39,11 +41,10 @@ fn osm_to_track_type(tags: &serde_json::Value) -> i32 {
     if tags.get("usage").and_then(|v| v.as_str()) == Some("highspeed") {
         return TRACK_TYPE_HIGH_SPEED;
     }
-    if let Some(ms) = tags.get("maxspeed").and_then(|v| v.as_str()) {
-        if parse_maxspeed_kmh(ms) >= 200.0 {
+    if let Some(ms) = tags.get("maxspeed").and_then(|v| v.as_str())
+        && parse_maxspeed_kmh(ms) >= 200.0 {
             return TRACK_TYPE_HIGH_SPEED;
         }
-    }
 
     // Default: medium speed
     TRACK_TYPE_MEDIUM
@@ -61,10 +62,10 @@ fn parse_maxspeed_kmh(s: &str) -> f64 {
     }
 }
 
-/// Extract vanilla TrackKind definitions (keys 1,2,3) and their ModMeta from a
-/// game collections.nrclip file. Returns (track_kinds, mod_metas) for inclusion
+/// Extract vanilla `TrackKind` definitions (keys 1,2,3) and their `ModMeta` from a
+/// game collections.nrclip file. Returns (`track_kinds`, `mod_metas`) for inclusion
 /// in generated blueprints.
-pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<(Vec<(i32, TrackKind)>, Vec<ModMeta>)> {
+pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<VanillaTrackData> {
     let data = std::fs::read(collections_path).context("read collections.nrclip")?;
     let file = NrclipFile::from_bytes(&data).context("parse collections.nrclip")?;
 
@@ -87,10 +88,10 @@ pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<(Vec<(i32, 
     anyhow::bail!("vanilla track kinds (1,2,3) not found in collections.nrclip")
 }
 
-/// Import OpenRailwayMap Overpass JSON into a Nimby Rails .nrclip file.
+/// Import `OpenRailwayMap` Overpass JSON into a Nimby Rails .nrclip file.
 /// Returns the raw file bytes ready to write to disk.
 /// `railway_types`: if non-empty, only import ways whose `railway` tag is in this list.
-/// `track_kinds`/`mod_metas`: vanilla TrackKind definitions from the game, if available.
+/// `track_kinds`/`mod_metas`: vanilla `TrackKind` definitions from the game, if available.
 pub fn import_orm(
     json: &str,
     name: &str,
@@ -115,8 +116,8 @@ pub fn import_orm(
     for e in elements {
         match e["type"].as_str() {
             Some("node") => {
-                let id = e["id"].as_u64().unwrap();
-                osm_nodes.insert(id, (e["lat"].as_f64().unwrap(), e["lon"].as_f64().unwrap()));
+                let id = e["id"].as_u64().expect("node id");
+                osm_nodes.insert(id, (e["lat"].as_f64().expect("node lat"), e["lon"].as_f64().expect("node lon")));
             }
             Some("way") => {
                 // Filter by railway type if specified
@@ -127,8 +128,8 @@ pub fn import_orm(
                         .unwrap_or("");
                     if !railway_types.iter().any(|t| t == rt) { continue; }
                 }
-                let nids: Vec<u64> = e["nodes"].as_array().unwrap()
-                    .iter().map(|n| n.as_u64().unwrap()).collect();
+                let nids: Vec<u64> = e["nodes"].as_array().expect("way nodes")
+                    .iter().map(|n| n.as_u64().expect("node ref")).collect();
                 let tags = e.get("tags").cloned().unwrap_or_default();
                 let layer: i32 = tags.get("layer")
                     .and_then(|l| l.as_str())
@@ -159,7 +160,6 @@ pub fn import_orm(
             _ => {}
         }
     }
-    let n_elevated: usize = node_layer.values().filter(|&&l| l != 0).count();
     // Clip ways to bbox if requested
     if let Some((s_lat, w_lon, n_lat, e_lon)) = clip_to_bbox {
         let mut clipped_ways = Vec::new();
@@ -234,8 +234,6 @@ pub fn import_orm(
         }
 
         ways = clipped_ways;
-        way_layers = clipped_layers;
-        way_track_types = clipped_track_types;
     }
 
     // Build node→way index
@@ -275,7 +273,7 @@ pub fn import_orm(
 
         // Extend forward — at each shared node, pick most aligned unused way
         loop {
-            let last = *route.last().unwrap();
+            let last = *route.last().expect("non-empty route");
             if !shared_nodes.contains(&last) { break; }
             let cur_heading = if route.len() >= 2 {
                 let a = &osm_nodes[&route[route.len()-2]];
@@ -298,7 +296,7 @@ pub fn import_orm(
                 let h = (c.0 - b.0).atan2(c.1 - b.1);
                 let mut diff = (h - cur_heading).abs();
                 if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
-                if best.is_none() || diff < best.unwrap().2 { best = Some((wi, pi, diff)); }
+                if best.is_none_or(|b| diff < b.2) { best = Some((wi, pi, diff)); }
             }
             let Some((wi, pi, diff)) = best else { break };
             if diff > 2.5 { break; } // >143° = near-reversal, not a continuation
@@ -338,7 +336,7 @@ pub fn import_orm(
                 let h = (c.0 - b.0).atan2(c.1 - b.1);
                 let mut diff = (h - cur_heading).abs();
                 if diff > std::f64::consts::PI { diff = 2.0 * std::f64::consts::PI - diff; }
-                if best.is_none() || diff < best.unwrap().2 { best = Some((wi, pi, diff)); }
+                if best.is_none_or(|b| diff < b.2) { best = Some((wi, pi, diff)); }
             }
             let Some((wi, pi, diff)) = best else { break };
             if diff > 2.5 { break; }
@@ -362,8 +360,7 @@ pub fn import_orm(
         routes.push(route);
     }
 
-    routes.sort_by(|a, b| b.len().cmp(&a.len()));
-    let interior_junctions: usize = routes.iter().map(|r| r[1..r.len().saturating_sub(1)].iter().filter(|n| junction_nodes.contains(n)).count()).sum();
+    routes.sort_by_key(|r| std::cmp::Reverse(r.len()));
     // Convert routes to Mercator coordinates
     let route_coords: Vec<Vec<(f64, f64)>> = routes.iter().map(|route| {
         route.iter().filter_map(|nid| {
@@ -382,11 +379,11 @@ pub fn import_orm(
         }
     }
     // Simplify routes
-    let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter()).enumerate()
-        .map(|(_, (route, coords))| {
+    let simplified: Vec<Vec<(usize, f64, f64)>> = routes.iter().zip(route_coords.iter())
+        .map(|(route, coords)| {
             let mut keep = vec![false; coords.len()];
             keep[0] = true;
-            *keep.last_mut().unwrap() = true;
+            *keep.last_mut().expect("non-empty coords") = true;
 
             // Force keep junction nodes and layer-change boundaries.
             for (i, &nid) in route.iter().enumerate() {
@@ -406,7 +403,7 @@ pub fn import_orm(
 
             // Keep a node ~30m from junction endpoints for tight splines
             let start_is_junction = junction_nodes.contains(&route[0]);
-            let end_is_junction = junction_nodes.contains(route.last().unwrap());
+            let end_is_junction = junction_nodes.contains(route.last().expect("non-empty route"));
             if start_is_junction && coords.len() > 2 {
                 // Find the first node that's ~30m from the start
                 for i in 1..coords.len() - 1 {
@@ -465,11 +462,10 @@ pub fn import_orm(
                     // Find the original node that deviates most from this spline segment
                     let mut worst_dev = 0.0f64;
                     let mut worst_orig = orig_start;
-                    for oi in (orig_start + 1)..orig_end {
-                        let (ox, oy) = coords[oi];
+                    for (oi, &(ox, oy)) in coords.iter().enumerate().take(orig_end).skip(orig_start + 1) {
                         let mut best_d = f64::MAX;
                         for s in 0..=32 {
-                            let pt = hobby::bezier_point(seg, s as f64 / 32.0);
+                            let pt = hobby::bezier_point(seg, f64::from(s) / 32.0);
                             let d = ((ox - pt.0).powi(2) + (oy - pt.1).powi(2)).sqrt();
                             if d < best_d { best_d = d; }
                         }
@@ -527,9 +523,9 @@ pub fn import_orm(
                 for k in start..end {
                     let dx = coords[k + 1].0 - coords[k].0;
                     let dy = coords[k + 1].1 - coords[k].1;
-                    cum_len.push(cum_len.last().unwrap() + (dx * dx + dy * dy).sqrt());
+                    cum_len.push(cum_len.last().expect("non-empty cum_len") + (dx * dx + dy * dy).sqrt());
                 }
-                let total_len = *cum_len.last().unwrap();
+                let total_len = *cum_len.last().expect("non-empty cum_len");
                 if total_len < 1.0 { continue; }
 
                 let n = (total_len / MAX_SPACING).ceil() as usize;
@@ -551,8 +547,6 @@ pub fn import_orm(
             result
         }).collect();
 
-    let total_before: usize = route_coords.iter().map(|c| c.len()).sum();
-    let total_after: usize = simplified.iter().map(|s| s.len()).sum();
     // Build game track nodes
     let mut track_nodes: Vec<Track> = Vec::new();
     let mut node_id_counter: i64 = 100;
@@ -576,7 +570,9 @@ pub fn import_orm(
             let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
 
             // Look up elevation layer, track type, and speed from OSM data
-            let (layer, track_type, max_speed) = if orig_idx != usize::MAX {
+            let (layer, track_type, max_speed) = if orig_idx == usize::MAX {
+                (last_layer, last_track_type, last_maxspeed)
+            } else {
                 let osm_nid = routes[ri][orig_idx];
                 let l = node_layer.get(&osm_nid).copied().unwrap_or(0);
                 let tt = node_track_type.get(&osm_nid).copied().unwrap_or(TRACK_TYPE_MEDIUM);
@@ -585,8 +581,6 @@ pub fn import_orm(
                 last_track_type = tt;
                 last_maxspeed = ms;
                 (l, tt, ms)
-            } else {
-                (last_layer, last_track_type, last_maxspeed)
             };
 
             track_nodes.push(Track {
@@ -618,7 +612,7 @@ pub fn import_orm(
         if simp.len() < 2 { continue; }
 
         for &is_start in &[true, false] {
-            let endpoint_orig_idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
+            let endpoint_orig_idx = if is_start { simp[0].0 } else { simp.last().expect("non-empty simp").0 };
             let endpoint_osm = routes[ri][endpoint_orig_idx];
             if !junction_nodes.contains(&endpoint_osm) { continue; }
 
@@ -628,14 +622,13 @@ pub fn import_orm(
             let branch_gid = if is_start {
                 route_game_nodes[ri][0].game_id
             } else {
-                route_game_nodes[ri].last().unwrap().game_id
+                route_game_nodes[ri].last().expect("non-empty chain").game_id
             };
 
             // Junction position in Mercator
             let junction_orig = routes[ri][endpoint_orig_idx];
             let junction_pos = osm_nodes.get(&junction_orig)
-                .map(|&(lat, lon)| latlon_to_mercator(lat, lon))
-                .unwrap_or((0.0, 0.0));
+                .map_or((0.0, 0.0), |&(lat, lon)| latlon_to_mercator(lat, lon));
 
             // Find nearest segment on parent route's simplified chain
             let parent_chain = &route_game_nodes[owner_ri];
@@ -646,8 +639,8 @@ pub fn import_orm(
             let mut best_dist = f64::MAX;
 
             for si in 0..parent_chain.len() - 1 {
-                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[si].game_id).unwrap();
-                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[si + 1].game_id).unwrap();
+                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[si].game_id).expect("parent node in track_nodes");
+                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[si + 1].game_id).expect("next node in track_nodes");
                 let (px, py) = (track_nodes[pi].x, track_nodes[pi].y);
                 let (qx, qy) = (track_nodes[qi].x, track_nodes[qi].y);
                 let sx = qx - px;
@@ -673,11 +666,6 @@ pub fn import_orm(
                     best_t = t;
                 }
             }
-
-            // Debug: show junction attachment quality
-            if best_dist > 5.0 || best_t > 0.98 || best_t < 0.02 {
-                let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg].game_id).unwrap();
-                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg + 1].game_id).unwrap();            }
 
             // No reject — always create junction, even if geometry is imperfect.
             // The game recomputes spline parameters on load.
@@ -705,13 +693,13 @@ pub fn import_orm(
             let parent_node_id = parent_chain[parent_seg_idx].game_id;
 
             // Determine direction: does branch go forward or backward along parent?
-            let br_idx = track_nodes.iter().position(|n| n.node_id == branch_gid).unwrap();
-            let pi = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
+            let br_idx = track_nodes.iter().position(|n| n.node_id == branch_gid).expect("branch node in track_nodes");
+            let pi = track_nodes.iter().position(|n| n.node_id == parent_node_id).expect("parent in track_nodes");
             // Parent segment direction: from parent_seg_idx toward next node
             let next_idx = if parent_seg_idx + 1 < parent_chain.len() { parent_seg_idx + 1 }
                 else if parent_seg_idx > 0 { parent_seg_idx - 1 }
                 else { continue; };
-            let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[next_idx].game_id).unwrap();
+            let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[next_idx].game_id).expect("next in track_nodes");
             let seg_dx = track_nodes[qi].x - track_nodes[pi].x;
             let seg_dy = track_nodes[qi].y - track_nodes[pi].y;
 
@@ -722,7 +710,7 @@ pub fn import_orm(
                 let len = route_game_nodes[ri].len();
                 if len > 1 { route_game_nodes[ri][len - 2].game_id } else { continue; }
             };
-            let ni = track_nodes.iter().position(|n| n.node_id == neighbor_gid).unwrap();
+            let ni = track_nodes.iter().position(|n| n.node_id == neighbor_gid).expect("neighbor in track_nodes");
             let br_dx = track_nodes[ni].x - track_nodes[br_idx].x;
             let br_dy = track_nodes[ni].y - track_nodes[br_idx].y;
             let dot = br_dx * seg_dx + br_dy * seg_dy;
@@ -735,33 +723,15 @@ pub fn import_orm(
 
             // Set branch attachment
             track_nodes[br_idx].attached_to_id = parent_node_id;
-            track_nodes[br_idx].attached_to_t = t as f64;
+            track_nodes[br_idx].attached_to_t = t;
             track_nodes[br_idx].attached_to_direction = Some(dir);
 
             // Register in parent's attached_by
-            let par_idx = track_nodes.iter().position(|n| n.node_id == parent_node_id).unwrap();
+            let par_idx = track_nodes.iter().position(|n| n.node_id == parent_node_id).expect("parent in track_nodes");
             track_nodes[par_idx].attached_by.push(branch_gid);
         }
     }
 
-    // Debug branch detection
-    let short = simplified.iter().filter(|s| s.len() < 2).count();
-    let mut dbg_no_junc = 0; let mut dbg_same = 0; let mut dbg_found = 0;
-    for (ri, simp) in simplified.iter().enumerate() {
-        if simp.is_empty() { continue; }
-        for &is_start in &[true, false] {
-            let idx = if is_start { simp[0].0 } else { simp.last().unwrap().0 };
-            let osm = routes[ri][idx];
-            if !junction_nodes.contains(&osm) { dbg_no_junc += 1; continue; }
-            match junction_owner.get(&osm) {
-                None => { dbg_no_junc += 1; }
-                Some(&pri) if pri == ri => { dbg_same += 1; }
-                _ => { dbg_found += 1; }
-            }
-        }
-    }
-    let n_branches = track_nodes.iter().filter(|n| n.attached_to_id != 0).count();
-    let n_junctions = track_nodes.iter().filter(|n| !n.attached_by.is_empty()).count();
     // Compute center and convert to ground meters
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
@@ -772,7 +742,7 @@ pub fn import_orm(
     }
 
     // Build NrclipFile and serialize
-    let name_hash = blueprint_name.bytes().fold(0x1234567890u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+    let name_hash = blueprint_name.bytes().fold(0x0012_3456_7890_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
     let file = NrclipFile {
         version: MODEL_VERSION,
         collections: vec![Collection {
@@ -806,7 +776,7 @@ fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     (x, y)
 }
 
-/// Find where a line segment (inside_point → outside_point) crosses a bbox.
+/// Find where a line segment (`inside_point` → `outside_point`) crosses a bbox.
 /// Returns the intersection point closest to the inside point, or None.
 fn line_rect_intersect(
     in_lat: f64, in_lon: f64, out_lat: f64, out_lon: f64,
@@ -815,14 +785,6 @@ fn line_rect_intersect(
     let dx = out_lon - in_lon;
     let dy = out_lat - in_lat;
     let mut best_t = f64::MAX;
-
-    // Test against each bbox edge
-    let edges: [(f64, f64, f64, f64); 4] = [
-        (s, w, s, e), // south edge (lat=s, lon varies)
-        (n, w, n, e), // north edge
-        (s, w, n, w), // west edge (lon=w, lat varies)
-        (s, e, n, e), // east edge
-    ];
 
     // South: lat = s
     if dy.abs() > 1e-12 {

@@ -1,5 +1,5 @@
-/// Compare Hobby spline rendering of a blueprint against raw OSM polylines.
-/// Measures perpendicular deviation at sampled points along each chain.
+//! Compare Hobby spline rendering of a blueprint against raw OSM polylines.
+//! Measures perpendicular deviation at sampled points along each chain.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -7,10 +7,12 @@ use std::collections::HashMap;
 use nimby_gen_core::hobby;
 use nimby_gen_core::nrc1::NrclipFile;
 
+type Segment2D = ((f64, f64), (f64, f64));
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let nrclip_path = args.get(1).context("usage: compare_orm <blueprint.nrclip> [tracks.json]")?;
-    let json_path = args.get(2).map(|s| s.as_str());
+    let json_path = args.get(2).map(std::string::String::as_str);
 
     // Load OSM data (optional — if not provided, just render splines)
     let mut osm_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
@@ -22,12 +24,12 @@ fn main() -> Result<()> {
         for e in elements {
             match e["type"].as_str() {
                 Some("node") => {
-                    let id = e["id"].as_u64().unwrap();
-                    osm_nodes.insert(id, (e["lat"].as_f64().unwrap(), e["lon"].as_f64().unwrap()));
+                    let id = e["id"].as_u64().expect("OSM node id is u64");
+                    osm_nodes.insert(id, (e["lat"].as_f64().expect("OSM node lat is f64"), e["lon"].as_f64().expect("OSM node lon is f64")));
                 }
                 Some("way") => {
-                    let nids: Vec<u64> = e["nodes"].as_array().unwrap()
-                        .iter().map(|n| n.as_u64().unwrap()).collect();
+                    let nids: Vec<u64> = e["nodes"].as_array().expect("OSM way nodes is array")
+                        .iter().map(|n| n.as_u64().expect("OSM way node id is u64")).collect();
                     if nids.len() >= 2 { osm_ways.push(nids); }
                 }
                 _ => {}
@@ -99,7 +101,7 @@ fn main() -> Result<()> {
             let mut devs = Vec::new();
             for seg in &segments {
                 for s in 0..=16 {
-                    let pt = hobby::bezier_point(seg, s as f64 / 16.0);
+                    let pt = hobby::bezier_point(seg, f64::from(s) / 16.0);
                     let d = nearest_segment_dist(pt, &osm_segments);
                     devs.push(d);
                 }
@@ -111,45 +113,44 @@ fn main() -> Result<()> {
                 (dx * dx + dy * dy).sqrt()
             }).sum();
 
-            let max_dev = devs.iter().cloned().fold(0.0f64, f64::max);
+            let max_dev = devs.iter().copied().fold(0.0f64, f64::max);
             let avg_dev = devs.iter().sum::<f64>() / devs.len() as f64;
             let mut sorted = devs.clone();
-            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            sorted.sort_by(|a, b| a.partial_cmp(b).expect("deviation values are not NaN"));
             let p95 = sorted[sorted.len() * 95 / 100];
 
             chain_stats.push((chain.len(), chain_len, avg_dev, p95, max_dev));
             all_devs.extend(devs);
         }
 
-        all_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        all_devs.sort_by(|a, b| a.partial_cmp(b).expect("deviation values are not NaN"));
         let total = all_devs.len();
         let overall_avg = all_devs.iter().sum::<f64>() / total as f64;
         let overall_p95 = all_devs[total * 95 / 100];
-        let overall_max = *all_devs.last().unwrap();
+        let overall_max = *all_devs.last().expect("all_devs is non-empty");
 
         println!("=== Hobby Spline vs OSM Deviation ===");
         println!("Chains: {}, sample points: {}", chains.len(), total);
-        println!("Overall: avg={:.1}m  p95={:.1}m  max={:.1}m", overall_avg, overall_p95, overall_max);
+        println!("Overall: avg={overall_avg:.1}m  p95={overall_p95:.1}m  max={overall_max:.1}m");
 
-        chain_stats.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap());
+        chain_stats.sort_by(|a, b| b.4.partial_cmp(&a.4).expect("deviation values are not NaN"));
         println!("\nWorst chains:");
         for &(nodes, length, avg, p95, max) in chain_stats.iter().take(15) {
-            println!("  {:>3} nodes  {:>6.0}m  avg={:>5.1}m  p95={:>5.1}m  max={:>6.1}m",
-                     nodes, length, avg, p95, max);
+            println!("  {nodes:>3} nodes  {length:>6.0}m  avg={avg:>5.1}m  p95={p95:>5.1}m  max={max:>6.1}m");
         }
 
         println!("\nDeviation distribution:");
         for &thresh in &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0] {
             let count = all_devs.iter().filter(|&&d| d <= thresh).count();
             let pct = count as f64 / total as f64 * 100.0;
-            println!("  <={:>3.0}m: {:>5.1}% ({}/{})", thresh, pct, count, total);
+            println!("  <={thresh:>3.0}m: {pct:>5.1}% ({count}/{total})");
         }
     }
 
     // Render overlay image
     let img_path = format!("{}.png", nrclip_path.trim_end_matches(".nrclip"));
     render_overlay(&clip.tracks, &chains, &osm_ways, &osm_rel, &img_path)?;
-    println!("Rendered: {}", img_path);
+    println!("Rendered: {img_path}");
 
     Ok(())
 }
@@ -169,17 +170,17 @@ fn render_overlay(
     // Compute bounds from both datasets
     let mut all_x: Vec<f64> = tracks.iter().map(|t| t.x).collect();
     let mut all_y: Vec<f64> = tracks.iter().map(|t| t.y).collect();
-    for (_, &(x, y)) in osm_rel { all_x.push(x); all_y.push(y); }
+    for &(x, y) in osm_rel.values() { all_x.push(x); all_y.push(y); }
 
-    let xmin = all_x.iter().cloned().fold(f64::MAX, f64::min) - margin;
-    let xmax = all_x.iter().cloned().fold(f64::MIN, f64::max) + margin;
-    let ymin = all_y.iter().cloned().fold(f64::MAX, f64::min) - margin;
-    let ymax = all_y.iter().cloned().fold(f64::MIN, f64::max) + margin;
+    let xmin = all_x.iter().copied().fold(f64::MAX, f64::min) - margin;
+    let xmax = all_x.iter().copied().fold(f64::MIN, f64::max) + margin;
+    let ymin = all_y.iter().copied().fold(f64::MAX, f64::min) - margin;
+    let ymax = all_y.iter().copied().fold(f64::MIN, f64::max) + margin;
 
-    let scale = (size as f64 / (xmax - xmin)).min(size as f64 / (ymax - ymin)) * 0.9;
+    let scale = (f64::from(size) / (xmax - xmin)).min(f64::from(size) / (ymax - ymin)) * 0.9;
     let to_px = |x: f64, y: f64| -> (i32, i32) {
-        let px = (x - xmin) * scale + (size as f64 - (xmax - xmin) * scale) / 2.0;
-        let py = size as f64 - ((y - ymin) * scale + (size as f64 - (ymax - ymin) * scale) / 2.0);
+        let px = (x - xmin) * scale + (f64::from(size) - (xmax - xmin) * scale) / 2.0;
+        let py = f64::from(size) - ((y - ymin) * scale + (f64::from(size) - (ymax - ymin) * scale) / 2.0);
         (px as i32, py as i32)
     };
 
@@ -206,7 +207,7 @@ fn render_overlay(
         for seg in &segs {
             let mut prev = to_px(seg.p0.0, seg.p0.1);
             for s in 1..=16 {
-                let pt = hobby::bezier_point(seg, s as f64 / 16.0);
+                let pt = hobby::bezier_point(seg, f64::from(s) / 16.0);
                 let cur = to_px(pt.0, pt.1);
                 draw_line(&mut img, prev.0, prev.1, cur.0, cur.1, white);
                 prev = cur;
@@ -232,7 +233,7 @@ fn render_overlay(
     Ok(())
 }
 
-fn nearest_segment_dist(pt: (f64, f64), segments: &[((f64, f64), (f64, f64))]) -> f64 {
+fn nearest_segment_dist(pt: (f64, f64), segments: &[Segment2D]) -> f64 {
     let mut best = f64::MAX;
     for &((ax, ay), (bx, by)) in segments {
         let dx = bx - ax;

@@ -1,5 +1,4 @@
-use leptos::*;
-use wasm_bindgen::JsCast;
+use leptos::{component, view, Callback, IntoView, create_signal, create_node_ref, html, create_effect, web_sys, SignalGetUntracked, Callable, SignalSet, event_target_value};
 
 #[component]
 pub fn NamePrompt(
@@ -15,7 +14,7 @@ pub fn NamePrompt(
         if let Some(input) = input_ref.get() {
             let el: &web_sys::HtmlInputElement = &input;
             let _ = el.focus();
-            let _ = el.select();
+            let () = el.select();
         }
     });
 

@@ -1,4 +1,4 @@
-/// Nimby Rails .nrclip data types with version-aware serialization.
+//! Nimby Rails .nrclip data types with version-aware serialization.
 
 use anyhow::Result;
 use crate::wire::{PayloadReader, PayloadWriter};

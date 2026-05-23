@@ -243,7 +243,7 @@ impl NrclipWrite for Track {
             for cv in &self.conflicts {
                 w.write_varint(cv.len() as u64);
                 for c in cv {
-                    w.write_i64z(c.mode as i64);
+                    w.write_i64z(i64::from(c.mode));
                     w.write_i64z(c.track_id);
                     if (28..192).contains(&ver) { w.write_i64z(0); }
                     w.write_i32z(c.lat);
@@ -275,7 +275,7 @@ impl NrclipWrite for Track {
 
         if ver >= 33 {
             w.write_i64z(self.parallel_to_id.unwrap_or(0));
-            w.write_i64z(self.parallel_kind.unwrap_or(0) as i64);
+            w.write_i64z(i64::from(self.parallel_kind.unwrap_or(0)));
             w.write_f32(self.parallel_to_t.unwrap_or(0.0));
             w.write_i32z(self.parallel_to_direction.unwrap_or(0));
             w.write_f32(self.parallel_to_offset.unwrap_or(0.0));

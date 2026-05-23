@@ -27,12 +27,12 @@ fn main() -> Result<()> {
     let file = NrclipFile {
         version: MODEL_VERSION,
         collections: vec![Collection {
-            id_a: 5641124955619280206,
-            id_b: 81985529216486895,
+            id_a: 5_641_124_955_619_280_206,
+            id_b: 81_985_529_216_486_895,
             name: "Rust Test".into(),
             clips: vec![Clip {
                 guid: "test".into(),
-                clip_id: 0xDEADBEEF,
+                clip_id: 0xDEAD_BEEF,
                 tracks,
                 ..Clip::default()
             }],
@@ -41,13 +41,13 @@ fn main() -> Result<()> {
     };
 
     let file_data = file.to_bytes()?;
-    fs::write(&output, &file_data).with_context(|| format!("write {}", output))?;
+    fs::write(&output, &file_data).with_context(|| format!("write {output}"))?;
     println!("Wrote {} bytes to {}", file_data.len(), output);
 
     let decoded = NrclipFile::from_bytes(&file_data)?;
     let total_tracks: usize = decoded.collections.iter()
         .flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
-    println!("Verified: {} tracks", total_tracks);
+    println!("Verified: {total_tracks} tracks");
 
     Ok(())
 }
@@ -64,10 +64,10 @@ fn generate_simple_track(count: usize) -> Vec<Track> {
 }
 
 fn generate_double_track() -> Vec<Track> {
-    let track_spacing = 15.0;
-
     struct Waypoint { x: f64, y: f64, layer: i32 }
     struct Segment { length: f64, turn: f64, layer: i32, nodes: usize }
+
+    let track_spacing = 15.0;
 
     let segments = vec![
         Segment { length: 300.0, turn: 0.0,    layer: 0,  nodes: 0 },
@@ -106,11 +106,11 @@ fn generate_double_track() -> Vec<Track> {
     let mut nodes = Vec::new();
 
     // Track 1
-    for i in 0..n {
+    for (i, wp) in waypoints.iter().enumerate() {
         let id = (i + 1) as i64;
         nodes.push(Track {
             node_id: id,
-            x: waypoints[i].x, y: waypoints[i].y, layer: waypoints[i].layer,
+            x: wp.x, y: wp.y, layer: wp.layer,
             prev_node: if i == 0 { 0 } else { id - 1 },
             next_node: if i == n - 1 { 0 } else { id + 1 },
             ..Track::default()
