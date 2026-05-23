@@ -2855,6 +2855,7 @@ name = "nimby-gen-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs-next",
  "image",
  "nimby-gen-core",
  "serde_json",

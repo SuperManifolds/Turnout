@@ -13,15 +13,91 @@ use std::collections::{HashMap, HashSet};
 
 use crate::hobby;
 use crate::nrc1::NrclipFile;
-use crate::types::{Collection, Clip, Track};
+use crate::types::{Collection, Clip, Track, TrackKind, ModMeta};
 
 const MODEL_VERSION: u32 = 226;
 const MAX_SPACING: f64 = 200.0;
 
+// Vanilla game track type keys
+const TRACK_TYPE_HIGH_SPEED: i32 = 1;
+const TRACK_TYPE_TRAM: i32 = 2;
+const TRACK_TYPE_MEDIUM: i32 = 3;
+
+/// Map OSM way tags to a vanilla game track type.
+fn osm_to_track_type(tags: &serde_json::Value) -> i32 {
+    let railway = tags.get("railway").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Tram / light rail
+    if railway == "tram" || railway == "light_rail" {
+        return TRACK_TYPE_TRAM;
+    }
+
+    // High speed: check multiple indicators
+    if tags.get("highspeed").and_then(|v| v.as_str()) == Some("yes") {
+        return TRACK_TYPE_HIGH_SPEED;
+    }
+    if tags.get("usage").and_then(|v| v.as_str()) == Some("highspeed") {
+        return TRACK_TYPE_HIGH_SPEED;
+    }
+    if let Some(ms) = tags.get("maxspeed").and_then(|v| v.as_str()) {
+        if parse_maxspeed_kmh(ms) >= 200.0 {
+            return TRACK_TYPE_HIGH_SPEED;
+        }
+    }
+
+    // Default: medium speed
+    TRACK_TYPE_MEDIUM
+}
+
+/// Parse an OSM maxspeed value to km/h. Handles "200", "79 mph", etc.
+fn parse_maxspeed_kmh(s: &str) -> f64 {
+    let s = s.trim();
+    if let Some(mph) = s.strip_suffix("mph") {
+        mph.trim().parse::<f64>().unwrap_or(0.0) * 1.60934
+    } else if let Some(knots) = s.strip_suffix("knots") {
+        knots.trim().parse::<f64>().unwrap_or(0.0) * 1.852
+    } else {
+        s.parse::<f64>().unwrap_or(0.0)
+    }
+}
+
+/// Extract vanilla TrackKind definitions (keys 1,2,3) and their ModMeta from a
+/// game collections.nrclip file. Returns (track_kinds, mod_metas) for inclusion
+/// in generated blueprints.
+pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<(Vec<(i32, TrackKind)>, Vec<ModMeta>)> {
+    let data = std::fs::read(collections_path).context("read collections.nrclip")?;
+    let file = NrclipFile::from_bytes(&data).context("parse collections.nrclip")?;
+
+    // Find a clip that has the vanilla track kinds (keys 1, 2, 3)
+    for coll in &file.collections {
+        for clip in &coll.clips {
+            let has_all = [1, 2, 3].iter().all(|key| {
+                clip.track_kinds.iter().any(|(k, _)| k == key)
+            });
+            if has_all {
+                let kinds: Vec<(i32, TrackKind)> = clip.track_kinds.iter()
+                    .filter(|(k, _)| *k >= 1 && *k <= 3)
+                    .cloned()
+                    .collect();
+                return Ok((kinds, clip.mod_metas.clone()));
+            }
+        }
+    }
+
+    anyhow::bail!("vanilla track kinds (1,2,3) not found in collections.nrclip")
+}
+
 /// Import OpenRailwayMap Overpass JSON into a Nimby Rails .nrclip file.
 /// Returns the raw file bytes ready to write to disk.
 /// `railway_types`: if non-empty, only import ways whose `railway` tag is in this list.
-pub fn import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Vec<u8>> {
+/// `track_kinds`/`mod_metas`: vanilla TrackKind definitions from the game, if available.
+pub fn import_orm(
+    json: &str,
+    name: &str,
+    railway_types: &[String],
+    track_kinds: Vec<(i32, TrackKind)>,
+    mod_metas: Vec<ModMeta>,
+) -> Result<Vec<u8>> {
     let data: serde_json::Value = serde_json::from_str(json).context("parse JSON")?;
     let elements = data["elements"].as_array().context("no elements")?;
     let blueprint_name = name.to_string();
@@ -29,8 +105,10 @@ pub fn import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Ve
     // Parse OSM nodes and ways, including layer tags for elevation
     let mut osm_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
     let mut ways: Vec<Vec<u64>> = Vec::new();
-    let mut way_layers: Vec<i32> = Vec::new(); // OSM layer tag per way
-    let mut node_layer: HashMap<u64, i32> = HashMap::new(); // node → layer
+    let mut way_layers: Vec<i32> = Vec::new();
+    let mut way_track_types: Vec<i32> = Vec::new();
+    let mut node_layer: HashMap<u64, i32> = HashMap::new();
+    let mut node_track_type: HashMap<u64, i32> = HashMap::new();
     for e in elements {
         match e["type"].as_str() {
             Some("node") => {
@@ -48,22 +126,23 @@ pub fn import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Ve
                 }
                 let nids: Vec<u64> = e["nodes"].as_array().unwrap()
                     .iter().map(|n| n.as_u64().unwrap()).collect();
-                let layer: i32 = e.get("tags")
-                    .and_then(|t| t.get("layer"))
+                let tags = e.get("tags").cloned().unwrap_or_default();
+                let layer: i32 = tags.get("layer")
                     .and_then(|l| l.as_str())
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
+                let tt = osm_to_track_type(&tags);
                 if nids.len() >= 2 {
-                    // Assign layer to all nodes in this way
                     for &nid in &nids {
                         node_layer.entry(nid)
                             .and_modify(|existing| {
-                                // Keep the layer with highest absolute value
                                 if layer.abs() > existing.abs() { *existing = layer; }
                             })
                             .or_insert(layer);
+                        node_track_type.entry(nid).or_insert(tt);
                     }
                     way_layers.push(layer);
+                    way_track_types.push(tt);
                     ways.push(nids);
                 }
             }
@@ -399,25 +478,28 @@ pub fn import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Ve
 
     for (ri, simp) in simplified.iter().enumerate() {
         let mut chain: Vec<RouteNodeInfo> = Vec::new();
-        let mut last_layer: i32 = 0; // for interpolated nodes
+        let mut last_layer: i32 = 0;
+        let mut last_track_type: i32 = TRACK_TYPE_MEDIUM;
 
         for (si, &(orig_idx, x, y)) in simp.iter().enumerate() {
             let gid = node_id_counter;
             node_id_counter += 100;
             let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
 
-            // Look up elevation layer from OSM data
-            let layer = if orig_idx != usize::MAX {
+            // Look up elevation layer and track type from OSM data
+            let (layer, track_type) = if orig_idx != usize::MAX {
                 let osm_nid = routes[ri][orig_idx];
                 let l = node_layer.get(&osm_nid).copied().unwrap_or(0);
+                let tt = node_track_type.get(&osm_nid).copied().unwrap_or(TRACK_TYPE_MEDIUM);
                 last_layer = l;
-                l
+                last_track_type = tt;
+                (l, tt)
             } else {
-                last_layer // interpolated node inherits from previous
+                (last_layer, last_track_type)
             };
 
             track_nodes.push(Track {
-                node_id: gid, x, y, layer,
+                node_id: gid, x, y, layer, track_type,
                 prev_node: prev,
                 ..Track::default()
             });
@@ -611,6 +693,8 @@ pub fn import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Ve
                 center_x: cx,
                 center_y: cy,
                 tracks: track_nodes,
+                track_kinds,
+                mod_metas,
                 ..Clip::default()
             }],
             ..Collection::default()

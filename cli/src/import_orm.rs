@@ -10,7 +10,12 @@ fn main() -> Result<()> {
         .replace('_', " ");
 
     let json = fs::read_to_string(json_path).context("read JSON")?;
-    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name, &[])?;
+    // Try to find vanilla track kinds from the game's collections.nrclip
+    let (track_kinds, mod_metas) = find_collections_nrclip()
+        .and_then(|path| nimby_gen_core::import::extract_vanilla_track_kinds(&path).ok())
+        .unwrap_or_default();
+
+    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name, &[], track_kinds, mod_metas)?;
 
     fs::write(output, &file_data)?;
     println!("Wrote {} bytes to {}", file_data.len(), output);
@@ -29,4 +34,38 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn find_collections_nrclip() -> Option<String> {
+    let home = dirs_next::home_dir()?;
+
+    let candidates = vec![
+        // macOS CrossOver
+        {
+            let mut paths = vec![];
+            let bottles = home.join("Library/Application Support/CrossOver/Bottles");
+            if let Ok(entries) = std::fs::read_dir(&bottles) {
+                for entry in entries.flatten() {
+                    let users = entry.path().join("drive_c/users");
+                    if let Ok(u) = std::fs::read_dir(&users) {
+                        for user in u.flatten() {
+                            paths.push(user.path().join("Saved Games/Weird and Wry/NIMBY Rails/collections.nrclip"));
+                        }
+                    }
+                }
+            }
+            paths
+        },
+        // Windows
+        vec![home.join("Saved Games/Weird and Wry/NIMBY Rails/collections.nrclip")],
+    ];
+
+    for group in candidates {
+        for path in group {
+            if path.exists() {
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
 }
