@@ -109,6 +109,7 @@ pub fn import_orm(
     let mut way_track_types: Vec<i32> = Vec::new();
     let mut node_layer: HashMap<u64, i32> = HashMap::new();
     let mut node_track_type: HashMap<u64, i32> = HashMap::new();
+    let mut node_maxspeed: HashMap<u64, f32> = HashMap::new(); // m/s
     for e in elements {
         match e["type"].as_str() {
             Some("node") => {
@@ -132,6 +133,10 @@ pub fn import_orm(
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
                 let tt = osm_to_track_type(&tags);
+                let maxspeed_ms = tags.get("maxspeed")
+                    .and_then(|v| v.as_str())
+                    .map(|s| (parse_maxspeed_kmh(s) / 3.6) as f32)
+                    .filter(|&v| v > 0.0);
                 if nids.len() >= 2 {
                     for &nid in &nids {
                         node_layer.entry(nid)
@@ -140,6 +145,9 @@ pub fn import_orm(
                             })
                             .or_insert(layer);
                         node_track_type.entry(nid).or_insert(tt);
+                        if let Some(ms) = maxspeed_ms {
+                            node_maxspeed.entry(nid).or_insert(ms);
+                        }
                     }
                     way_layers.push(layer);
                     way_track_types.push(tt);
@@ -480,26 +488,30 @@ pub fn import_orm(
         let mut chain: Vec<RouteNodeInfo> = Vec::new();
         let mut last_layer: i32 = 0;
         let mut last_track_type: i32 = TRACK_TYPE_MEDIUM;
+        let mut last_maxspeed: Option<f32> = None;
 
         for (si, &(orig_idx, x, y)) in simp.iter().enumerate() {
             let gid = node_id_counter;
             node_id_counter += 100;
             let prev = if si > 0 { chain[si - 1].game_id } else { 0 };
 
-            // Look up elevation layer and track type from OSM data
-            let (layer, track_type) = if orig_idx != usize::MAX {
+            // Look up elevation layer, track type, and speed from OSM data
+            let (layer, track_type, max_speed) = if orig_idx != usize::MAX {
                 let osm_nid = routes[ri][orig_idx];
                 let l = node_layer.get(&osm_nid).copied().unwrap_or(0);
                 let tt = node_track_type.get(&osm_nid).copied().unwrap_or(TRACK_TYPE_MEDIUM);
+                let ms = node_maxspeed.get(&osm_nid).copied();
                 last_layer = l;
                 last_track_type = tt;
-                (l, tt)
+                last_maxspeed = ms;
+                (l, tt, ms)
             } else {
-                (last_layer, last_track_type)
+                (last_layer, last_track_type, last_maxspeed)
             };
 
             track_nodes.push(Track {
                 node_id: gid, x, y, layer, track_type,
+                user_max_speed: max_speed.or(Some(0.0)),
                 prev_node: prev,
                 ..Track::default()
             });
