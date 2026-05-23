@@ -1,4 +1,4 @@
-use leptos::{wasm_bindgen, component, view, mount_to_body, IntoView, create_signal, Callback, SignalSet, Show, SignalGet, spawn_local};
+use leptos::{wasm_bindgen, component, view, mount_to_body, IntoView, create_signal, create_effect, Callback, SignalSet, SignalGet, Show, spawn_local};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -12,7 +12,6 @@ extern "C" {
 }
 
 fn setup_theme_handling() {
-    // Apply saved theme once the map is loaded
     let on_load = Closure::once(move || {
         spawn_local(async {
             let settings = components::app_settings::load_settings().await;
@@ -22,7 +21,6 @@ fn setup_theme_handling() {
     map_on_load(on_load.as_ref().unchecked_ref());
     on_load.forget();
 
-    // Listen for settings changes from the settings window
     spawn_local(async {
         let window = web_sys::window().expect("window");
         let Ok(tauri) = js_sys::Reflect::get(&window, &"__TAURI__".into()) else { return };
@@ -56,13 +54,31 @@ fn App() -> impl IntoView {
         setup_theme_handling();
     }
 
+    // Restore persisted session state
     let (available_types, set_available_types) = create_signal::<Vec<String>>(vec![]);
     let (enabled_types, set_enabled_types) = create_signal(
-        components::track_filter::default_enabled_types()
+        utils::load_string_vec("enabled_types")
+            .unwrap_or_else(components::track_filter::default_enabled_types)
     );
     let (has_selection, set_has_selection) = create_signal(false);
-    let (apply_speed_limits, set_apply_speed_limits) = create_signal(true);
-    let (clip_to_selection, set_clip_to_selection) = create_signal(false);
+    let (apply_speed_limits, set_apply_speed_limits) = create_signal(
+        utils::load_bool("apply_speed_limits", true)
+    );
+    let (clip_to_selection, set_clip_to_selection) = create_signal(
+        utils::load_bool("clip_to_selection", false)
+    );
+
+    // Persist on change
+    create_effect(move |_| {
+        utils::save_bool("apply_speed_limits", apply_speed_limits.get());
+    });
+    create_effect(move |_| {
+        utils::save_bool("clip_to_selection", clip_to_selection.get());
+    });
+    create_effect(move |_| {
+        let types = enabled_types.get();
+        utils::save_string_vec("enabled_types", &types);
+    });
 
     let on_filter_change = Callback::new(move |types: Vec<String>| {
         set_enabled_types.set(types);

@@ -36,13 +36,22 @@ function preserve_custom_layers(prev, next) {
 }
 
 window.map_init = function(container) {
+    const saved = JSON.parse(localStorage.getItem("map_view") || "null");
     _map = new maplibregl.Map({
         container: container,
         style: get_preferred_style(),
-        center: [8.534, 52.033],
-        zoom: 14,
+        center: saved ? [saved.lng, saved.lat] : [8.534, 52.033],
+        zoom: saved ? saved.zoom : 14,
     });
     _map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    // Persist map position on move
+    _map.on("moveend", function() {
+        const c = _map.getCenter();
+        localStorage.setItem("map_view", JSON.stringify({
+            lng: c.lng, lat: c.lat, zoom: _map.getZoom()
+        }));
+    });
 
     // Flush deferred on-load callbacks
     _on_load_callbacks.forEach(function(cb) { _map.on("load", cb); });
