@@ -4,6 +4,7 @@ mod layer_switcher;
 mod name_prompt;
 pub mod track_filter;
 mod settings;
+pub mod app_settings;
 
 pub use map::Map;
 pub use search::Search;
@@ -11,3 +12,4 @@ pub use layer_switcher::LayerSwitcher;
 pub use name_prompt::NamePrompt;
 pub use track_filter::TrackFilter;
 pub use settings::Settings;
+pub use app_settings::AppSettings;

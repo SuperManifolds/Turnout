@@ -10,6 +10,8 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
+    let is_settings = components::app_settings::is_settings_window();
+
     let (available_types, set_available_types) = create_signal::<Vec<String>>(vec![]);
     let (enabled_types, set_enabled_types) = create_signal(
         components::track_filter::default_enabled_types()
@@ -23,32 +25,37 @@ fn App() -> impl IntoView {
     });
 
     view! {
-        <main>
-            <section id="map-container">
-                <components::Map
-                    set_available_types=set_available_types
-                    enabled_types=enabled_types
-                    set_has_selection=set_has_selection
-                    apply_speed_limits=apply_speed_limits
-                    clip_to_selection=clip_to_selection
-                />
-                <components::Search />
-                <components::LayerSwitcher />
-                <Show when=move || has_selection.get()>
-                    <div id="sidebar">
-                        <components::TrackFilter
-                            available=available_types
-                            on_change=on_filter_change
-                        />
-                        <components::Settings
-                            apply_speed_limits=apply_speed_limits
-                            set_apply_speed_limits=set_apply_speed_limits
-                            clip_to_selection=clip_to_selection
-                            set_clip_to_selection=set_clip_to_selection
-                        />
-                    </div>
-                </Show>
-            </section>
-        </main>
+        <Show when=move || is_settings>
+            <components::AppSettings />
+        </Show>
+        <Show when=move || !is_settings>
+            <main>
+                <section id="map-container">
+                    <components::Map
+                        set_available_types=set_available_types
+                        enabled_types=enabled_types
+                        set_has_selection=set_has_selection
+                        apply_speed_limits=apply_speed_limits
+                        clip_to_selection=clip_to_selection
+                    />
+                    <components::Search />
+                    <components::LayerSwitcher />
+                    <Show when=move || has_selection.get()>
+                        <div id="sidebar">
+                            <components::TrackFilter
+                                available=available_types
+                                on_change=on_filter_change
+                            />
+                            <components::Settings
+                                apply_speed_limits=apply_speed_limits
+                                set_apply_speed_limits=set_apply_speed_limits
+                                clip_to_selection=clip_to_selection
+                                set_clip_to_selection=set_clip_to_selection
+                            />
+                        </div>
+                    </Show>
+                </section>
+            </main>
+        </Show>
     }
 }
