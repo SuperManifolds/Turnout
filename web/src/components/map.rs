@@ -23,6 +23,7 @@ extern "C" {
     fn map_set_cursor(cursor: &str);
     fn map_set_drag_pan(enabled: bool);
     fn map_fly_to(lng: f64, lat: f64, zoom: f64);
+    fn map_add_preview_layer();
     fn map_on_mousedown(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_on_mousemove(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_on_mouseup(callback: &Closure<dyn Fn(f64, f64)>);
@@ -119,7 +120,11 @@ fn format_bbox(s: f64, w: f64, n: f64, e: f64) -> String {
 }
 
 #[component]
-pub fn Map() -> impl IntoView {
+pub fn Map(
+    set_available_types: WriteSignal<Vec<String>>,
+    enabled_types: ReadSignal<Vec<String>>,
+    set_has_selection: WriteSignal<bool>,
+) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
     let (status, set_status) = create_signal(String::from("Navigate to an area, then click Select Area"));
@@ -151,6 +156,7 @@ pub fn Map() -> impl IntoView {
         let on_load = Closure::new(move || {
             map_add_raster_source("orm", ORM_TILES, "\u{00a9} OpenRailwayMap");
             map_add_raster_layer("orm-layer", "orm", 0.7);
+            map_add_preview_layer();
             map_add_geojson_source("bbox");
             map_add_fill_layer("bbox-fill", "bbox", BBOX_COLOR, 0.15);
             map_add_line_layer("bbox-outline", "bbox", BBOX_COLOR, 2.0);
@@ -249,6 +255,69 @@ pub fn Map() -> impl IntoView {
         on_mouseup.forget();
     });
 
+    // Debounced preview: when bbox changes, fetch ORM data and show on map
+    let preview_timeout = store_value::<Option<i32>>(None);
+    let cached_json = store_value::<Option<String>>(None);
+    let cached_bbox = store_value::<Option<(f64, f64, f64, f64)>>(None);
+
+    create_effect(move |_| {
+        let current_bbox = bbox.get();
+        if current_bbox.is_none() {
+            map_set_geojson("preview", empty_geojson());
+            cached_json.set_value(None);
+            cached_bbox.set_value(None);
+            return;
+        }
+        let (s, w, n, e) = current_bbox.unwrap();
+        // Skip if bbox unchanged
+        if cached_bbox.get_value() == current_bbox { return; }
+
+        // Cancel previous debounce
+        if let Some(h) = preview_timeout.get_value() {
+            web_sys::window().unwrap().clear_timeout_with_handle(h);
+        }
+        let cb = Closure::once(move || {
+            spawn_local(async move {
+                set_status.set("Fetching tracks...".into());
+                let query = format!(
+                    "[out:json][timeout:30];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
+                );
+                match fetch_overpass(&query).await {
+                    Ok(json) => {
+                        let types = extract_railway_types(&json);
+                        let count = count_ways(&json);
+                        set_available_types.set(types);
+                        set_has_selection.set(true);
+                        let enabled = enabled_types.get_untracked();
+                        let geojson = osm_json_to_geojson(&json, &enabled);
+                        map_set_geojson("preview", &geojson);
+                        cached_json.set_value(Some(json));
+                        cached_bbox.set_value(Some((s, w, n, e)));
+                        set_status.set(format!("{count} ways in selection"));
+                    }
+                    Err(err) => {
+                        set_status.set(format!("Fetch failed: {err}"));
+                    }
+                }
+            });
+        });
+        let h = web_sys::window().unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(), 500
+            ).unwrap_or(0);
+        cb.forget();
+        preview_timeout.set_value(Some(h));
+    });
+
+    // Re-filter preview when enabled types change
+    create_effect(move |_| {
+        let enabled = enabled_types.get();
+        if let Some(json) = cached_json.get_value() {
+            let geojson = osm_json_to_geojson(&json, &enabled);
+            map_set_geojson("preview", &geojson);
+        }
+    });
+
     let on_select_area = move |_| {
         set_status.set("Click and drag to draw a rectangle...".into());
         set_bbox.set(None);
@@ -260,7 +329,12 @@ pub fn Map() -> impl IntoView {
 
     let on_clear = move |_| {
         clear_bbox_display();
+        map_set_geojson("preview", empty_geojson());
         set_bbox.set(None);
+        cached_json.set_value(None);
+        cached_bbox.set_value(None);
+        set_has_selection.set(false);
+        set_available_types.set(vec![]);
         mode.set_value(Mode::Idle);
         set_status.set("Navigate to an area, then click Select Area".into());
     };
@@ -275,8 +349,9 @@ pub fn Map() -> impl IntoView {
     let on_name_confirm = Callback::new(move |name: String| {
         set_show_name_prompt.set(false);
         let Some((s, w, n, e)) = bbox.get_untracked() else { return };
+        let cached = cached_json.get_value();
         spawn_local(async move {
-            do_import(s, w, n, e, &name, set_status, set_success_message).await;
+            do_import(s, w, n, e, &name, cached.as_deref(), set_status, set_success_message).await;
         });
     });
 
@@ -318,17 +393,21 @@ pub fn Map() -> impl IntoView {
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
-    // Step 1: Fetch Overpass data
-    set_status.set("Fetching railway data...".into());
-    let query = format!(
-        "[out:json][timeout:60];(way[\"railway\"=\"rail\"]({s},{w},{n},{e}););(._;>;);out body;"
-    );
-    let json = match fetch_overpass(&query).await {
-        Ok(j) => j,
-        Err(err) => {
-            set_status.set(format!("Fetch failed: {err}"));
-            return;
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
+    // Step 1: Use cached JSON or fetch
+    let json = if let Some(cached) = cached_json {
+        cached.to_string()
+    } else {
+        set_status.set("Fetching railway data...".into());
+        let query = format!(
+            "[out:json][timeout:60];(way[\"railway\"=\"rail\"]({s},{w},{n},{e}););(._;>;);out body;"
+        );
+        match fetch_overpass(&query).await {
+            Ok(j) => j,
+            Err(err) => {
+                set_status.set(format!("Fetch failed: {err}"));
+                return;
+            }
         }
     };
 
@@ -419,6 +498,90 @@ async fn tauri_invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
     JsFuture::from(js_sys::Promise::from(promise))
         .await
         .map_err(|e| format!("{e:?}"))
+}
+
+fn osm_json_to_geojson(json: &str, enabled_types: &[String]) -> String {
+    let data: serde_json::Value = match serde_json::from_str(json) {
+        Ok(d) => d,
+        Err(_) => return empty_geojson().to_string(),
+    };
+    let elements = match data["elements"].as_array() {
+        Some(e) => e,
+        None => return empty_geojson().to_string(),
+    };
+
+    // Build node lookup
+    let mut nodes: std::collections::HashMap<u64, (f64, f64)> = std::collections::HashMap::new();
+    for e in elements {
+        if e["type"].as_str() == Some("node") {
+            if let (Some(id), Some(lat), Some(lon)) = (e["id"].as_u64(), e["lat"].as_f64(), e["lon"].as_f64()) {
+                nodes.insert(id, (lon, lat));
+            }
+        }
+    }
+
+    // Build features from ways
+    let mut features = Vec::new();
+    for e in elements {
+        if e["type"].as_str() != Some("way") { continue; }
+        let Some(node_ids) = e["nodes"].as_array() else { continue };
+        let coords: Vec<String> = node_ids.iter()
+            .filter_map(|n| n.as_u64())
+            .filter_map(|id| nodes.get(&id))
+            .map(|(lon, lat)| format!("[{lon},{lat}]"))
+            .collect();
+        if coords.len() < 2 { continue; }
+
+        // Extract railway-relevant tags
+        let tags = &e["tags"];
+        let railway = tags["railway"].as_str().unwrap_or("rail");
+        if !enabled_types.iter().any(|t| t == railway) { continue; }
+        let mut props = vec![format!(r#""railway":"{railway}""#)];
+        for key in &["usage", "service", "name", "maxspeed", "electrified", "gauge", "layer", "bridge", "tunnel"] {
+            if let Some(val) = tags[*key].as_str() {
+                let escaped = val.replace('\\', "\\\\").replace('"', "\\\"");
+                props.push(format!(r#""{key}":"{escaped}""#));
+            }
+        }
+
+        features.push(format!(
+            r#"{{"type":"Feature","properties":{{{}}},"geometry":{{"type":"LineString","coordinates":[{}]}}}}"#,
+            props.join(","),
+            coords.join(",")
+        ));
+    }
+
+    format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(","))
+}
+
+fn extract_railway_types(json: &str) -> Vec<String> {
+    let data: serde_json::Value = match serde_json::from_str(json) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    let mut types = std::collections::HashSet::new();
+    if let Some(elements) = data["elements"].as_array() {
+        for e in elements {
+            if e["type"].as_str() == Some("way") {
+                if let Some(rt) = e["tags"]["railway"].as_str() {
+                    types.insert(rt.to_string());
+                }
+            }
+        }
+    }
+    let mut sorted: Vec<String> = types.into_iter().collect();
+    sorted.sort();
+    sorted
+}
+
+fn count_ways(json: &str) -> usize {
+    let data: serde_json::Value = match serde_json::from_str(json) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    data["elements"].as_array()
+        .map(|e| e.iter().filter(|el| el["type"].as_str() == Some("way")).count())
+        .unwrap_or(0)
 }
 
 /// Parse an OpenRailwayMap link like:

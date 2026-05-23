@@ -4,8 +4,8 @@ let _map = null;
 
 var STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 var STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-var CUSTOM_SOURCE_IDS = ["orm", "bbox", "handles"];
-var CUSTOM_LAYER_IDS = ["orm-layer", "bbox-fill", "bbox-outline", "handles-layer"];
+var CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles"];
+var CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer"];
 
 function get_preferred_style() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? STYLE_DARK : STYLE_LIGHT;
@@ -191,6 +191,39 @@ window.map_add_circle_layer = function(id, source, color, radius) {
             "circle-stroke-width": 2,
         },
     });
+};
+
+window.map_add_preview_layer = function() {
+    if (!_map) return;
+    _map.addSource("preview", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+    });
+    // Insert before bbox layers so selection draws on top of preview
+    var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
+    // Glow/casing layer for visibility
+    _map.addLayer({
+        id: "preview-glow",
+        type: "line",
+        source: "preview",
+        paint: {
+            "line-color": "#0693FF",
+            "line-width": 8,
+            "line-opacity": 0.25,
+            "line-blur": 4
+        }
+    }, beforeLayer);
+    // Main line
+    _map.addLayer({
+        id: "preview-layer",
+        type: "line",
+        source: "preview",
+        paint: {
+            "line-color": "#0693FF",
+            "line-width": 2.5,
+            "line-opacity": 0.9
+        }
+    }, beforeLayer);
 };
 
 window.map_query_features = function(lng, lat, layer_id) {
