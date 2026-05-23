@@ -28,6 +28,19 @@ pub fn save_bool(key: &str, value: bool) {
     }
 }
 
+pub fn load_u32(key: &str, default: u32) -> u32 {
+    storage()
+        .and_then(|s| s.get_item(key).ok()?)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+pub fn save_u32(key: &str, value: u32) {
+    if let Some(s) = storage() {
+        let _ = s.set_item(key, &value.to_string());
+    }
+}
+
 pub fn load_string_vec(key: &str) -> Option<Vec<String>> {
     let json = storage()?.get_item(key).ok()??;
     serde_json::from_str(&json).ok()
