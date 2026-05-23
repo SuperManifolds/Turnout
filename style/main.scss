@@ -421,6 +421,12 @@ button {
             gap: var(--spacing-sm);
             margin-top: var(--spacing-sm);
         }
+
+        .theme-options button.active {
+            background: var(--color-accent);
+            border-color: var(--color-accent);
+            color: #fff;
+        }
     }
 
     .path-display {

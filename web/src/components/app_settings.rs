@@ -1,12 +1,18 @@
-use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, spawn_local, web_sys};
+use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, spawn_local, web_sys, CollectView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
+
+#[wasm_bindgen]
+extern "C" {
+    fn map_set_theme(theme: &str);
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
     pub check_for_updates: bool,
+    pub map_theme: String,
 }
 
 impl Default for Settings {
@@ -14,9 +20,16 @@ impl Default for Settings {
         Self {
             mods_dir_override: None,
             check_for_updates: true,
+            map_theme: "system".to_string(),
         }
     }
 }
+
+const THEME_OPTIONS: &[(&str, &str)] = &[
+    ("system", "Follow System"),
+    ("light", "Light"),
+    ("dark", "Dark"),
+];
 
 pub async fn load_settings() -> Settings {
     match tauri_invoke("get_settings", JsValue::NULL).await {
@@ -56,7 +69,6 @@ async fn tauri_invoke(cmd: &str, args: impl Into<JsValue>) -> Result<JsValue, Js
 pub fn is_settings_window() -> bool {
     let window = web_sys::window().expect("window");
     let Ok(_tauri) = js_sys::Reflect::get(&window, &"__TAURI__".into()) else { return false };
-    // Check window label via __TAURI_INTERNALS__
     let Ok(internals) = js_sys::Reflect::get(&window, &"__TAURI_INTERNALS__".into()) else { return false };
     let Ok(metadata) = js_sys::Reflect::get(&internals, &"metadata".into()) else { return false };
     let Ok(label) = js_sys::Reflect::get(&metadata, &"currentWindow".into()) else { return false };
@@ -64,19 +76,28 @@ pub fn is_settings_window() -> bool {
     label_obj.as_string().as_deref() == Some("settings")
 }
 
+/// Apply the saved map theme on startup (called from main window).
+pub fn apply_saved_theme() {
+    spawn_local(async {
+        let settings = load_settings().await;
+        map_set_theme(&settings.map_theme);
+    });
+}
+
 #[component]
 pub fn AppSettings() -> impl IntoView {
     let (mods_dir, set_mods_dir) = create_signal::<Option<String>>(None);
     let (detected_dir, set_detected_dir) = create_signal::<Option<String>>(None);
     let (check_updates, set_check_updates) = create_signal(true);
+    let (theme, set_theme) = create_signal("system".to_string());
     let (status, set_status) = create_signal(String::new());
 
-    // Load current settings and detected dir
     create_effect(move |_| {
         spawn_local(async move {
             let settings = load_settings().await;
             set_mods_dir.set(settings.mods_dir_override);
             set_check_updates.set(settings.check_for_updates);
+            set_theme.set(settings.map_theme);
 
             if let Some(dir) = detect_mods_dir().await {
                 set_detected_dir.set(Some(dir));
@@ -100,11 +121,11 @@ pub fn AppSettings() -> impl IntoView {
         let settings = Settings {
             mods_dir_override: mods_dir.get_untracked(),
             check_for_updates: check_updates.get_untracked(),
+            map_theme: theme.get_untracked(),
         };
         spawn_local(async move {
             match save_settings(&settings).await {
                 Ok(()) => {
-                    // Close the settings window
                     let window = web_sys::window().expect("window");
                     let _ = js_sys::Reflect::get(&window, &"close".into())
                         .and_then(JsCast::dyn_into::<js_sys::Function>)
@@ -141,6 +162,25 @@ pub fn AppSettings() -> impl IntoView {
                         <i class="fa-solid fa-rotate"></i>
                         " Auto-detect"
                     </button>
+                </nav>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Map Theme"</legend>
+                <nav class="theme-options">
+                    {THEME_OPTIONS.iter().map(|&(id, label)| {
+                        let id_owned = id.to_string();
+                        let id_check = id.to_string();
+                        view! {
+                            <button
+                                type="button"
+                                class:active=move || theme.get() == id_check
+                                on:click=move |_| set_theme.set(id_owned.clone())
+                            >
+                                {label}
+                            </button>
+                        }
+                    }).collect_view()}
                 </nav>
             </fieldset>
 

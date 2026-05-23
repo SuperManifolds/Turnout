@@ -1,6 +1,7 @@
 // Thin wrappers around MapLibre GL JS API — all logic lives in Rust.
 
 let _map = null;
+let _theme_override = "system"; // "system", "light", "dark"
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -14,6 +15,8 @@ const HANDLE_LINE_WIDTH = 2.5;
 const FEATURE_QUERY_TOLERANCE = 10;
 
 function get_preferred_style() {
+    if (_theme_override === "dark") return STYLE_DARK;
+    if (_theme_override === "light") return STYLE_LIGHT;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? STYLE_DARK : STYLE_LIGHT;
 }
 
@@ -66,8 +69,17 @@ window.map_add_raster_source = function(id, url, attribution) {
 };
 
 function is_dark() {
+    if (_theme_override === "dark") return true;
+    if (_theme_override === "light") return false;
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
+
+window.map_set_theme = function(theme) {
+    _theme_override = theme;
+    if (!_map) return;
+    _map.setStyle(get_preferred_style(), { transformStyle: preserve_custom_layers });
+    _map.once("styledata", update_orm_paint);
+};
 
 function update_orm_paint() {
     if (!_map || !_map.getLayer("orm-layer")) return;

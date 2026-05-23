@@ -12,6 +12,7 @@ const SETTINGS_STORE: &str = "settings.json";
 struct Settings {
     mods_dir_override: Option<String>,
     check_for_updates: bool,
+    map_theme: String, // "system", "light", "dark"
 }
 
 impl Default for Settings {
@@ -19,6 +20,7 @@ impl Default for Settings {
         Self {
             mods_dir_override: None,
             check_for_updates: true,
+            map_theme: "system".to_string(),
         }
     }
 }
@@ -39,6 +41,7 @@ fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String>
     let store = app.store(SETTINGS_STORE).map_err(|e| e.to_string())?;
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
     store.set("check_for_updates", serde_json::json!(settings.check_for_updates));
+    store.set("map_theme", serde_json::json!(settings.map_theme));
     store.save().map_err(|e| e.to_string())?;
     // Notify all windows that settings changed
     let _ = app.emit("settings-changed", &settings);
@@ -106,6 +109,9 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
         check_for_updates: store.get("check_for_updates")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        map_theme: store.get("map_theme")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "system".to_string()),
     }
 }
 
