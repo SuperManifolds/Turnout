@@ -26,17 +26,7 @@
 
 ### Linux
 
-[AppImage (x86)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) · [AppImage (ARM64)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.AppImage) · [DEB (x86)](https://github.com/SuperManifolds/Turnout/releases/latest/download/turnout_amd64.deb) · [DEB (ARM64)](https://github.com/SuperManifolds/Turnout/releases/latest/download/turnout_aarch64.deb)
-
-## Features
-
-- **Select any area** on the map and preview the tracks before importing
-- **Filter by track type** — rail, tram, subway, light rail, narrow gauge, and more
-- **Point or tangent mode** — choose how the game fits curves to your tracks
-- **Speed limits** — optionally apply real-world speed data from OpenStreetMap
-- **Junction detection** — automatic branch topology with proper switch geometry
-- **Blueprint manager** — browse, rename, delete, and fly to your saved blueprints
-- **Cross-platform** — auto-detects Nimby Rails on Windows, macOS (CrossOver/Whisky), and Linux (Proton)
+[AppImage (x86)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) · [AppImage (ARM64)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.AppImage) · [DEB (x86)](https://github.com/SuperManifolds/Turnout/releases/latest/download/turnout_amd64.deb) · [DEB (ARM64)](https://github.com/SuperManifolds/Turnout/releases/latest/
 
 ## Building
 
