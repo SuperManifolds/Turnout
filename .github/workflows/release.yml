@@ -85,5 +85,5 @@ jobs:
           releaseName: "Turnout ${{ github.ref_name }}"
           args: ${{ matrix.args }}
           releaseDraft: true
-          releaseAssetNamePattern: "[name]_[arch][_setup][ext]"
+          assetNamePattern: "[name]_[arch][_setup][ext]"
           generateReleaseNotes: 'true'
