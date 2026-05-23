@@ -8,9 +8,21 @@ mod utils;
 #[wasm_bindgen]
 extern "C" {
     fn map_set_theme(theme: &str);
+    fn map_on_load(callback: &js_sys::Function);
 }
 
-fn listen_for_settings_changes() {
+fn setup_theme_handling() {
+    // Apply saved theme once the map is loaded
+    let on_load = Closure::once(move || {
+        spawn_local(async {
+            let settings = components::app_settings::load_settings().await;
+            map_set_theme(&settings.map_theme);
+        });
+    });
+    map_on_load(on_load.as_ref().unchecked_ref());
+    on_load.forget();
+
+    // Listen for settings changes from the settings window
     spawn_local(async {
         let window = web_sys::window().expect("window");
         let Ok(tauri) = js_sys::Reflect::get(&window, &"__TAURI__".into()) else { return };
@@ -40,9 +52,9 @@ fn main() {
 fn App() -> impl IntoView {
     let is_settings = components::app_settings::is_settings_window();
 
-    // Apply saved theme and listen for settings changes from the settings window
-    components::app_settings::apply_saved_theme();
-    listen_for_settings_changes();
+    if !is_settings {
+        setup_theme_handling();
+    }
 
     let (available_types, set_available_types) = create_signal::<Vec<String>>(vec![]);
     let (enabled_types, set_enabled_types) = create_signal(

@@ -3,11 +3,6 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
-#[wasm_bindgen]
-extern "C" {
-    fn map_set_theme(theme: &str);
-}
-
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
@@ -74,14 +69,6 @@ pub fn is_settings_window() -> bool {
     let Ok(label) = js_sys::Reflect::get(&metadata, &"currentWindow".into()) else { return false };
     let Ok(label_obj) = js_sys::Reflect::get(&label, &"label".into()) else { return false };
     label_obj.as_string().as_deref() == Some("settings")
-}
-
-/// Apply the saved map theme on startup (called from main window).
-pub fn apply_saved_theme() {
-    spawn_local(async {
-        let settings = load_settings().await;
-        map_set_theme(&settings.map_theme);
-    });
 }
 
 #[component]

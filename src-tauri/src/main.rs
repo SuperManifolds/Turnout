@@ -187,7 +187,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
     }
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("Settings")
-        .inner_size(480.0, 380.0)
+        .inner_size(480.0, 450.0)
         .resizable(false)
         .maximizable(false)
         .build();
