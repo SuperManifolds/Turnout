@@ -124,6 +124,7 @@ pub fn Map(
     set_available_types: WriteSignal<Vec<String>>,
     enabled_types: ReadSignal<Vec<String>>,
     set_has_selection: WriteSignal<bool>,
+    apply_speed_limits: ReadSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -351,8 +352,9 @@ pub fn Map(
         let Some((s, w, n, e)) = bbox.get_untracked() else { return };
         let cached = cached_json.get_value();
         let types = enabled_types.get_untracked();
+        let speed = apply_speed_limits.get_untracked();
         spawn_local(async move {
-            do_import(s, w, n, e, &name, cached.as_deref(), &types, set_status, set_success_message).await;
+            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, set_status, set_success_message).await;
         });
     });
 
@@ -394,7 +396,7 @@ pub fn Map(
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
     // Step 1: Use cached JSON or fetch
     let json = if let Some(cached) = cached_json {
         cached.to_string()
@@ -414,7 +416,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 
     // Step 2: Import via Tauri backend
     set_status.set("Processing tracks...".into());
-    let data = match tauri_import_orm(&json, name, railway_types).await {
+    let data = match tauri_import_orm(&json, name, railway_types, apply_speed_limits).await {
         Ok(d) => d,
         Err(err) => {
             set_status.set(format!("Import failed: {err}"));
@@ -467,7 +469,7 @@ fn urlencoding(s: &str) -> String {
     }).collect()
 }
 
-async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Vec<u8>, String> {
+async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool) -> Result<Vec<u8>, String> {
     let args = js_sys::Object::new();
     js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
     js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
@@ -476,6 +478,7 @@ async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String]) -> R
         js_types.push(&JsValue::from_str(t));
     }
     js_sys::Reflect::set(&args, &"railwayTypes".into(), &js_types.into()).ok();
+    js_sys::Reflect::set(&args, &"applySpeedLimits".into(), &JsValue::from_bool(apply_speed_limits)).ok();
     let result = tauri_invoke("import_orm", &args).await?;
     // Result is a JS array of u8
     let arr = js_sys::Uint8Array::new(&result);

@@ -95,6 +95,7 @@ pub fn import_orm(
     json: &str,
     name: &str,
     railway_types: &[String],
+    apply_speed_limits: bool,
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
 ) -> Result<Vec<u8>> {
@@ -511,7 +512,7 @@ pub fn import_orm(
 
             track_nodes.push(Track {
                 node_id: gid, x, y, layer, track_type,
-                user_max_speed: max_speed.or(Some(0.0)),
+                user_max_speed: if apply_speed_limits { max_speed.or(Some(0.0)) } else { Some(0.0) },
                 prev_node: prev,
                 ..Track::default()
             });
