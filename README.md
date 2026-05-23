@@ -16,11 +16,11 @@
 
 ## Install
 
-| Platform | Download |
-|----------|----------|
-| macOS (Apple Silicon) | [Turnout.dmg](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.dmg) |
-| Windows | [Turnout-setup.exe](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_x64-setup.exe) |
-| Linux | [Turnout.deb](https://github.com/SuperManifolds/Turnout/releases/latest/download/turnout_amd64.deb) &ensp; [Turnout.AppImage](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) |
+| Platform | ARM | x86 |
+|----------|-----|-----|
+| macOS | [Turnout.dmg](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.dmg) | [Turnout.dmg](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_x64.dmg) |
+| Windows | [Turnout-setup.exe](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_arm64-setup.exe) | [Turnout-setup.exe](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_x64-setup.exe) |
+| Linux | [Turnout.AppImage](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.AppImage) | [Turnout.AppImage](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) |
 
 ## Features
 
