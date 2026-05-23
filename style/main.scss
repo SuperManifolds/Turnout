@@ -219,6 +219,12 @@ body {
         &:focus { outline: none; border-color: var(--color-accent); }
     }
 
+    .warning {
+        font-size: var(--font-size-sm);
+        color: var(--color-warning);
+        margin: 0;
+    }
+
     nav {
         display: flex;
         justify-content: flex-end;

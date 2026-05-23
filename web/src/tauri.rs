@@ -111,6 +111,15 @@ pub async fn pick_folder() -> Option<String> {
     result.as_string()
 }
 
+pub async fn blueprint_exists(name: &str) -> bool {
+    let args = js_sys::Object::new();
+    let Ok(()) = js_set(&args, "name", &name.into()) else { return false };
+    invoke("blueprint_exists", &args).await
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 pub async fn get_mods_dir() -> Option<String> {
     let result = invoke("get_mods_dir", &JsValue::NULL).await.ok()?;
     result.as_string()

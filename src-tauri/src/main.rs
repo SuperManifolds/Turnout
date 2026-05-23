@@ -87,6 +87,7 @@ fn main() {
             import::count_track_nodes,
             blueprint::get_mods_dir,
             blueprint::save_blueprint,
+            blueprint::blueprint_exists,
             blueprint::list_blueprints,
             blueprint::generate_thumbnail,
             blueprint::delete_blueprint,

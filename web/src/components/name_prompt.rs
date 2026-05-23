@@ -1,4 +1,4 @@
-use leptos::{component, view, Callback, IntoView, create_signal, create_node_ref, html, create_effect, web_sys, SignalGetUntracked, Callable, SignalSet, event_target_value};
+use leptos::{component, view, Callback, IntoView, create_signal, create_node_ref, html, create_effect, web_sys, SignalGet, SignalGetUntracked, SignalSet, Callable, event_target_value, spawn_local, Show};
 
 #[component]
 pub fn NamePrompt(
@@ -7,6 +7,7 @@ pub fn NamePrompt(
     #[prop(into)] on_cancel: Callback<()>,
 ) -> impl IntoView {
     let (name, set_name) = create_signal(default_name);
+    let (exists, set_exists) = create_signal(false);
     let input_ref = create_node_ref::<html::Input>();
 
     // Auto-select the default text so typing replaces it
@@ -18,12 +19,24 @@ pub fn NamePrompt(
         }
     });
 
-    let on_submit = move |ev: web_sys::SubmitEvent| {
-        ev.prevent_default();
+    let do_confirm = move || {
         let n = name.get_untracked().trim().to_string();
         if !n.is_empty() {
             on_confirm.call(sanitize_name(&n));
         }
+    };
+
+    let on_submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        let n = sanitize_name(&name.get_untracked());
+        if n.is_empty() { return; }
+        spawn_local(async move {
+            if crate::tauri::blueprint_exists(&n).await {
+                set_exists.set(true);
+            } else {
+                do_confirm();
+            }
+        });
     };
 
     view! {
@@ -34,12 +47,22 @@ pub fn NamePrompt(
                     type="text"
                     node_ref=input_ref
                     prop:value=name
-                    on:input=move |ev| set_name.set(event_target_value(&ev))
+                    on:input=move |ev| {
+                        set_name.set(event_target_value(&ev));
+                        set_exists.set(false);
+                    }
                     placeholder="e.g. bielefeld_hbf"
                 />
+                <Show when=move || exists.get()>
+                    <p class="warning">"A blueprint with this name already exists. Overwrite?"</p>
+                </Show>
                 <nav>
                     <button type="button" on:click=move |_| on_cancel.call(())>"Cancel"</button>
-                    <button type="submit" class="primary">"Import"</button>
+                    <Show when=move || exists.get()
+                        fallback=move || view! { <button type="submit" class="primary">"Import"</button> }
+                    >
+                        <button type="button" class="primary" on:click=move |_| do_confirm()>"Overwrite"</button>
+                    </Show>
                 </nav>
             </form>
         </div>

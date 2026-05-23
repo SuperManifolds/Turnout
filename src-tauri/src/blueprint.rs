@@ -283,6 +283,13 @@ pub fn save_blueprint(app: tauri::AppHandle, name: String, data: Vec<u8>) -> Res
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub fn blueprint_exists(app: tauri::AppHandle, name: String) -> bool {
+    resolve_mods_dir(&app)
+        .is_some_and(|mods| mods.join(&name).join("blueprints.nrclip").exists())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn list_blueprints(app: tauri::AppHandle) -> Result<Vec<BlueprintInfo>, String> {
     let mods_dir = resolve_mods_dir(&app)
         .ok_or_else(|| "Could not find Nimby Rails mods folder. Set it in Settings.".to_string())?;
