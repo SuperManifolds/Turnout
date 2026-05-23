@@ -1,6 +1,7 @@
 use leptos::{component, view, mount_to_body, IntoView, create_signal, Callback, SignalSet, Show, SignalGet};
 
 mod components;
+mod utils;
 
 fn main() {
     console_error_panic_hook::set_once();

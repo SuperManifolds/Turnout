@@ -2,10 +2,16 @@
 
 let _map = null;
 
-var STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
-var STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-var CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles"];
-var CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer"];
+const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles"];
+const CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer"];
+const PREVIEW_COLOR = "#0693FF";
+const PREVIEW_LINE_WIDTH = 4;
+const PREVIEW_GLOW_WIDTH = 8;
+const PREVIEW_GLOW_BLUR = 4;
+const HANDLE_LINE_WIDTH = 2.5;
+const FEATURE_QUERY_TOLERANCE = 10;
 
 function get_preferred_style() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? STYLE_DARK : STYLE_LIGHT;
@@ -13,11 +19,11 @@ function get_preferred_style() {
 
 function preserve_custom_layers(prev, next) {
     if (!prev) return next;
-    var sources = Object.assign({}, next.sources);
+    const sources = Object.assign({}, next.sources);
     CUSTOM_SOURCE_IDS.forEach(function(id) {
         if (prev.sources[id]) sources[id] = prev.sources[id];
     });
-    var customLayers = prev.layers.filter(function(l) {
+    const customLayers = prev.layers.filter(function(l) {
         return CUSTOM_LAYER_IDS.indexOf(l.id) >= 0;
     });
     return Object.assign({}, next, {
@@ -103,7 +109,7 @@ window.map_set_orm_style = function(style_name) {
         attribution: "&copy; OpenRailwayMap",
     });
     // Insert below bbox layers so selection draws on top
-    var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
+    const beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
     _map.addLayer({
         id: "orm-layer",
         type: "raster",
@@ -200,17 +206,17 @@ window.map_add_preview_layer = function() {
         data: { type: "FeatureCollection", features: [] },
     });
     // Insert before bbox layers so selection draws on top of preview
-    var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
+    const beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
     // Glow/casing layer for visibility
     _map.addLayer({
         id: "preview-glow",
         type: "line",
         source: "preview",
         paint: {
-            "line-color": "#0693FF",
-            "line-width": 8,
+            "line-color": PREVIEW_COLOR,
+            "line-width": PREVIEW_GLOW_WIDTH,
             "line-opacity": 0.25,
-            "line-blur": 4
+            "line-blur": PREVIEW_GLOW_BLUR
         }
     }, beforeLayer);
     // Main line
@@ -219,8 +225,8 @@ window.map_add_preview_layer = function() {
         type: "line",
         source: "preview",
         paint: {
-            "line-color": "#0693FF",
-            "line-width": 2.5,
+            "line-color": PREVIEW_COLOR,
+            "line-width": HANDLE_LINE_WIDTH,
             "line-opacity": 0.9
         }
     }, beforeLayer);
@@ -228,9 +234,9 @@ window.map_add_preview_layer = function() {
 
 window.map_query_features = function(lng, lat, layer_id) {
     if (!_map) return null;
-    var point = _map.project([lng, lat]);
-    var tolerance = 10;
-    var features = _map.queryRenderedFeatures(
+    const point = _map.project([lng, lat]);
+    const tolerance = FEATURE_QUERY_TOLERANCE;
+    const features = _map.queryRenderedFeatures(
         [[point.x - tolerance, point.y - tolerance], [point.x + tolerance, point.y + tolerance]],
         { layers: [layer_id] }
     );

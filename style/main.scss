@@ -22,7 +22,7 @@ body {
     position: absolute;
     top: var(--spacing-lg);
     left: var(--spacing-lg);
-    width: 320px;
+    width: var(--sidebar-width);
     z-index: 10;
 
     input {
@@ -58,7 +58,7 @@ body {
     box-shadow: var(--shadow-md);
     list-style: none;
     z-index: 100;
-    max-height: 250px;
+    max-height: var(--panel-max-height);
     overflow-y: auto;
 
     li {
@@ -127,7 +127,7 @@ body {
         border-radius: var(--radius-lg);
         box-shadow: var(--shadow-md);
         padding: var(--spacing-lg);
-        min-width: 320px;
+        min-width: var(--sidebar-width);
         text-align: center;
         display: flex;
         flex-direction: column;
@@ -162,7 +162,7 @@ body {
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md);
     padding: var(--spacing-lg);
-    min-width: 320px;
+    min-width: var(--sidebar-width);
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
@@ -197,9 +197,9 @@ body {
 
 #sidebar {
     position: absolute;
-    top: 60px; // below search box
+    top: var(--search-height);
     left: var(--spacing-lg);
-    width: 220px;
+    width: var(--panel-width);
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);

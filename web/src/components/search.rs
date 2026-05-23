@@ -31,15 +31,7 @@ async fn geocode(query: &str) -> Result<Vec<NominatimResult>, String> {
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
-fn urlencoding(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            ' ' => "+".to_string(),
-            c if c.is_alphanumeric() || "-_.~".contains(c) => c.to_string(),
-            c => format!("%{:02X}", c as u32),
-        })
-        .collect()
-}
+use crate::utils::urlencoding;
 
 fn fly_to_result(r: &NominatimResult) {
     if let (Ok(lat), Ok(lng)) = (r.lat.parse::<f64>(), r.lon.parse::<f64>()) {
