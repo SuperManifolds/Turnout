@@ -26,10 +26,6 @@ name = "inject"
 path = "src/inject.rs"
 
 [[bin]]
-name = "hashtest"
-path = "src/hashtest.rs"
-
-[[bin]]
 name = "import_orm"
 path = "src/import_orm.rs"
 

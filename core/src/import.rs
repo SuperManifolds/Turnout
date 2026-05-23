@@ -382,6 +382,7 @@ fn extend_route_forward(
     node_ways: &HashMap<u64, Vec<(usize, usize)>>,
     way_used: &mut [bool],
 ) {
+    let mut route_set: HashSet<u64> = route.iter().copied().collect();
     loop {
         let last = *route.last().expect("non-empty route");
         if !shared_nodes.contains(&last) { break; }
@@ -399,10 +400,10 @@ fn extend_route_forward(
         } else {
             ways[wi][..ways[wi].len() - 1].iter().rev().copied().collect()
         };
-        let route_set: HashSet<u64> = route.iter().copied().collect();
         if new_nodes.iter().any(|n| route_set.contains(n)) { break; }
 
         way_used[wi] = true;
+        for &n in &new_nodes { route_set.insert(n); }
         route.extend_from_slice(&new_nodes);
     }
 }
@@ -415,6 +416,7 @@ fn extend_route_backward(
     node_ways: &HashMap<u64, Vec<(usize, usize)>>,
     way_used: &mut [bool],
 ) {
+    let mut route_set: HashSet<u64> = route.iter().copied().collect();
     loop {
         let first = route[0];
         if !shared_nodes.contains(&first) { break; }
@@ -432,10 +434,10 @@ fn extend_route_backward(
         } else {
             ways[wi][1..].iter().rev().copied().collect()
         };
-        let route_set: HashSet<u64> = route.iter().copied().collect();
         if new_nodes.iter().any(|n| route_set.contains(n)) { break; }
 
         way_used[wi] = true;
+        for &n in &new_nodes { route_set.insert(n); }
         let mut prefix = new_nodes;
         prefix.push(first);
         prefix.extend_from_slice(&route[1..]);

@@ -481,7 +481,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 
 async fn fetch_overpass(query: &str) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_sys::Reflect::set(&args, &"query".into(), &query.into()).ok();
+    js_set(&args, "query", &query.into())?;
     tauri_invoke("fetch_overpass", &args).await?
         .as_string()
         .ok_or("unexpected response".into())
@@ -491,6 +491,12 @@ use turnout_core::geojson::{osm_json_to_geojson, analyze_overpass_json, parse_or
 
 const MAX_TRACK_NODES: usize = 50_000;
 const BAIL_NODE_THRESHOLD: usize = 100_000;
+
+fn js_set(obj: &js_sys::Object, key: &str, val: &JsValue) -> Result<(), String> {
+    js_sys::Reflect::set(obj, &key.into(), val)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to set {key}: {e:?}"))
+}
 
 fn build_bbox_args(clip_bbox: Option<(f64, f64, f64, f64)>) -> JsValue {
     match clip_bbox {
@@ -516,11 +522,11 @@ fn build_railway_types_array(railway_types: &[String]) -> js_sys::Array {
 
 async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<(Vec<u8>, usize), String> {
     let args = js_sys::Object::new();
-    js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
-    js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
-    js_sys::Reflect::set(&args, &"railwayTypes".into(), &build_railway_types_array(railway_types).into()).ok();
-    js_sys::Reflect::set(&args, &"applySpeedLimits".into(), &JsValue::from_bool(apply_speed_limits)).ok();
-    js_sys::Reflect::set(&args, &"clipBbox".into(), &build_bbox_args(clip_bbox)).ok();
+    js_set(&args, "json", &json.into())?;
+    js_set(&args, "name", &name.into())?;
+    js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
+    js_set(&args, "applySpeedLimits", &JsValue::from_bool(apply_speed_limits))?;
+    js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
     let result = tauri_invoke("import_orm", &args).await?;
     // Result is [bytes_array, node_count]
     let tuple = js_sys::Array::from(&result);
@@ -531,18 +537,18 @@ async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], appl
 
 async fn tauri_count_track_nodes(json: &str, railway_types: &[String], clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<usize, String> {
     let args = js_sys::Object::new();
-    js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
-    js_sys::Reflect::set(&args, &"railwayTypes".into(), &build_railway_types_array(railway_types).into()).ok();
-    js_sys::Reflect::set(&args, &"clipBbox".into(), &build_bbox_args(clip_bbox)).ok();
+    js_set(&args, "json", &json.into())?;
+    js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
+    js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
     let result = tauri_invoke("count_track_nodes", &args).await?;
     Ok(result.as_f64().unwrap_or(0.0) as usize)
 }
 
 async fn tauri_save_blueprint(name: &str, data: &[u8]) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
+    js_set(&args, "name", &name.into())?;
     let js_data = js_sys::Uint8Array::from(data);
-    js_sys::Reflect::set(&args, &"data".into(), &js_data.into()).ok();
+    js_set(&args, "data", &js_data.into())?;
     let result = tauri_invoke("save_blueprint", &args).await?;
     result.as_string().ok_or("unexpected response".into())
 }

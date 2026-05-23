@@ -1,4 +1,4 @@
-use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalUpdate, spawn_local, web_sys, CollectView};
+use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalUpdate, spawn_local, store_value, web_sys, CollectView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -95,22 +95,35 @@ pub fn AppSettings() -> impl IntoView {
         });
     });
 
-    // Auto-save whenever any setting changes
+    // Debounced auto-save whenever any setting changes
+    let save_timer = store_value::<Option<i32>>(None);
     create_effect(move |_| {
         let mods = mods_dir.get();
         let updates = check_updates.get();
         let t = theme.get();
         if !loaded.get() { return; }
-        let settings = Settings {
-            mods_dir_override: mods,
-            check_for_updates: updates,
-            map_theme: t,
-        };
-        spawn_local(async move {
-            if let Err(e) = save_settings(&settings).await {
-                set_status.set(format!("Failed to save: {e}"));
-            }
+
+        if let Some(handle) = save_timer.get_value() {
+            web_sys::window().expect("window").clear_timeout_with_handle(handle);
+        }
+        let cb = Closure::once(move || {
+            let settings = Settings {
+                mods_dir_override: mods,
+                check_for_updates: updates,
+                map_theme: t,
+            };
+            spawn_local(async move {
+                if let Err(e) = save_settings(&settings).await {
+                    set_status.set(format!("Failed to save: {e}"));
+                }
+            });
         });
+        let handle = web_sys::window().expect("window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(), 200,
+            ).unwrap_or(0);
+        cb.forget();
+        save_timer.set_value(Some(handle));
     });
 
     let on_browse = move |_| {
