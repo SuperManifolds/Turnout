@@ -128,6 +128,7 @@ pub fn Map(
     set_has_selection: WriteSignal<bool>,
     apply_speed_limits: ReadSignal<bool>,
     clip_to_selection: ReadSignal<bool>,
+    tangent_mode: ReadSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -319,7 +320,8 @@ pub fn Map(
                         } else {
                             set_status.set(format!("{} ways — counting nodes...", stats.way_count));
                             let clip_bbox = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
-                            match crate::tauri::count_track_nodes(&json, &enabled, clip_bbox).await {
+                            let tangent = tangent_mode.get_untracked();
+                            match crate::tauri::count_track_nodes(&json, &enabled, clip_bbox, tangent).await {
                                 Ok(exact) => {
                                     set_over_limit.set(exact > MAX_TRACK_NODES);
                                     if exact > MAX_TRACK_NODES {
@@ -401,8 +403,9 @@ pub fn Map(
         let types = enabled_types.get_untracked();
         let speed = apply_speed_limits.get_untracked();
         let clip = clip_to_selection.get_untracked();
+        let tangent = tangent_mode.get_untracked();
         spawn_local(async move {
-            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, clip, set_status, set_success_message).await;
+            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, clip, tangent, set_status, set_success_message).await;
         });
     });
 
@@ -444,7 +447,7 @@ pub fn Map(
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, clip: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, clip: bool, tangent_mode: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
     // Step 1: Use cached JSON or fetch (preview should always have cached it)
     let json = if let Some(cached) = cached_json {
         cached.to_string()
@@ -465,7 +468,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
     // Step 2: Import via Tauri backend
     set_status.set("Processing tracks...".into());
     let clip_bbox = if clip { Some((s, w, n, e)) } else { None };
-    let (data, node_count) = match crate::tauri::import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox).await {
+    let (data, node_count) = match crate::tauri::import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox, tangent_mode).await {
         Ok(d) => d,
         Err(err) => {
             set_status.set(format!("Import failed: {err}"));

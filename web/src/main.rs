@@ -68,6 +68,9 @@ fn App() -> impl IntoView {
     let (clip_to_selection, set_clip_to_selection) = create_signal(
         utils::load_bool("clip_to_selection", false)
     );
+    let (tangent_mode, set_tangent_mode) = create_signal(
+        utils::load_bool("tangent_mode", false)
+    );
 
     // Persist on change
     create_effect(move |_| {
@@ -75,6 +78,9 @@ fn App() -> impl IntoView {
     });
     create_effect(move |_| {
         utils::save_bool("clip_to_selection", clip_to_selection.get());
+    });
+    create_effect(move |_| {
+        utils::save_bool("tangent_mode", tangent_mode.get());
     });
     create_effect(move |_| {
         let types = enabled_types.get();
@@ -98,6 +104,7 @@ fn App() -> impl IntoView {
                         set_has_selection=set_has_selection
                         apply_speed_limits=apply_speed_limits
                         clip_to_selection=clip_to_selection
+                        tangent_mode=tangent_mode
                     />
                     <components::Search />
                     <components::LayerSwitcher />
@@ -112,6 +119,8 @@ fn App() -> impl IntoView {
                                 set_apply_speed_limits=set_apply_speed_limits
                                 clip_to_selection=clip_to_selection
                                 set_clip_to_selection=set_clip_to_selection
+                                tangent_mode=tangent_mode
+                                set_tangent_mode=set_tangent_mode
                             />
                         </aside>
                     </Show>

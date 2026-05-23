@@ -58,6 +58,7 @@ pub async fn fetch_overpass(query: &str) -> Result<String, String> {
 pub async fn import_orm(
     json: &str, name: &str, railway_types: &[String],
     apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>,
+    tangent_mode: bool,
 ) -> Result<(Vec<u8>, usize), String> {
     let args = js_sys::Object::new();
     js_set(&args, "json", &json.into())?;
@@ -65,6 +66,7 @@ pub async fn import_orm(
     js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
     js_set(&args, "applySpeedLimits", &JsValue::from_bool(apply_speed_limits))?;
     js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
+    js_set(&args, "tangentMode", &JsValue::from_bool(tangent_mode))?;
     let result = invoke("import_orm", &args).await?;
     let tuple = js_sys::Array::from(&result);
     let bytes = js_sys::Uint8Array::new(&tuple.get(0)).to_vec();
@@ -74,11 +76,13 @@ pub async fn import_orm(
 
 pub async fn count_track_nodes(
     json: &str, railway_types: &[String], clip_bbox: Option<(f64, f64, f64, f64)>,
+    tangent_mode: bool,
 ) -> Result<usize, String> {
     let args = js_sys::Object::new();
     js_set(&args, "json", &json.into())?;
     js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
     js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
+    js_set(&args, "tangentMode", &JsValue::from_bool(tangent_mode))?;
     let result = invoke("count_track_nodes", &args).await?;
     Ok(result.as_f64().unwrap_or(0.0) as usize)
 }

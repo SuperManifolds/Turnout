@@ -9,6 +9,7 @@ pub fn import_orm(
     railway_types: Vec<String>,
     apply_speed_limits: bool,
     clip_bbox: Option<(f64, f64, f64, f64)>,
+    tangent_mode: bool,
 ) -> Result<(Vec<u8>, usize), String> {
     let (track_kinds, mod_metas) = blueprint::resolve_mods_dir(&app)
         .and_then(|mods| {
@@ -21,7 +22,7 @@ pub fn import_orm(
         .unwrap_or_default();
 
     turnout_core::import::import_orm(
-        &json, &name, &railway_types, apply_speed_limits, clip_bbox, track_kinds, mod_metas,
+        &json, &name, &railway_types, apply_speed_limits, clip_bbox, tangent_mode, track_kinds, mod_metas,
     )
     .map_err(|e| e.to_string())
 }
@@ -32,7 +33,8 @@ pub fn count_track_nodes(
     json: String,
     railway_types: Vec<String>,
     clip_bbox: Option<(f64, f64, f64, f64)>,
+    tangent_mode: bool,
 ) -> Result<usize, String> {
-    turnout_core::import::count_track_nodes(&json, &railway_types, clip_bbox)
+    turnout_core::import::count_track_nodes(&json, &railway_types, clip_bbox, tangent_mode)
         .map_err(|e| e.to_string())
 }

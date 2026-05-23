@@ -123,6 +123,7 @@ fn run_pipeline(
     railway_types: &[String],
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     apply_speed_limits: bool,
+    tangent_mode: bool,
 ) -> Result<PipelineResult> {
     let mut osm = parse_osm_data(json, railway_types)?;
     if let Some(bbox) = clip_to_bbox {
@@ -131,7 +132,7 @@ fn run_pipeline(
     let route_data = merge_ways_into_routes(&osm);
     let simplified = simplify_routes(&route_data, &osm.node_layer);
     let simplified = subdivide_long_segments(simplified, &route_data.route_coords);
-    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, apply_speed_limits);
+    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, apply_speed_limits, tangent_mode);
     Ok((track_nodes, simplified, route_data, osm))
 }
 
@@ -141,8 +142,9 @@ pub fn count_track_nodes(
     json: &str,
     railway_types: &[String],
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
+    tangent_mode: bool,
 ) -> Result<usize> {
-    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false)?;
+    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false, tangent_mode)?;
     Ok(track_nodes.len())
 }
 
@@ -154,11 +156,12 @@ pub fn import_orm(
     railway_types: &[String],
     apply_speed_limits: bool,
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
+    tangent_mode: bool,
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
 ) -> Result<(Vec<u8>, usize)> {
     let (mut track_nodes, simplified, route_data, osm) =
-        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits)?;
+        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits, tangent_mode)?;
 
     let node_count = track_nodes.len();
     if node_count > MAX_TRACK_NODES {
@@ -171,6 +174,16 @@ pub fn import_orm(
     attach_branches(
         &mut track_nodes, &simplified, &route_data, &osm.nodes,
     );
+
+    // Branch roots at junctions must remain point mode — their tangent is
+    // inherited from the parent track's shape polyline.
+    if tangent_mode {
+        for track in &mut track_nodes {
+            if track.attached_to_id != 0 {
+                track.tangential = Some(0);
+            }
+        }
+    }
 
     let bytes = serialize_to_nrclip(track_nodes, name, track_kinds, mod_metas)?;
     Ok((bytes, node_count))
@@ -665,6 +678,7 @@ fn build_track_nodes(
     rd: &RouteData,
     osm: &OsmData,
     apply_speed_limits: bool,
+    tangent_mode: bool,
 ) -> Vec<Track> {
     let mut track_nodes: Vec<Track> = Vec::new();
     let mut node_id_counter: i64 = 100;
@@ -696,6 +710,7 @@ fn build_track_nodes(
                 node_id: gid, x, y, layer, track_type,
                 user_max_speed: if apply_speed_limits { max_speed.or(Some(0.0)) } else { Some(0.0) },
                 prev_node: prev,
+                tangential: Some(u8::from(tangent_mode)),
                 ..Track::default()
             });
             if si > 0 {
