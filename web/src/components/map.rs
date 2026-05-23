@@ -5,6 +5,9 @@ use wasm_bindgen_futures::JsFuture;
 
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
 const OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
+const OVERPASS_TIMEOUT: u32 = 60;
+const OVERPASS_USER_AGENT: &str = "Turnout/0.1.0 (+https://github.com/SuperManifolds/Turnout)";
+const MAX_BBOX_AREA_DEG2: f64 = 0.25;
 const BBOX_COLOR: &str = "#4a9eff";
 const HANDLE_COLOR: &str = "#4a9eff";
 const HANDLE_RADIUS: f64 = 6.0;
@@ -279,9 +282,16 @@ pub fn Map(
         }
         let cb = Closure::once(move || {
             spawn_local(async move {
+                // Guard against oversized bbox
+                let area = (n - s).abs() * (e - w).abs();
+                if area > MAX_BBOX_AREA_DEG2 {
+                    set_status.set("Selection too large — reduce the area".into());
+                    set_over_limit.set(true);
+                    return;
+                }
                 set_status.set("Fetching tracks...".into());
                 let query = format!(
-                    "[out:json][timeout:30];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
+                    "[out:json][timeout:{OVERPASS_TIMEOUT}];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
                 );
                 match fetch_overpass(&query).await {
                     Ok(json) => {
@@ -430,13 +440,13 @@ pub fn Map(
 }
 
 async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, clip: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
-    // Step 1: Use cached JSON or fetch
+    // Step 1: Use cached JSON or fetch (preview should always have cached it)
     let json = if let Some(cached) = cached_json {
         cached.to_string()
     } else {
         set_status.set("Fetching railway data...".into());
         let query = format!(
-            "[out:json][timeout:60];(way[\"railway\"=\"rail\"]({s},{w},{n},{e}););(._;>;);out body;"
+            "[out:json][timeout:{OVERPASS_TIMEOUT}];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
         );
         match fetch_overpass(&query).await {
             Ok(j) => j,
@@ -479,6 +489,7 @@ async fn fetch_overpass(query: &str) -> Result<String, String> {
     opts.set_body(&JsValue::from_str(&body));
     let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
     headers.set("Content-Type", "application/x-www-form-urlencoded").map_err(|e| format!("{e:?}"))?;
+    headers.set("User-Agent", OVERPASS_USER_AGENT).map_err(|e| format!("{e:?}"))?;
     opts.set_headers(&headers);
     let request = web_sys::Request::new_with_str_and_init(OVERPASS_URL, &opts)
         .map_err(|e| format!("{e:?}"))?;
@@ -486,8 +497,11 @@ async fn fetch_overpass(query: &str) -> Result<String, String> {
         .await
         .map_err(|e| format!("{e:?}"))?;
     let resp: web_sys::Response = resp.unchecked_into();
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
+    match resp.status() {
+        200 => {}
+        429 => return Err("Rate limited by Overpass API — wait a moment and try again".into()),
+        504 => return Err("Query timed out — try a smaller selection area".into()),
+        status => return Err(format!("Overpass API error (HTTP {status})")),
     }
     let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
         .await
