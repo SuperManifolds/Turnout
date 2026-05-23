@@ -114,8 +114,7 @@ fn mercator_to_latlon(x: f64, y: f64) -> (f64, f64) {
 fn file_modified_secs(path: &std::path::Path) -> u64 {
     fs::metadata(path)
         .and_then(|m| m.modified())
-        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
-        .unwrap_or(0)
+        .map_or(0, |t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
 }
 
 fn parse_blueprint_infos(mods_dir: &std::path::Path, folder_name: &str, app: &tauri::AppHandle) -> Vec<BlueprintInfo> {
@@ -300,7 +299,7 @@ pub fn list_blueprints(app: tauri::AppHandle) -> Result<Vec<BlueprintInfo>, Stri
         })
         .collect();
 
-    blueprints.sort_by(|a, b| b.modified.cmp(&a.modified));
+    blueprints.sort_by_key(|b| std::cmp::Reverse(b.modified));
     Ok(blueprints)
 }
 
