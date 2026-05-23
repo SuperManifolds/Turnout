@@ -44,18 +44,27 @@ window.map_init = function(container) {
     });
     _map.addControl(new maplibregl.NavigationControl(), "top-right");
 
-    // Follow system theme changes
+    // Flush deferred on-load callbacks
+    _on_load_callbacks.forEach(function(cb) { _map.on("load", cb); });
+    _on_load_callbacks = [];
+
+    // Follow system theme changes (only when set to "system")
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function() {
+        if (_theme_override !== "system") return;
         _map.setStyle(get_preferred_style(), { transformStyle: preserve_custom_layers });
-        // Update ORM layer paint for new theme after style settles
         _map.once("styledata", update_orm_paint);
     });
 
     return _map;
 };
 
+let _on_load_callbacks = [];
 window.map_on_load = function(callback) {
-    if (_map) _map.on("load", callback);
+    if (_map) {
+        _map.on("load", callback);
+    } else {
+        _on_load_callbacks.push(callback);
+    }
 };
 
 window.map_add_raster_source = function(id, url, attribution) {
