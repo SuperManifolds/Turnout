@@ -21,11 +21,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          id=$(gh release create "${{ github.ref_name }}" \
-            --title "Turnout ${{ github.ref_name }}" \
-            --generate-notes \
-            --draft \
-            --json id --jq '.id')
+          id=$(gh api repos/${{ github.repository }}/releases \
+            --method POST \
+            -f tag_name="${{ github.ref_name }}" \
+            -f name="Turnout ${{ github.ref_name }}" \
+            -F draft=true \
+            -F generate_release_notes=true \
+            --jq '.id')
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
   build:
