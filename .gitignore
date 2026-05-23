@@ -5,6 +5,5 @@ target/
 *.png
 !turnout.png
 !src-tauri/icons/*.png
---empty
 dist/
 scratch/

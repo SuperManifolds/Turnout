@@ -93,15 +93,16 @@ pub struct BlueprintInfo {
     pub has_thumbnail: bool,
 }
 
-fn thumbnail_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path().app_data_dir().expect("app data dir").join("thumbnails")
+fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join("thumbnails"))
 }
 
-fn thumbnail_path(app: &tauri::AppHandle, folder_name: &str, clip_index: usize) -> PathBuf {
+fn thumbnail_path(app: &tauri::AppHandle, folder_name: &str, clip_index: usize) -> Option<PathBuf> {
+    let dir = thumbnail_dir(app)?;
     if clip_index == 0 {
-        thumbnail_dir(app).join(format!("{folder_name}.png"))
+        Some(dir.join(format!("{folder_name}.png")))
     } else {
-        thumbnail_dir(app).join(format!("{folder_name}_{clip_index}.png"))
+        Some(dir.join(format!("{folder_name}_{clip_index}.png")))
     }
 }
 
@@ -130,8 +131,8 @@ fn parse_blueprint_infos(mods_dir: &std::path::Path, folder_name: &str, app: &ta
     for coll in &file.collections {
         for clip in &coll.clips {
             let (center_lat, center_lon) = mercator_to_latlon(clip.center_x, clip.center_y);
-            let thumb = thumbnail_path(app, folder_name, clip_index);
-            let has_thumbnail = thumb.exists() && file_modified_secs(&thumb) >= modified;
+            let has_thumbnail = thumbnail_path(app, folder_name, clip_index)
+                .is_some_and(|thumb| thumb.exists() && file_modified_secs(&thumb) >= modified);
 
             // Use collection name, falling back to folder name
             let clip_name = if coll.name.is_empty() {
@@ -340,9 +341,12 @@ pub fn generate_thumbnail(app: tauri::AppHandle, folder_name: String, clip_index
     let data_url = format!("data:image/png;base64,{b64}");
 
     // Cache to disk for has_thumbnail checks
-    let thumb_dir = thumbnail_dir(&app);
-    let _ = fs::create_dir_all(&thumb_dir);
-    let _ = fs::write(thumbnail_path(&app, &folder_name, clip_index), &png_bytes);
+    if let Some(thumb_dir) = thumbnail_dir(&app) {
+        let _ = fs::create_dir_all(&thumb_dir);
+    }
+    if let Some(path) = thumbnail_path(&app, &folder_name, clip_index) {
+        let _ = fs::write(path, &png_bytes);
+    }
 
     Ok(data_url)
 }
@@ -362,17 +366,20 @@ pub fn delete_blueprint(app: tauri::AppHandle, folder_name: String) -> Result<()
         .map_err(|e| format!("Failed to delete: {e}"))?;
 
     // Remove cached thumbnails (all clip indices)
-    let thumb_dir = thumbnail_dir(&app);
-    if let Ok(entries) = fs::read_dir(&thumb_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&folder_name) && std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
+    remove_thumbnails_for(&app, &folder_name);
 
     Ok(())
+}
+
+fn remove_thumbnails_for(app: &tauri::AppHandle, prefix: &str) {
+    let Some(thumb_dir) = thumbnail_dir(app) else { return };
+    let Ok(entries) = fs::read_dir(&thumb_dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(prefix) && std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[tauri::command]
@@ -396,14 +403,15 @@ pub fn rename_blueprint(app: tauri::AppHandle, old_name: String, new_name: Strin
     if nrclip_path.exists() {
         let data = fs::read(&nrclip_path)
             .map_err(|e| format!("Failed to read blueprint: {e}"))?;
-        if let Ok(mut file) = turnout_core::nrc1::NrclipFile::from_bytes(&data) {
-            for coll in &mut file.collections {
-                coll.name.clone_from(&new_name);
-            }
-            if let Ok(new_data) = file.to_bytes() {
-                let _ = fs::write(&nrclip_path, new_data);
-            }
+        let mut file = turnout_core::nrc1::NrclipFile::from_bytes(&data)
+            .map_err(|e| format!("Failed to parse blueprint: {e}"))?;
+        for coll in &mut file.collections {
+            coll.name.clone_from(&new_name);
         }
+        let new_data = file.to_bytes()
+            .map_err(|e| format!("Failed to serialize blueprint: {e}"))?;
+        fs::write(&nrclip_path, new_data)
+            .map_err(|e| format!("Failed to write blueprint: {e}"))?;
     }
 
     // Rename folder
@@ -411,15 +419,7 @@ pub fn rename_blueprint(app: tauri::AppHandle, old_name: String, new_name: Strin
         .map_err(|e| format!("Failed to rename: {e}"))?;
 
     // Remove old thumbnails
-    let thumb_dir = thumbnail_dir(&app);
-    if let Ok(entries) = fs::read_dir(&thumb_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&old_name) && std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
+    remove_thumbnails_for(&app, &old_name);
 
     Ok(())
 }

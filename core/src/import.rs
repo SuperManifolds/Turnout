@@ -769,6 +769,8 @@ fn attach_branches(
 
         for &is_start in &[true, false] {
             let endpoint_orig_idx = if is_start { simp[0].0 } else { simp.last().expect("non-empty simp").0 };
+            // Skip synthetic interpolated nodes — they can't be junctions
+            if endpoint_orig_idx == usize::MAX { continue; }
             let endpoint_osm = rd.routes[ri][endpoint_orig_idx];
             if !rd.junction_nodes.contains(&endpoint_osm) { continue; }
 

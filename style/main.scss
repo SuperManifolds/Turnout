@@ -251,8 +251,6 @@ body {
 
 #track-filter {
     @include sidebar-panel;
-    max-height: calc(100vh - 120px);
-    overflow-y: auto;
 
     header nav {
         display: flex;

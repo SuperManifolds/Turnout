@@ -36,7 +36,8 @@ function preserve_custom_layers(prev, next) {
 }
 
 window.map_init = function(container) {
-    const saved = JSON.parse(localStorage.getItem("map_view") || "null");
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem("map_view")); } catch (_) {}
     _map = new maplibregl.Map({
         container: container,
         style: get_preferred_style(),
