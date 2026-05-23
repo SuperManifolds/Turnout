@@ -109,6 +109,11 @@ body {
         font-size: var(--font-size-sm);
         color: var(--color-text-muted);
         white-space: nowrap;
+
+        &.error {
+            color: var(--color-danger);
+            font-weight: 600;
+        }
     }
 }
 
@@ -390,6 +395,12 @@ button {
         &:hover {
             background: var(--color-accent-hover);
         }
+    }
+
+    &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        pointer-events: none;
     }
 }
 

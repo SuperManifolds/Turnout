@@ -7,6 +7,7 @@ const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.p
 const OVERPASS_TIMEOUT: u32 = 60;
 const MAX_BBOX_AREA_DEG2: f64 = 0.25;
 const BBOX_COLOR: &str = "#4a9eff";
+const BBOX_ERROR_COLOR: &str = "#d32f2f";
 const HANDLE_COLOR: &str = "#4a9eff";
 const HANDLE_RADIUS: f64 = 6.0;
 
@@ -29,6 +30,7 @@ extern "C" {
     fn map_on_mousemove(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_on_mouseup(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_query_features(lng: f64, lat: f64, layer_id: &str) -> JsValue;
+    fn map_set_bbox_color(color: &str);
 }
 
 // Interaction modes
@@ -132,6 +134,12 @@ pub fn Map(
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
     let (status, set_status) = create_signal(String::from("Navigate to an area, then click Select Area"));
     let (over_limit, set_over_limit) = create_signal(false);
+
+    // Reactively update bbox color when over_limit changes
+    create_effect(move |_| {
+        let color = if over_limit.get() { BBOX_ERROR_COLOR } else { BBOX_COLOR };
+        map_set_bbox_color(color);
+    });
 
     let mode = store_value(Mode::Idle);
     let draw_start = store_value::<Option<(f64, f64)>>(None);
@@ -407,7 +415,7 @@ pub fn Map(
         <div id="map-wrapper">
             <div node_ref=map_ref id="map-canvas"></div>
             <nav id="map-controls">
-                <span id="map-status">{status}</span>
+                <span id="map-status" class:error=move || over_limit.get()>{status}</span>
                 <Show when=move || bbox.get().is_none()>
                     <button on:click=on_select_area>"Select Area"</button>
                 </Show>

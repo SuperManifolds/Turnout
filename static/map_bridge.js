@@ -262,6 +262,16 @@ window.map_add_preview_layer = function() {
     }, beforeLayer);
 };
 
+window.map_set_bbox_color = function(color) {
+    if (!_map) return;
+    if (_map.getLayer("bbox-fill")) {
+        _map.setPaintProperty("bbox-fill", "fill-color", color);
+    }
+    if (_map.getLayer("bbox-outline")) {
+        _map.setPaintProperty("bbox-outline", "line-color", color);
+    }
+};
+
 window.map_query_features = function(lng, lat, layer_id) {
     if (!_map) return null;
     const point = _map.project([lng, lat]);
