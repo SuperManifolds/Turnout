@@ -16,11 +16,11 @@
 
 ## Install
 
-Download the latest build for your platform from [Releases](https://github.com/SuperManifolds/Turnout/releases):
-
-- **macOS** — `.dmg` (Apple Silicon)
-- **Windows** — `.msi` or `.exe` installer
-- **Linux** — `.deb` or `.AppImage`
+| Platform | Download |
+|----------|----------|
+| macOS (Apple Silicon) | [Turnout.dmg](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.dmg) |
+| Windows | [Turnout-setup.exe](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_x64-setup.exe) |
+| Linux | [Turnout.deb](https://github.com/SuperManifolds/Turnout/releases/latest/download/turnout_amd64.deb) &ensp; [Turnout.AppImage](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) |
 
 ## Features
 
