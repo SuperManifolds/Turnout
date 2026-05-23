@@ -124,14 +124,20 @@ fn run_pipeline(
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     apply_speed_limits: bool,
     tangent_mode: bool,
+    on_progress: &dyn Fn(&str),
 ) -> Result<PipelineResult> {
+    on_progress("Parsing OSM data...");
     let mut osm = parse_osm_data(json, railway_types)?;
     if let Some(bbox) = clip_to_bbox {
+        on_progress("Clipping to selection...");
         clip_ways_to_bbox(&mut osm, bbox);
     }
+    on_progress("Merging routes...");
     let route_data = merge_ways_into_routes(&osm);
+    on_progress("Simplifying tracks...");
     let simplified = simplify_routes(&route_data, &osm.node_layer);
     let simplified = subdivide_long_segments(simplified, &route_data.route_coords);
+    on_progress("Building track nodes...");
     let track_nodes = build_track_nodes(&simplified, &route_data, &osm, apply_speed_limits, tangent_mode);
     Ok((track_nodes, simplified, route_data, osm))
 }
@@ -144,7 +150,7 @@ pub fn count_track_nodes(
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     tangent_mode: bool,
 ) -> Result<usize> {
-    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false, tangent_mode)?;
+    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false, tangent_mode, &|_| {})?;
     Ok(track_nodes.len())
 }
 
@@ -159,9 +165,10 @@ pub fn import_orm(
     tangent_mode: bool,
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
+    on_progress: &dyn Fn(&str),
 ) -> Result<(Vec<u8>, usize)> {
     let (mut track_nodes, simplified, route_data, osm) =
-        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits, tangent_mode)?;
+        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits, tangent_mode, on_progress)?;
 
     let node_count = track_nodes.len();
     if node_count > MAX_TRACK_NODES {
@@ -171,6 +178,7 @@ pub fn import_orm(
         );
     }
 
+    on_progress("Attaching junctions...");
     attach_branches(
         &mut track_nodes, &simplified, &route_data, &osm.nodes,
     );
@@ -185,6 +193,7 @@ pub fn import_orm(
         }
     }
 
+    on_progress("Serializing blueprint...");
     let bytes = serialize_to_nrclip(track_nodes, name, track_kinds, mod_metas)?;
     Ok((bytes, node_count))
 }

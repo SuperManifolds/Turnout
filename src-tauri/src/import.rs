@@ -1,3 +1,5 @@
+use tauri::Emitter;
+
 use crate::blueprint;
 
 #[tauri::command]
@@ -21,8 +23,12 @@ pub fn import_orm(
         })
         .unwrap_or_default();
 
+    let on_progress = |stage: &str| {
+        let _ = app.emit("import-progress", stage);
+    };
+
     turnout_core::import::import_orm(
-        &json, &name, &railway_types, apply_speed_limits, clip_bbox, tangent_mode, track_kinds, mod_metas,
+        &json, &name, &railway_types, apply_speed_limits, clip_bbox, tangent_mode, track_kinds, mod_metas, &on_progress,
     )
     .map_err(|e| e.to_string())
 }

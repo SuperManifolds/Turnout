@@ -472,12 +472,14 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
         }
     };
 
-    // Step 2: Import via Tauri backend
+    // Step 2: Import via Tauri backend — listen for progress events
     set_status.set("Processing tracks...".into());
+    let unlisten = listen_for_progress(set_status).await;
     let clip_bbox = if clip { Some((s, w, n, e)) } else { None };
     let (data, node_count) = match crate::tauri::import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox, tangent_mode).await {
-        Ok(d) => d,
+        Ok(d) => { unlisten(); d }
         Err(err) => {
+            unlisten();
             set_status.set(format!("Import failed: {err}"));
             return;
         }
@@ -497,6 +499,51 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 }
 
 use turnout_core::geojson::{osm_json_to_geojson, analyze_overpass_json, parse_orm_link};
+
+/// Listen for `import-progress` events from the backend and update the status bar.
+/// Returns a closure that removes the listener when called.
+async fn listen_for_progress(set_status: WriteSignal<String>) -> impl FnOnce() {
+    let window = web_sys::window().expect("window");
+    let tauri = js_sys::Reflect::get(&window, &"__TAURI__".into()).ok();
+    let event_mod = tauri.as_ref().and_then(|t| js_sys::Reflect::get(t, &"event".into()).ok());
+    let listen_fn = event_mod.as_ref()
+        .and_then(|e| js_sys::Reflect::get(e, &"listen".into()).ok())
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+
+    let unlisten_fn: Option<js_sys::Function> = if let Some(listen) = listen_fn {
+        let callback = Closure::wrap(Box::new(move |event: JsValue| {
+            if let Ok(payload) = js_sys::Reflect::get(&event, &"payload".into())
+                && let Some(stage) = payload.as_string()
+            {
+                set_status.set(stage);
+            }
+        }) as Box<dyn Fn(JsValue)>);
+
+        let promise = listen.call2(
+            &JsValue::NULL,
+            &"import-progress".into(),
+            callback.as_ref().unchecked_ref(),
+        );
+        callback.forget();
+
+        if let Ok(promise) = promise {
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
+                .await
+                .ok()
+                .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    move || {
+        if let Some(unlisten) = unlisten_fn {
+            let _ = unlisten.call0(&JsValue::NULL);
+        }
+    }
+}
 
 const MAX_TRACK_NODES: usize = 50_000;
 const BAIL_NODE_THRESHOLD: usize = 100_000;
