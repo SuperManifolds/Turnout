@@ -266,6 +266,7 @@ pub fn Map() -> impl IntoView {
     };
 
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
+    let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 
     let on_import_click = move |_| {
         set_show_name_prompt.set(true);
@@ -275,7 +276,7 @@ pub fn Map() -> impl IntoView {
         set_show_name_prompt.set(false);
         let Some((s, w, n, e)) = bbox.get_untracked() else { return };
         spawn_local(async move {
-            do_import(s, w, n, e, &name, set_status).await;
+            do_import(s, w, n, e, &name, set_status, set_success_message).await;
         });
     });
 
@@ -304,11 +305,20 @@ pub fn Map() -> impl IntoView {
                     on_cancel=on_name_cancel
                 />
             </Show>
+            <Show when=move || success_message.get().is_some()>
+                <div id="success-modal" on:click=move |_| set_success_message.set(None)>
+                    <div class="success-content" on:click=move |ev| ev.stop_propagation()>
+                        <h2>"Blueprint Saved"</h2>
+                        <p>{move || success_message.get().unwrap_or_default()}</p>
+                        <button class="primary" on:click=move |_| set_success_message.set(None)>"OK"</button>
+                    </div>
+                </div>
+            </Show>
         </div>
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, set_status: WriteSignal<String>) {
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
     // Step 1: Fetch Overpass data
     set_status.set("Fetching railway data...".into());
     let query = format!(
@@ -336,7 +346,8 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, set_status: Write
     set_status.set("Saving blueprint...".into());
     match tauri_save_blueprint(name, &data).await {
         Ok(path) => {
-            set_status.set(format!("Saved to {path}"));
+            set_status.set("Ready".into());
+            set_success.set(Some(path));
         }
         Err(err) => {
             set_status.set(format!("Save failed: {err}"));

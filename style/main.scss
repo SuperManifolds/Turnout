@@ -112,6 +112,40 @@ body {
     }
 }
 
+#success-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+
+    .success-content {
+        background: var(--color-bg-secondary);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-md);
+        padding: var(--spacing-lg);
+        min-width: 320px;
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md);
+
+        h2 {
+            font-size: var(--font-size-lg);
+            color: var(--color-success);
+        }
+
+        p {
+            font-size: var(--font-size-sm);
+            color: var(--color-text-muted);
+            word-break: break-all;
+        }
+    }
+}
+
 #modal-overlay {
     position: fixed;
     inset: 0;
