@@ -526,11 +526,26 @@ button {
             margin: 0;
         }
 
-        .sort-controls {
+        .segmented {
             display: flex;
-            gap: var(--spacing-xs);
+            gap: 1px;
+            background: var(--color-border);
+            border-radius: var(--radius-md);
+            overflow: hidden;
 
-            button.active { font-weight: 600; }
+            button {
+                border: none;
+                border-radius: 0;
+                background: var(--color-bg-tertiary);
+                box-shadow: none;
+                padding: 2px var(--spacing-sm);
+                font-size: var(--font-size-sm);
+
+                &.active {
+                    background: var(--color-accent);
+                    color: var(--color-bg-primary);
+                }
+            }
         }
     }
 

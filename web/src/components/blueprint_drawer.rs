@@ -154,11 +154,11 @@ pub fn BlueprintDrawer(
             <aside id="blueprint-drawer">
                 <header>
                     <h3>"Blueprints"</h3>
-                    <nav class="sort-controls">
-                        <button class="link" class:active=move || sort_by.get() == SortBy::Date on:click=move |_| set_sort_by.set(SortBy::Date)>"Date"</button>
-                        <button class="link" class:active=move || sort_by.get() == SortBy::Name on:click=move |_| set_sort_by.set(SortBy::Name)>"Name"</button>
-                        <button class="link" class:active=move || sort_by.get() == SortBy::Nodes on:click=move |_| set_sort_by.set(SortBy::Nodes)>"Nodes"</button>
-                    </nav>
+                    <div class="segmented">
+                        <button class:active=move || sort_by.get() == SortBy::Date on:click=move |_| set_sort_by.set(SortBy::Date)>"Date"</button>
+                        <button class:active=move || sort_by.get() == SortBy::Name on:click=move |_| set_sort_by.set(SortBy::Name)>"Name"</button>
+                        <button class:active=move || sort_by.get() == SortBy::Nodes on:click=move |_| set_sort_by.set(SortBy::Nodes)>"Nodes"</button>
+                    </div>
                 </header>
 
                 <input
