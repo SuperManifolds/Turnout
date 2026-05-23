@@ -15,10 +15,10 @@ fn main() -> Result<()> {
         .and_then(|path| turnout_core::import::extract_vanilla_track_kinds(&path).ok())
         .unwrap_or_default();
 
-    let file_data = turnout_core::import::import_orm(&json, &blueprint_name, &[], true, None, track_kinds, mod_metas)?;
+    let (file_data, node_count) = turnout_core::import::import_orm(&json, &blueprint_name, &[], true, None, track_kinds, mod_metas)?;
 
     fs::write(output, &file_data)?;
-    println!("Wrote {} bytes to {}", file_data.len(), output);
+    println!("Wrote {} bytes to {} ({node_count} / 50000 nodes)", file_data.len(), output);
 
     // Verify round-trip
     let decoded = turnout_core::nrc1::NrclipFile::from_bytes(&file_data)?;

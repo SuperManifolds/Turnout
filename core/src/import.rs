@@ -17,6 +17,7 @@ use crate::types::{Collection, Clip, Track, TrackKind, ModMeta};
 
 const MODEL_VERSION: u32 = 226;
 const MAX_SPACING: f64 = 200.0;
+const MAX_TRACK_NODES: usize = 50_000;
 const ALIGNMENT_THRESHOLD: f64 = 2.5; // ~143° — reject near-reversal continuations
 const JUNCTION_ENDPOINT_SPACING: f64 = 30.0; // meters — control point near junction endpoints
 const SPLINE_TOLERANCE: f64 = 5.0; // meters — max deviation before adding subdivision node
@@ -115,8 +116,26 @@ pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<VanillaTrac
     anyhow::bail!("vanilla track kinds (1,2,3) not found in collections.nrclip")
 }
 
+/// Run the import pipeline up to track node generation and return the count.
+/// Used for dry-run validation before committing to a full import.
+pub fn count_track_nodes(
+    json: &str,
+    railway_types: &[String],
+    clip_to_bbox: Option<(f64, f64, f64, f64)>,
+) -> Result<usize> {
+    let mut osm = parse_osm_data(json, railway_types)?;
+    if let Some(bbox) = clip_to_bbox {
+        clip_ways_to_bbox(&mut osm, bbox);
+    }
+    let route_data = merge_ways_into_routes(&osm);
+    let simplified = simplify_routes(&route_data, &osm.node_layer);
+    let simplified = subdivide_long_segments(simplified, &route_data.route_coords);
+    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, false);
+    Ok(track_nodes.len())
+}
+
 /// Import `OpenRailwayMap` Overpass JSON into a Nimby Rails .nrclip file.
-/// Returns the raw file bytes ready to write to disk.
+/// Returns (`file_bytes`, `track_node_count`).
 pub fn import_orm(
     json: &str,
     name: &str,
@@ -125,7 +144,7 @@ pub fn import_orm(
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, usize)> {
     let mut osm = parse_osm_data(json, railway_types)?;
 
     if let Some(bbox) = clip_to_bbox {
@@ -140,11 +159,20 @@ pub fn import_orm(
         &simplified, &route_data, &osm, apply_speed_limits,
     );
 
+    let node_count = track_nodes.len();
+    if node_count > MAX_TRACK_NODES {
+        anyhow::bail!(
+            "Blueprint has {node_count} track nodes, exceeding the {MAX_TRACK_NODES} limit. \
+             Reduce the selection area or disable some track types."
+        );
+    }
+
     attach_branches(
         &mut track_nodes, &simplified, &route_data, &osm.nodes,
     );
 
-    serialize_to_nrclip(track_nodes, name, track_kinds, mod_metas)
+    let bytes = serialize_to_nrclip(track_nodes, name, track_kinds, mod_metas)?;
+    Ok((bytes, node_count))
 }
 
 // ══════════════════════════════════════════════════════════════════════

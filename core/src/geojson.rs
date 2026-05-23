@@ -106,6 +106,27 @@ pub fn count_ways(json: &str) -> usize {
         .map_or(0, |e| e.iter().filter(|el| el["type"].as_str() == Some("way")).count())
 }
 
+/// Count total OSM nodes across all ways matching the enabled railway types.
+/// This is a fast upper-bound estimate for track node count (actual count is
+/// lower after simplification).
+#[must_use]
+pub fn count_total_nodes(json: &str, enabled_types: &[String]) -> usize {
+    let data: serde_json::Value = match serde_json::from_str(json) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    let Some(elements) = data["elements"].as_array() else { return 0 };
+    elements.iter()
+        .filter(|e| {
+            e["type"].as_str() == Some("way")
+                && e["tags"]["railway"].as_str()
+                    .is_some_and(|rt| enabled_types.iter().any(|t| t == rt))
+        })
+        .filter_map(|e| e["nodes"].as_array())
+        .map(Vec::len)
+        .sum()
+}
+
 /// Clip a linestring (as lon/lat pairs) to a bbox (s,w,n,e in lat/lon).
 /// Returns one or more clipped linestrings.
 #[must_use]

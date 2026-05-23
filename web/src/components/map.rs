@@ -130,6 +130,7 @@ pub fn Map(
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
     let (status, set_status) = create_signal(String::from("Navigate to an area, then click Select Area"));
+    let (over_limit, set_over_limit) = create_signal(false);
 
     let mode = store_value(Mode::Idle);
     let draw_start = store_value::<Option<(f64, f64)>>(None);
@@ -286,15 +287,44 @@ pub fn Map(
                     Ok(json) => {
                         let types = extract_railway_types(&json);
                         let count = count_ways(&json);
-                        set_available_types.set(types);
+                        set_available_types.set(types.clone());
                         set_has_selection.set(true);
                         let enabled = enabled_types.get_untracked();
                         let clip = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
                         let geojson = osm_json_to_geojson(&json, &enabled, clip);
                         map_set_geojson("preview", &geojson);
-                        cached_json.set_value(Some(json));
+                        cached_json.set_value(Some(json.clone()));
                         cached_bbox.set_value(Some((s, w, n, e)));
-                        set_status.set(format!("{count} ways in selection"));
+
+                        // Check node count against limit
+                        let raw_nodes = count_total_nodes(&json, &enabled);
+                        if raw_nodes > BAIL_NODE_THRESHOLD {
+                            set_over_limit.set(true);
+                            set_status.set(format!(
+                                "{count} ways (~{raw_nodes} nodes) — exceeds limit, reduce selection"
+                            ));
+                        } else {
+                            set_status.set(format!("{count} ways — counting nodes..."));
+                            let clip_bbox = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
+                            match tauri_count_track_nodes(&json, &enabled, clip_bbox).await {
+                                Ok(exact) => {
+                                    set_over_limit.set(exact > MAX_TRACK_NODES);
+                                    if exact > MAX_TRACK_NODES {
+                                        set_status.set(format!(
+                                            "{count} ways, {exact} nodes — exceeds {MAX_TRACK_NODES} limit"
+                                        ));
+                                    } else {
+                                        set_status.set(format!(
+                                            "{count} ways, {exact} / {MAX_TRACK_NODES} nodes"
+                                        ));
+                                    }
+                                }
+                                Err(err) => {
+                                    set_over_limit.set(false);
+                                    set_status.set(format!("{count} ways (count failed: {err})"));
+                                }
+                            }
+                        }
                     }
                     Err(err) => {
                         set_status.set(format!("Fetch failed: {err}"));
@@ -374,7 +404,7 @@ pub fn Map(
                     <button on:click=on_select_area>"Select Area"</button>
                 </Show>
                 <Show when=move || bbox.get().is_some()>
-                    <button class="primary" on:click=on_import_click>"Import Tracks"</button>
+                    <button class="primary" on:click=on_import_click disabled=move || over_limit.get()>"Import Tracks"</button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
@@ -420,7 +450,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
     // Step 2: Import via Tauri backend
     set_status.set("Processing tracks...".into());
     let clip_bbox = if clip { Some((s, w, n, e)) } else { None };
-    let data = match tauri_import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox).await {
+    let (data, node_count) = match tauri_import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox).await {
         Ok(d) => d,
         Err(err) => {
             set_status.set(format!("Import failed: {err}"));
@@ -433,7 +463,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
     match tauri_save_blueprint(name, &data).await {
         Ok(path) => {
             set_status.set("Ready".into());
-            set_success.set(Some(path));
+            set_success.set(Some(format!("{path}\n{node_count} / 50,000 nodes")));
         }
         Err(err) => {
             set_status.set(format!("Save failed: {err}"));
@@ -466,18 +496,12 @@ async fn fetch_overpass(query: &str) -> Result<String, String> {
 }
 
 use crate::utils::urlencoding;
-use turnout_core::geojson::{osm_json_to_geojson, extract_railway_types, count_ways, parse_orm_link};
+use turnout_core::geojson::{osm_json_to_geojson, extract_railway_types, count_ways, count_total_nodes, parse_orm_link};
 
-async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<Vec<u8>, String> {
-    let args = js_sys::Object::new();
-    js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
-    js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
-    let js_types = js_sys::Array::new();
-    for t in railway_types {
-        js_types.push(&JsValue::from_str(t));
-    }
-    js_sys::Reflect::set(&args, &"railwayTypes".into(), &js_types.into()).ok();
-    js_sys::Reflect::set(&args, &"applySpeedLimits".into(), &JsValue::from_bool(apply_speed_limits)).ok();
+const MAX_TRACK_NODES: usize = 50_000;
+const BAIL_NODE_THRESHOLD: usize = 100_000;
+
+fn build_bbox_args(clip_bbox: Option<(f64, f64, f64, f64)>) -> JsValue {
     match clip_bbox {
         Some((s, w, n, e)) => {
             let arr = js_sys::Array::new();
@@ -485,16 +509,42 @@ async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], appl
             arr.push(&JsValue::from_f64(w));
             arr.push(&JsValue::from_f64(n));
             arr.push(&JsValue::from_f64(e));
-            js_sys::Reflect::set(&args, &"clipBbox".into(), &arr.into()).ok();
+            arr.into()
         }
-        None => {
-            js_sys::Reflect::set(&args, &"clipBbox".into(), &JsValue::NULL).ok();
-        }
+        None => JsValue::NULL,
     }
+}
+
+fn build_railway_types_array(railway_types: &[String]) -> js_sys::Array {
+    let arr = js_sys::Array::new();
+    for t in railway_types {
+        arr.push(&JsValue::from_str(t));
+    }
+    arr
+}
+
+async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<(Vec<u8>, usize), String> {
+    let args = js_sys::Object::new();
+    js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
+    js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
+    js_sys::Reflect::set(&args, &"railwayTypes".into(), &build_railway_types_array(railway_types).into()).ok();
+    js_sys::Reflect::set(&args, &"applySpeedLimits".into(), &JsValue::from_bool(apply_speed_limits)).ok();
+    js_sys::Reflect::set(&args, &"clipBbox".into(), &build_bbox_args(clip_bbox)).ok();
     let result = tauri_invoke("import_orm", &args).await?;
-    // Result is a JS array of u8
-    let arr = js_sys::Uint8Array::new(&result);
-    Ok(arr.to_vec())
+    // Result is [bytes_array, node_count]
+    let tuple = js_sys::Array::from(&result);
+    let bytes = js_sys::Uint8Array::new(&tuple.get(0)).to_vec();
+    let node_count = tuple.get(1).as_f64().unwrap_or(0.0) as usize;
+    Ok((bytes, node_count))
+}
+
+async fn tauri_count_track_nodes(json: &str, railway_types: &[String], clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<usize, String> {
+    let args = js_sys::Object::new();
+    js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
+    js_sys::Reflect::set(&args, &"railwayTypes".into(), &build_railway_types_array(railway_types).into()).ok();
+    js_sys::Reflect::set(&args, &"clipBbox".into(), &build_bbox_args(clip_bbox)).ok();
+    let result = tauri_invoke("count_track_nodes", &args).await?;
+    Ok(result.as_f64().unwrap_or(0.0) as usize)
 }
 
 async fn tauri_save_blueprint(name: &str, data: &[u8]) -> Result<String, String> {
