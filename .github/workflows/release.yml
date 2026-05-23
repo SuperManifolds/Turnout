@@ -69,6 +69,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Turnout ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install."
           releaseDraft: true
           releaseAssetNamePattern: "[name]_[arch][_setup][ext]"
+          generateReleaseNotes: 'true'
