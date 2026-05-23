@@ -63,10 +63,10 @@ pub fn TrackFilter(
         <aside id="track-filter">
             <header>
                 <h3>"Track Types"</h3>
-                <nav>
-                    <button class="link" on:click=select_all>"All"</button>
-                    <button class="link" on:click=select_none>"None"</button>
-                </nav>
+                <div class="segmented">
+                    <button on:click=select_all>"All"</button>
+                    <button on:click=select_none>"None"</button>
+                </div>
             </header>
             <ul>
                 {TRACK_TYPES.iter().map(|t| {

@@ -252,9 +252,23 @@ body {
 #track-filter {
     @include sidebar-panel;
 
-    header nav {
+    header .segmented {
         display: flex;
-        gap: var(--spacing-xs);
+        gap: 1px;
+        background: var(--color-border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+
+        button {
+            border: none;
+            border-radius: 0;
+            background: var(--color-bg-tertiary);
+            box-shadow: none;
+            padding: 2px var(--spacing-sm);
+            font-size: var(--font-size-sm);
+
+            &:hover { background: var(--color-bg-hover); }
+        }
     }
 
     li {
