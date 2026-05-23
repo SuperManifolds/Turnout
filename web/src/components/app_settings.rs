@@ -1,4 +1,4 @@
-use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, spawn_local, web_sys, CollectView};
+use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalUpdate, spawn_local, web_sys, CollectView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -78,16 +78,37 @@ pub fn AppSettings() -> impl IntoView {
     let (check_updates, set_check_updates) = create_signal(true);
     let (theme, set_theme) = create_signal("system".to_string());
     let (status, set_status) = create_signal(String::new());
+    let (loaded, set_loaded) = create_signal(false);
 
+    // Load current settings
     create_effect(move |_| {
         spawn_local(async move {
             let settings = load_settings().await;
             set_mods_dir.set(settings.mods_dir_override);
             set_check_updates.set(settings.check_for_updates);
             set_theme.set(settings.map_theme);
+            set_loaded.set(true);
 
             if let Some(dir) = detect_mods_dir().await {
                 set_detected_dir.set(Some(dir));
+            }
+        });
+    });
+
+    // Auto-save whenever any setting changes
+    create_effect(move |_| {
+        let mods = mods_dir.get();
+        let updates = check_updates.get();
+        let t = theme.get();
+        if !loaded.get() { return; }
+        let settings = Settings {
+            mods_dir_override: mods,
+            check_for_updates: updates,
+            map_theme: t,
+        };
+        spawn_local(async move {
+            if let Err(e) = save_settings(&settings).await {
+                set_status.set(format!("Failed to save: {e}"));
             }
         });
     });
@@ -102,25 +123,6 @@ pub fn AppSettings() -> impl IntoView {
 
     let on_auto_detect = move |_| {
         set_mods_dir.set(None);
-    };
-
-    let on_save = move |_| {
-        let settings = Settings {
-            mods_dir_override: mods_dir.get_untracked(),
-            check_for_updates: check_updates.get_untracked(),
-            map_theme: theme.get_untracked(),
-        };
-        spawn_local(async move {
-            match save_settings(&settings).await {
-                Ok(()) => {
-                    let window = web_sys::window().expect("window");
-                    let _ = js_sys::Reflect::get(&window, &"close".into())
-                        .and_then(JsCast::dyn_into::<js_sys::Function>)
-                        .map(|f| f.call0(&window));
-                }
-                Err(e) => set_status.set(format!("Failed to save: {e}")),
-            }
-        });
     };
 
     let display_path = move || {
@@ -183,10 +185,6 @@ pub fn AppSettings() -> impl IntoView {
                 let s = status.get();
                 if s.is_empty() { None } else { Some(view! { <p class="error">{s}</p> }) }
             }}
-
-            <nav class="actions">
-                <button type="button" class="primary" on:click=on_save>"Save"</button>
-            </nav>
         </section>
     }
 }
