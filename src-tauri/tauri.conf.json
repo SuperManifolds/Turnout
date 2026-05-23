@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/tauri-conf-v2.schema.json",
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "Nimby Gen",
   "version": "0.1.0",
   "identifier": "com.nimby-gen.app",
@@ -10,6 +10,7 @@
     "beforeBuildCommand": "trunk build --release"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Nimby Gen",

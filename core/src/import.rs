@@ -62,8 +62,6 @@ pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
         }
     }
     let n_elevated: usize = node_layer.values().filter(|&&l| l != 0).count();
-    println!("Loaded {} OSM nodes, {} ways ({} nodes with layer!=0)", osm_nodes.len(), ways.len(), n_elevated);
-
     // Build node→way index
     let mut node_ways: HashMap<u64, Vec<(usize, usize)>> = HashMap::new(); // nid → [(way_idx, pos)]
     for (wi, way) in ways.iter().enumerate() {
@@ -190,8 +188,6 @@ pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
 
     routes.sort_by(|a, b| b.len().cmp(&a.len()));
     let interior_junctions: usize = routes.iter().map(|r| r[1..r.len().saturating_sub(1)].iter().filter(|n| junction_nodes.contains(n)).count()).sum();
-    println!("Merged into {} routes ({} interior junctions)", routes.len(), interior_junctions);
-
     // Convert routes to Mercator coordinates
     let route_coords: Vec<Vec<(f64, f64)>> = routes.iter().map(|route| {
         route.iter().filter_map(|nid| {
@@ -381,8 +377,6 @@ pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
 
     let total_before: usize = route_coords.iter().map(|c| c.len()).sum();
     let total_after: usize = simplified.iter().map(|s| s.len()).sum();
-    println!("Simplified: {} → {} nodes", total_before, total_after);
-
     // Build game track nodes
     let mut track_nodes: Vec<Track> = Vec::new();
     let mut node_id_counter: i64 = 100;
@@ -500,13 +494,7 @@ pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
             // Debug: show junction attachment quality
             if best_dist > 5.0 || best_t > 0.98 || best_t < 0.02 {
                 let pi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg].game_id).unwrap();
-                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg + 1].game_id).unwrap();
-                eprintln!("  WARN branch={} parent={} seg={} t={:.3} dist={:.1}m junc=({:.1},{:.1}) p=({:.1},{:.1}) q=({:.1},{:.1})",
-                    branch_gid, parent_chain[best_seg].game_id, best_seg, best_t, best_dist,
-                    junction_pos.0, junction_pos.1,
-                    track_nodes[pi].x, track_nodes[pi].y,
-                    track_nodes[qi].x, track_nodes[qi].y);
-            }
+                let qi = track_nodes.iter().position(|n| n.node_id == parent_chain[best_seg + 1].game_id).unwrap();            }
 
             // No reject — always create junction, even if geometry is imperfect.
             // The game recomputes spline parameters on load.
@@ -589,21 +577,13 @@ pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
             }
         }
     }
-    println!("Branch debug: {} short routes, endpoints: {} not-junction, {} same-route, {} eligible",
-             short, dbg_no_junc, dbg_same, dbg_found);
-
     let n_branches = track_nodes.iter().filter(|n| n.attached_to_id != 0).count();
     let n_junctions = track_nodes.iter().filter(|n| !n.attached_by.is_empty()).count();
-    println!("Created {} track nodes, {} branches, {} junction nodes",
-             track_nodes.len(), n_branches, n_junctions);
-
     // Compute center and convert to ground meters
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
     let center_lat = (cy / 6_378_137.0).sinh().atan();
-    let cos_lat = center_lat.cos();
-    println!("Center: ({:.2}, {:.2}), cos(lat)={:.6}", cx, cy, cos_lat);
-    for t in &mut track_nodes {
+    let cos_lat = center_lat.cos();    for t in &mut track_nodes {
         t.x = (t.x - cx) * cos_lat;
         t.y = (t.y - cy) * cos_lat;
     }

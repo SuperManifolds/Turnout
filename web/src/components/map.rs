@@ -1,8 +1,10 @@
 use leptos::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
 
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
+const OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const BBOX_COLOR: &str = "#4a9eff";
 const HANDLE_COLOR: &str = "#4a9eff";
 const HANDLE_RADIUS: f64 = 6.0;
@@ -263,6 +265,24 @@ pub fn Map() -> impl IntoView {
         set_status.set("Navigate to an area, then click Select Area".into());
     };
 
+    let (show_name_prompt, set_show_name_prompt) = create_signal(false);
+
+    let on_import_click = move |_| {
+        set_show_name_prompt.set(true);
+    };
+
+    let on_name_confirm = Callback::new(move |name: String| {
+        set_show_name_prompt.set(false);
+        let Some((s, w, n, e)) = bbox.get_untracked() else { return };
+        spawn_local(async move {
+            do_import(s, w, n, e, &name, set_status).await;
+        });
+    });
+
+    let on_name_cancel = Callback::new(move |()| {
+        set_show_name_prompt.set(false);
+    });
+
     view! {
         <div id="map-wrapper">
             <div node_ref=map_ref id="map-canvas"></div>
@@ -272,15 +292,122 @@ pub fn Map() -> impl IntoView {
                     <button on:click=on_select_area>"Select Area"</button>
                 </Show>
                 <Show when=move || bbox.get().is_some()>
-                    <button class="primary" on:click=move |_| {
-                        set_status.set("Importing...".into());
-                    }>"Import Tracks"</button>
+                    <button class="primary" on:click=on_import_click>"Import Tracks"</button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
             </nav>
+            <Show when=move || show_name_prompt.get()>
+                <super::NamePrompt
+                    default_name="import".to_string()
+                    on_confirm=on_name_confirm
+                    on_cancel=on_name_cancel
+                />
+            </Show>
         </div>
     }
+}
+
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, set_status: WriteSignal<String>) {
+    // Step 1: Fetch Overpass data
+    set_status.set("Fetching railway data...".into());
+    let query = format!(
+        "[out:json][timeout:60];(way[\"railway\"=\"rail\"]({s},{w},{n},{e}););(._;>;);out body;"
+    );
+    let json = match fetch_overpass(&query).await {
+        Ok(j) => j,
+        Err(err) => {
+            set_status.set(format!("Fetch failed: {err}"));
+            return;
+        }
+    };
+
+    // Step 2: Import via Tauri backend
+    set_status.set("Processing tracks...".into());
+    let data = match tauri_import_orm(&json, name).await {
+        Ok(d) => d,
+        Err(err) => {
+            set_status.set(format!("Import failed: {err}"));
+            return;
+        }
+    };
+
+    // Step 3: Save via Tauri backend
+    set_status.set("Saving blueprint...".into());
+    match tauri_save_blueprint(name, &data).await {
+        Ok(path) => {
+            set_status.set(format!("Saved to {path}"));
+        }
+        Err(err) => {
+            set_status.set(format!("Save failed: {err}"));
+        }
+    }
+}
+
+async fn fetch_overpass(query: &str) -> Result<String, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let body = format!("data={}", urlencoding(query));
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("POST");
+    opts.set_body(&JsValue::from_str(&body));
+    let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
+    headers.set("Content-Type", "application/x-www-form-urlencoded").map_err(|e| format!("{e:?}"))?;
+    opts.set_headers(&headers);
+    let request = web_sys::Request::new_with_str_and_init(OVERPASS_URL, &opts)
+        .map_err(|e| format!("{e:?}"))?;
+    let resp = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let resp: web_sys::Response = resp.unchecked_into();
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    text.as_string().ok_or("no text".into())
+}
+
+fn urlencoding(s: &str) -> String {
+    s.chars().map(|c| match c {
+        ' ' => "+".to_string(),
+        c if c.is_alphanumeric() || "-_.~".contains(c) => c.to_string(),
+        c => format!("%{:02X}", c as u32),
+    }).collect()
+}
+
+async fn tauri_import_orm(json: &str, name: &str) -> Result<Vec<u8>, String> {
+    let args = js_sys::Object::new();
+    js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
+    js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
+    let result = tauri_invoke("import_orm", &args).await?;
+    // Result is a JS array of u8
+    let arr = js_sys::Uint8Array::new(&result);
+    Ok(arr.to_vec())
+}
+
+async fn tauri_save_blueprint(name: &str, data: &[u8]) -> Result<String, String> {
+    let args = js_sys::Object::new();
+    js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
+    let js_data = js_sys::Uint8Array::from(data);
+    js_sys::Reflect::set(&args, &"data".into(), &js_data.into()).ok();
+    let result = tauri_invoke("save_blueprint", &args).await?;
+    result.as_string().ok_or("unexpected response".into())
+}
+
+async fn tauri_invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
+    let window = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
+        .map_err(|_| "Tauri not available")?;
+    let core = js_sys::Reflect::get(&window, &"core".into())
+        .map_err(|_| "Tauri core not available")?;
+    let invoke = js_sys::Reflect::get(&core, &"invoke".into())
+        .map_err(|_| "invoke not available")?;
+    let invoke_fn: js_sys::Function = invoke.unchecked_into();
+    let promise = invoke_fn.call2(&JsValue::NULL, &cmd.into(), args)
+        .map_err(|e| format!("{e:?}"))?;
+    JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .map_err(|e| format!("{e:?}"))
 }
 
 /// Parse an OpenRailwayMap link like:
