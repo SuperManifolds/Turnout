@@ -277,6 +277,40 @@ body {
     @include sidebar-panel;
 
     li i { width: 1.2rem; text-align: center; color: var(--color-accent); }
+
+    .mode-switch {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--spacing-xs) var(--spacing-md);
+
+        .mode-label {
+            font-size: var(--font-size-sm);
+            color: var(--color-text-secondary);
+        }
+
+        .segmented {
+            display: flex;
+            gap: 1px;
+            background: var(--color-border);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+
+            button {
+                border: none;
+                border-radius: 0;
+                background: var(--color-bg-tertiary);
+                box-shadow: none;
+                padding: 2px var(--spacing-sm);
+                font-size: var(--font-size-sm);
+
+                &.active {
+                    background: var(--color-accent);
+                    color: var(--color-bg-primary);
+                }
+            }
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════

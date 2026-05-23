@@ -1,4 +1,4 @@
-use leptos::{component, view, ReadSignal, WriteSignal, IntoView, SignalUpdate, SignalGet};
+use leptos::{component, view, ReadSignal, WriteSignal, IntoView, SignalUpdate, SignalGet, SignalSet};
 
 #[component]
 pub fn Settings(
@@ -23,11 +23,20 @@ pub fn Settings(
                     <i class=move || if clip_to_selection.get() { "fa-solid fa-square-check" } else { "fa-regular fa-square" }></i>
                     <span class="label">"Clip to selection"</span>
                 </li>
-                <li on:click=move |_| set_tangent_mode.update(|v| *v = !*v)>
-                    <i class=move || if tangent_mode.get() { "fa-solid fa-square-check" } else { "fa-regular fa-square" }></i>
-                    <span class="label">"Tangent mode"</span>
-                </li>
             </ul>
+            <nav class="mode-switch">
+                <span class="mode-label">"Track mode"</span>
+                <div class="segmented">
+                    <button
+                        class:active=move || !tangent_mode.get()
+                        on:click=move |_| set_tangent_mode.set(false)
+                    >"Point"</button>
+                    <button
+                        class:active=move || tangent_mode.get()
+                        on:click=move |_| set_tangent_mode.set(true)
+                    >"Tangent"</button>
+                </div>
+            </nav>
         </aside>
     }
 }
