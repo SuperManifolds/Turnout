@@ -4,9 +4,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
-const OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const OVERPASS_TIMEOUT: u32 = 60;
-const OVERPASS_USER_AGENT: &str = "Turnout/0.1.0 (+https://github.com/SuperManifolds/Turnout)";
 const MAX_BBOX_AREA_DEG2: f64 = 0.25;
 const BBOX_COLOR: &str = "#4a9eff";
 const HANDLE_COLOR: &str = "#4a9eff";
@@ -295,43 +293,43 @@ pub fn Map(
                 );
                 match fetch_overpass(&query).await {
                     Ok(json) => {
-                        let types = extract_railway_types(&json);
-                        let count = count_ways(&json);
-                        set_available_types.set(types.clone());
-                        set_has_selection.set(true);
                         let enabled = enabled_types.get_untracked();
+                        let stats = analyze_overpass_json(&json, &enabled);
+                        set_available_types.set(stats.railway_types);
+                        set_has_selection.set(true);
                         let clip = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
                         let geojson = osm_json_to_geojson(&json, &enabled, clip);
                         map_set_geojson("preview", &geojson);
                         cached_json.set_value(Some(json.clone()));
                         cached_bbox.set_value(Some((s, w, n, e)));
 
-                        // Check node count against limit
-                        let raw_nodes = count_total_nodes(&json, &enabled);
-                        if raw_nodes > BAIL_NODE_THRESHOLD {
+                        if stats.total_nodes > BAIL_NODE_THRESHOLD {
                             set_over_limit.set(true);
                             set_status.set(format!(
-                                "{count} ways (~{raw_nodes} nodes) — exceeds limit, reduce selection"
+                                "{} ways (~{} nodes) — exceeds limit, reduce selection",
+                                stats.way_count, stats.total_nodes
                             ));
                         } else {
-                            set_status.set(format!("{count} ways — counting nodes..."));
+                            set_status.set(format!("{} ways — counting nodes...", stats.way_count));
                             let clip_bbox = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
                             match tauri_count_track_nodes(&json, &enabled, clip_bbox).await {
                                 Ok(exact) => {
                                     set_over_limit.set(exact > MAX_TRACK_NODES);
                                     if exact > MAX_TRACK_NODES {
                                         set_status.set(format!(
-                                            "{count} ways, {exact} nodes — exceeds {MAX_TRACK_NODES} limit"
+                                            "{} ways, {exact} nodes — exceeds {MAX_TRACK_NODES} limit",
+                                            stats.way_count
                                         ));
                                     } else {
                                         set_status.set(format!(
-                                            "{count} ways, {exact} / {MAX_TRACK_NODES} nodes"
+                                            "{} ways, {exact} / {MAX_TRACK_NODES} nodes",
+                                            stats.way_count
                                         ));
                                     }
                                 }
                                 Err(err) => {
                                     set_over_limit.set(false);
-                                    set_status.set(format!("{count} ways (count failed: {err})"));
+                                    set_status.set(format!("{} ways (count failed: {err})", stats.way_count));
                                 }
                             }
                         }
@@ -482,35 +480,14 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 }
 
 async fn fetch_overpass(query: &str) -> Result<String, String> {
-    let window = web_sys::window().ok_or("no window")?;
-    let body = format!("data={}", urlencoding(query));
-    let opts = web_sys::RequestInit::new();
-    opts.set_method("POST");
-    opts.set_body(&JsValue::from_str(&body));
-    let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
-    headers.set("Content-Type", "application/x-www-form-urlencoded").map_err(|e| format!("{e:?}"))?;
-    headers.set("User-Agent", OVERPASS_USER_AGENT).map_err(|e| format!("{e:?}"))?;
-    opts.set_headers(&headers);
-    let request = web_sys::Request::new_with_str_and_init(OVERPASS_URL, &opts)
-        .map_err(|e| format!("{e:?}"))?;
-    let resp = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let resp: web_sys::Response = resp.unchecked_into();
-    match resp.status() {
-        200 => {}
-        429 => return Err("Rate limited by Overpass API — wait a moment and try again".into()),
-        504 => return Err("Query timed out — try a smaller selection area".into()),
-        status => return Err(format!("Overpass API error (HTTP {status})")),
-    }
-    let text = JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    text.as_string().ok_or("no text".into())
+    let args = js_sys::Object::new();
+    js_sys::Reflect::set(&args, &"query".into(), &query.into()).ok();
+    tauri_invoke("fetch_overpass", &args).await?
+        .as_string()
+        .ok_or("unexpected response".into())
 }
 
-use crate::utils::urlencoding;
-use turnout_core::geojson::{osm_json_to_geojson, extract_railway_types, count_ways, count_total_nodes, parse_orm_link};
+use turnout_core::geojson::{osm_json_to_geojson, analyze_overpass_json, parse_orm_link};
 
 const MAX_TRACK_NODES: usize = 50_000;
 const BAIL_NODE_THRESHOLD: usize = 100_000;

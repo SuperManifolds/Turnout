@@ -24,6 +24,7 @@ const SPLINE_TOLERANCE: f64 = 5.0; // meters — max deviation before adding sub
 const BRANCH_OFFSET: f64 = 5.0; // meters — nudge branch root away from parent
 
 type VanillaTrackData = (Vec<(i32, TrackKind)>, Vec<ModMeta>);
+type PipelineResult = (Vec<Track>, Vec<Vec<(usize, f64, f64)>>, RouteData, OsmData);
 
 // Vanilla game track type keys
 const TRACK_TYPE_HIGH_SPEED: i32 = 1;
@@ -116,13 +117,13 @@ pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<VanillaTrac
     anyhow::bail!("vanilla track kinds (1,2,3) not found in collections.nrclip")
 }
 
-/// Run the import pipeline up to track node generation and return the count.
-/// Used for dry-run validation before committing to a full import.
-pub fn count_track_nodes(
+/// Shared import pipeline: parse → clip → merge → simplify → subdivide → build nodes.
+fn run_pipeline(
     json: &str,
     railway_types: &[String],
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
-) -> Result<usize> {
+    apply_speed_limits: bool,
+) -> Result<PipelineResult> {
     let mut osm = parse_osm_data(json, railway_types)?;
     if let Some(bbox) = clip_to_bbox {
         clip_ways_to_bbox(&mut osm, bbox);
@@ -130,7 +131,18 @@ pub fn count_track_nodes(
     let route_data = merge_ways_into_routes(&osm);
     let simplified = simplify_routes(&route_data, &osm.node_layer);
     let simplified = subdivide_long_segments(simplified, &route_data.route_coords);
-    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, false);
+    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, apply_speed_limits);
+    Ok((track_nodes, simplified, route_data, osm))
+}
+
+/// Run the import pipeline up to track node generation and return the count.
+/// Used for dry-run validation before committing to a full import.
+pub fn count_track_nodes(
+    json: &str,
+    railway_types: &[String],
+    clip_to_bbox: Option<(f64, f64, f64, f64)>,
+) -> Result<usize> {
+    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false)?;
     Ok(track_nodes.len())
 }
 
@@ -145,19 +157,8 @@ pub fn import_orm(
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
 ) -> Result<(Vec<u8>, usize)> {
-    let mut osm = parse_osm_data(json, railway_types)?;
-
-    if let Some(bbox) = clip_to_bbox {
-        clip_ways_to_bbox(&mut osm, bbox);
-    }
-
-    let route_data = merge_ways_into_routes(&osm);
-    let simplified = simplify_routes(&route_data, &osm.node_layer);
-    let simplified = subdivide_long_segments(simplified, &route_data.route_coords);
-
-    let mut track_nodes = build_track_nodes(
-        &simplified, &route_data, &osm, apply_speed_limits,
-    );
+    let (mut track_nodes, simplified, route_data, osm) =
+        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits)?;
 
     let node_count = track_nodes.len();
     if node_count > MAX_TRACK_NODES {
@@ -196,11 +197,10 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
     for e in elements {
         match e["type"].as_str() {
             Some("node") => {
-                let id = e["id"].as_u64().expect("node id");
-                osm.nodes.insert(id, (
-                    e["lat"].as_f64().expect("node lat"),
-                    e["lon"].as_f64().expect("node lon"),
-                ));
+                let Some(id) = e["id"].as_u64() else { continue };
+                let Some(lat) = e["lat"].as_f64() else { continue };
+                let Some(lon) = e["lon"].as_f64() else { continue };
+                osm.nodes.insert(id, (lat, lon));
             }
             Some("way") => {
                 if !railway_types.is_empty() {
@@ -210,8 +210,10 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
                         .unwrap_or("");
                     if !railway_types.iter().any(|t| t == rt) { continue; }
                 }
-                let nids: Vec<u64> = e["nodes"].as_array().expect("way nodes")
-                    .iter().map(|n| n.as_u64().expect("node ref")).collect();
+                let Some(node_arr) = e["nodes"].as_array() else { continue };
+                let nids: Vec<u64> = node_arr.iter()
+                    .filter_map(serde_json::Value::as_u64)
+                    .collect();
                 let tags = e.get("tags").cloned().unwrap_or_default();
                 let layer: i32 = tags.get("layer")
                     .and_then(|l| l.as_str())

@@ -74,57 +74,43 @@ pub fn osm_json_to_geojson(
     format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(","))
 }
 
-/// Extract unique railway type values from Overpass JSON.
+/// Summary statistics from a single pass over Overpass JSON.
+pub struct PreviewStats {
+    pub railway_types: Vec<String>,
+    pub way_count: usize,
+    pub total_nodes: usize,
+}
+
+/// Extract railway types, way count, and filtered node count in a single JSON parse.
 #[must_use]
-pub fn extract_railway_types(json: &str) -> Vec<String> {
+pub fn analyze_overpass_json(json: &str, enabled_types: &[String]) -> PreviewStats {
     let data: serde_json::Value = match serde_json::from_str(json) {
         Ok(d) => d,
-        Err(_) => return vec![],
+        Err(_) => return PreviewStats { railway_types: vec![], way_count: 0, total_nodes: 0 },
     };
+    let Some(elements) = data["elements"].as_array() else {
+        return PreviewStats { railway_types: vec![], way_count: 0, total_nodes: 0 };
+    };
+
     let mut types = HashSet::new();
-    if let Some(elements) = data["elements"].as_array() {
-        for e in elements {
-            if e["type"].as_str() == Some("way")
-                && let Some(rt) = e["tags"]["railway"].as_str() {
-                    types.insert(rt.to_string());
-                }
+    let mut way_count = 0;
+    let mut total_nodes = 0;
+
+    for e in elements {
+        if e["type"].as_str() != Some("way") { continue; }
+        way_count += 1;
+        if let Some(rt) = e["tags"]["railway"].as_str() {
+            types.insert(rt.to_string());
+            if enabled_types.iter().any(|t| t == rt)
+                && let Some(nodes) = e["nodes"].as_array() {
+                    total_nodes += nodes.len();
+            }
         }
     }
-    let mut sorted: Vec<String> = types.into_iter().collect();
-    sorted.sort();
-    sorted
-}
 
-/// Count the number of way elements in Overpass JSON.
-#[must_use]
-pub fn count_ways(json: &str) -> usize {
-    let data: serde_json::Value = match serde_json::from_str(json) {
-        Ok(d) => d,
-        Err(_) => return 0,
-    };
-    data["elements"].as_array()
-        .map_or(0, |e| e.iter().filter(|el| el["type"].as_str() == Some("way")).count())
-}
-
-/// Count total OSM nodes across all ways matching the enabled railway types.
-/// This is a fast upper-bound estimate for track node count (actual count is
-/// lower after simplification).
-#[must_use]
-pub fn count_total_nodes(json: &str, enabled_types: &[String]) -> usize {
-    let data: serde_json::Value = match serde_json::from_str(json) {
-        Ok(d) => d,
-        Err(_) => return 0,
-    };
-    let Some(elements) = data["elements"].as_array() else { return 0 };
-    elements.iter()
-        .filter(|e| {
-            e["type"].as_str() == Some("way")
-                && e["tags"]["railway"].as_str()
-                    .is_some_and(|rt| enabled_types.iter().any(|t| t == rt))
-        })
-        .filter_map(|e| e["nodes"].as_array())
-        .map(Vec::len)
-        .sum()
+    let mut railway_types: Vec<String> = types.into_iter().collect();
+    railway_types.sort();
+    PreviewStats { railway_types, way_count, total_nodes }
 }
 
 /// Clip a linestring (as lon/lat pairs) to a bbox (s,w,n,e in lat/lon).
