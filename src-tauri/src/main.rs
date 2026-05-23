@@ -108,6 +108,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![import_orm, get_mods_dir, save_blueprint])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
