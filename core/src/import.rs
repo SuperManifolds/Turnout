@@ -20,7 +20,8 @@ const MAX_SPACING: f64 = 200.0;
 
 /// Import OpenRailwayMap Overpass JSON into a Nimby Rails .nrclip file.
 /// Returns the raw file bytes ready to write to disk.
-pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
+/// `railway_types`: if non-empty, only import ways whose `railway` tag is in this list.
+pub fn import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Vec<u8>> {
     let data: serde_json::Value = serde_json::from_str(json).context("parse JSON")?;
     let elements = data["elements"].as_array().context("no elements")?;
     let blueprint_name = name.to_string();
@@ -37,6 +38,14 @@ pub fn import_orm(json: &str, name: &str) -> Result<Vec<u8>> {
                 osm_nodes.insert(id, (e["lat"].as_f64().unwrap(), e["lon"].as_f64().unwrap()));
             }
             Some("way") => {
+                // Filter by railway type if specified
+                if !railway_types.is_empty() {
+                    let rt = e.get("tags")
+                        .and_then(|t| t.get("railway"))
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("");
+                    if !railway_types.iter().any(|t| t == rt) { continue; }
+                }
                 let nids: Vec<u64> = e["nodes"].as_array().unwrap()
                     .iter().map(|n| n.as_u64().unwrap()).collect();
                 let layer: i32 = e.get("tags")

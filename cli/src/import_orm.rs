@@ -10,7 +10,7 @@ fn main() -> Result<()> {
         .replace('_', " ");
 
     let json = fs::read_to_string(json_path).context("read JSON")?;
-    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name)?;
+    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name, &[])?;
 
     fs::write(output, &file_data)?;
     println!("Wrote {} bytes to {}", file_data.len(), output);

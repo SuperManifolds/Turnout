@@ -4,8 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 
 #[tauri::command]
-fn import_orm(json: String, name: String) -> Result<Vec<u8>, String> {
-    nimby_gen_core::import::import_orm(&json, &name).map_err(|e| e.to_string())
+fn import_orm(json: String, name: String, railway_types: Vec<String>) -> Result<Vec<u8>, String> {
+    nimby_gen_core::import::import_orm(&json, &name, &railway_types).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

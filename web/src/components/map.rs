@@ -350,8 +350,9 @@ pub fn Map(
         set_show_name_prompt.set(false);
         let Some((s, w, n, e)) = bbox.get_untracked() else { return };
         let cached = cached_json.get_value();
+        let types = enabled_types.get_untracked();
         spawn_local(async move {
-            do_import(s, w, n, e, &name, cached.as_deref(), set_status, set_success_message).await;
+            do_import(s, w, n, e, &name, cached.as_deref(), &types, set_status, set_success_message).await;
         });
     });
 
@@ -393,7 +394,7 @@ pub fn Map(
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
     // Step 1: Use cached JSON or fetch
     let json = if let Some(cached) = cached_json {
         cached.to_string()
@@ -413,7 +414,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 
     // Step 2: Import via Tauri backend
     set_status.set("Processing tracks...".into());
-    let data = match tauri_import_orm(&json, name).await {
+    let data = match tauri_import_orm(&json, name, railway_types).await {
         Ok(d) => d,
         Err(err) => {
             set_status.set(format!("Import failed: {err}"));
@@ -466,10 +467,15 @@ fn urlencoding(s: &str) -> String {
     }).collect()
 }
 
-async fn tauri_import_orm(json: &str, name: &str) -> Result<Vec<u8>, String> {
+async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String]) -> Result<Vec<u8>, String> {
     let args = js_sys::Object::new();
     js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
     js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
+    let js_types = js_sys::Array::new();
+    for t in railway_types {
+        js_types.push(&JsValue::from_str(t));
+    }
+    js_sys::Reflect::set(&args, &"railwayTypes".into(), &js_types.into()).ok();
     let result = tauri_invoke("import_orm", &args).await?;
     // Result is a JS array of u8
     let arr = js_sys::Uint8Array::new(&result);
