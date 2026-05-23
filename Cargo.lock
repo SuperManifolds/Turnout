@@ -2851,56 +2851,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "nimby-gen-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs-next",
- "image",
- "nimby-gen-core",
- "serde_json",
-]
-
-[[package]]
-name = "nimby-gen-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde_json",
- "zstd-pure-rs",
-]
-
-[[package]]
-name = "nimby-gen-tauri"
-version = "0.1.0"
-dependencies = [
- "dirs-next",
- "nimby-gen-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
-]
-
-[[package]]
-name = "nimby-gen-web"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "leptos",
- "nimby-gen-core",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "no_std_io2"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5355,6 +5305,56 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "turnout-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs-next",
+ "image",
+ "serde_json",
+ "turnout-core",
+]
+
+[[package]]
+name = "turnout-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "zstd-pure-rs",
+]
+
+[[package]]
+name = "turnout-tauri"
+version = "0.1.0"
+dependencies = [
+ "dirs-next",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "turnout-core",
+]
+
+[[package]]
+name = "turnout-web"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "leptos",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "turnout-core",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "typed-builder"

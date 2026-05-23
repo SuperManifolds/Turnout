@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::env;
 
-use nimby_gen_core::nrc1::NrclipFile;
+use turnout_core::nrc1::NrclipFile;
 
 fn main() -> Result<()> {
     let path = env::args()

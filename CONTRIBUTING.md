@@ -1,6 +1,6 @@
-# Contributing to Nimby Gen
+# Contributing to Turnout
 
-Thank you for your interest in contributing to Nimby Gen! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Turnout! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 
@@ -31,8 +31,8 @@ rustup target add wasm32-unknown-unknown
 
 ```bash
 # Fork the repository on GitHub, then clone your fork
-git clone https://github.com/YOUR_USERNAME/nimby_gen.git
-cd nimby_gen
+git clone https://github.com/YOUR_USERNAME/turnout.git
+cd turnout
 ```
 
 3. **Run the Desktop App**
@@ -118,11 +118,12 @@ git push origin yourname/123-your-branch-name
 ## Project Structure
 
 ```
-nimby_gen/
+turnout/
 ├── core/               # Core library (no I/O, no UI)
 │   └── src/
 │       ├── types/      # NrclipRead/NrclipWrite data types (track, signal, etc.)
 │       ├── import.rs   # ORM Overpass JSON → .nrclip pipeline
+│       ├── geojson.rs  # OSM JSON → GeoJSON for map preview
 │       ├── wire.rs     # Binary wire format (PayloadReader/PayloadWriter)
 │       ├── nrc1.rs     # NRC1 container (header + zstd + checksum)
 │       ├── hobby.rs    # Game's spline algorithm (reverse engineered)

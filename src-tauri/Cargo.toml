@@ -1,5 +1,5 @@
 [package]
-name = "nimby-gen-tauri"
+name = "turnout-tauri"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,7 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-nimby-gen-core = { path = "../core" }
+turnout-core = { path = "../core" }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

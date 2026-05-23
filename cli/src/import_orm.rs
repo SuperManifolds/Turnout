@@ -12,16 +12,16 @@ fn main() -> Result<()> {
     let json = fs::read_to_string(json_path).context("read JSON")?;
     // Try to find vanilla track kinds from the game's collections.nrclip
     let (track_kinds, mod_metas) = find_collections_nrclip()
-        .and_then(|path| nimby_gen_core::import::extract_vanilla_track_kinds(&path).ok())
+        .and_then(|path| turnout_core::import::extract_vanilla_track_kinds(&path).ok())
         .unwrap_or_default();
 
-    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name, &[], true, None, track_kinds, mod_metas)?;
+    let file_data = turnout_core::import::import_orm(&json, &blueprint_name, &[], true, None, track_kinds, mod_metas)?;
 
     fs::write(output, &file_data)?;
     println!("Wrote {} bytes to {}", file_data.len(), output);
 
     // Verify round-trip
-    let decoded = nimby_gen_core::nrc1::NrclipFile::from_bytes(&file_data)?;
+    let decoded = turnout_core::nrc1::NrclipFile::from_bytes(&file_data)?;
     let total: usize = decoded.collections.iter().flat_map(|c| &c.clips).map(|c| c.tracks.len()).sum();
     println!("Verified: {total} tracks");
 

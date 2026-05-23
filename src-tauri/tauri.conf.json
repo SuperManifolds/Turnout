@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "Nimby Gen",
+  "productName": "Turnout",
   "version": "0.1.0",
-  "identifier": "com.nimby-gen.app",
+  "identifier": "com.turnout.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Nimby Gen",
+        "title": "Turnout",
         "width": 1200,
         "height": 800,
         "resizable": true

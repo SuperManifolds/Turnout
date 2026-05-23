@@ -13,11 +13,11 @@ fn import_orm(json: String, name: String, railway_types: Vec<String>, apply_spee
             if collections.exists() { Some(collections) } else { None }
         })
         .and_then(|path| {
-            nimby_gen_core::import::extract_vanilla_track_kinds(&path.to_string_lossy()).ok()
+            turnout_core::import::extract_vanilla_track_kinds(&path.to_string_lossy()).ok()
         })
         .unwrap_or_default();
 
-    nimby_gen_core::import::import_orm(&json, &name, &railway_types, apply_speed_limits, clip_bbox, track_kinds, mod_metas)
+    turnout_core::import::import_orm(&json, &name, &railway_types, apply_speed_limits, clip_bbox, track_kinds, mod_metas)
         .map_err(|e| e.to_string())
 }
 

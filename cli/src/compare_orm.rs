@@ -4,8 +4,8 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-use nimby_gen_core::hobby;
-use nimby_gen_core::nrc1::NrclipFile;
+use turnout_core::hobby;
+use turnout_core::nrc1::NrclipFile;
 
 type Segment2D = ((f64, f64), (f64, f64));
 
@@ -67,11 +67,11 @@ fn main() -> Result<()> {
     }
 
     // Walk chains from blueprint
-    let track_map: HashMap<i64, &nimby_gen_core::types::Track> = clip.tracks.iter()
+    let track_map: HashMap<i64, &turnout_core::types::Track> = clip.tracks.iter()
         .map(|t| (t.node_id, t)).collect();
 
     let mut visited = std::collections::HashSet::new();
-    let mut chains: Vec<Vec<&nimby_gen_core::types::Track>> = Vec::new();
+    let mut chains: Vec<Vec<&turnout_core::types::Track>> = Vec::new();
     for t in &clip.tracks {
         if visited.contains(&t.node_id) { continue; }
         let mut cur = t.node_id;
@@ -156,8 +156,8 @@ fn main() -> Result<()> {
 }
 
 fn render_overlay(
-    tracks: &[nimby_gen_core::types::Track],
-    chains: &[Vec<&nimby_gen_core::types::Track>],
+    tracks: &[turnout_core::types::Track],
+    chains: &[Vec<&turnout_core::types::Track>],
     osm_ways: &[Vec<u64>],
     osm_rel: &HashMap<u64, (f64, f64)>,
     path: &str,

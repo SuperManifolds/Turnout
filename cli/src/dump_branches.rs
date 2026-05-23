@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use nimby_gen_core::nrc1::NrclipFile;
-use nimby_gen_core::types::Track;
+use turnout_core::nrc1::NrclipFile;
+use turnout_core::types::Track;
 
 fn main() -> Result<()> {
     let path = std::env::args().nth(1).context("usage: dump_branches <path>")?;
@@ -87,8 +87,8 @@ fn dump_track(t: &Track) {
     println!("    junc_group:     {}", t.station_group_id);
 }
 
-fn dump_chains(clip: &nimby_gen_core::types::Clip) {
-    use nimby_gen_core::types::Track;
+fn dump_chains(clip: &turnout_core::types::Clip) {
+    use turnout_core::types::Track;
     use std::collections::{HashMap, HashSet};
     let tmap: HashMap<i64, &Track> = clip.tracks.iter().map(|t| (t.node_id, t)).collect();
     

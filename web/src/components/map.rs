@@ -466,7 +466,7 @@ async fn fetch_overpass(query: &str) -> Result<String, String> {
 }
 
 use crate::utils::urlencoding;
-use nimby_gen_core::geojson::{osm_json_to_geojson, extract_railway_types, count_ways, parse_orm_link};
+use turnout_core::geojson::{osm_json_to_geojson, extract_railway_types, count_ways, parse_orm_link};
 
 async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<Vec<u8>, String> {
     let args = js_sys::Object::new();

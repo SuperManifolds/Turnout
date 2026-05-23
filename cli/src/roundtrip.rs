@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::{env, fs};
 
-use nimby_gen_core::nrc1::NrclipFile;
+use turnout_core::nrc1::NrclipFile;
 
 const MODEL_VERSION: u32 = 226;
 
