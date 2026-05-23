@@ -55,9 +55,11 @@ pub fn AppSettings() -> impl IntoView {
     let (check_updates, set_check_updates) = create_signal(true);
     let (theme, set_theme) = create_signal("system".to_string());
     let (status, set_status) = create_signal(String::new());
+    let (app_version, set_app_version) = create_signal(String::new());
+    let (update_status, set_update_status) = create_signal(String::new());
     let (loaded, set_loaded) = create_signal(false);
 
-    // Load current settings
+    // Load current settings and version
     create_effect(move |_| {
         spawn_local(async move {
             let settings = load_settings().await;
@@ -69,6 +71,8 @@ pub fn AppSettings() -> impl IntoView {
             if let Some(dir) = crate::tauri::get_mods_dir().await {
                 set_detected_dir.set(Some(dir));
             }
+
+            set_app_version.set(crate::tauri::get_app_version().await);
         });
     });
 
@@ -169,6 +173,29 @@ pub fn AppSettings() -> impl IntoView {
                     <i class=move || if check_updates.get() { "fa-solid fa-square-check" } else { "fa-regular fa-square" }></i>
                     " Check for updates on launch"
                 </label>
+                <nav>
+                    <button type="button" on:click=move |_| {
+                        set_update_status.set("Checking...".into());
+                        spawn_local(async move {
+                            match crate::tauri::check_for_update().await {
+                                Ok(Some(version)) => set_update_status.set(format!("Update available: v{version}")),
+                                Ok(None) => set_update_status.set("You're up to date".into()),
+                                Err(e) => set_update_status.set(format!("Check failed: {e}")),
+                            }
+                        });
+                    }>
+                        <i class="fa-solid fa-arrows-rotate"></i>
+                        " Check Now"
+                    </button>
+                </nav>
+                {move || {
+                    let s = update_status.get();
+                    if s.is_empty() { None } else { Some(view! { <p class="path-display">{s}</p> }) }
+                }}
+                <p class="path-display">{move || {
+                    let v = app_version.get();
+                    if v.is_empty() { String::new() } else { format!("Turnout v{v}") }
+                }}</p>
             </fieldset>
 
             {move || {

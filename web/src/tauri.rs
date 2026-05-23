@@ -120,6 +120,39 @@ pub async fn blueprint_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub async fn get_app_version() -> String {
+    let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return String::new() };
+    let Ok(app) = js_sys::Reflect::get(&tauri, &"app".into()) else { return String::new() };
+    let Ok(get_version) = js_sys::Reflect::get(&app, &"getVersion".into()) else { return String::new() };
+    let Ok(get_version) = get_version.dyn_into::<js_sys::Function>() else { return String::new() };
+    let Ok(promise) = get_version.call0(&JsValue::NULL) else { return String::new() };
+    let Ok(result) = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise)).await else { return String::new() };
+    result.as_string().unwrap_or_default()
+}
+
+pub async fn check_for_update() -> Result<Option<String>, String> {
+    let tauri = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
+        .map_err(|_| "Tauri not available")?;
+    let updater = js_sys::Reflect::get(&tauri, &"updater".into())
+        .map_err(|_| "Updater not available")?;
+    let check_fn = js_sys::Reflect::get(&updater, &"check".into())
+        .map_err(|_| "check not available")?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| "check is not a function")?;
+    let promise = check_fn.call0(&JsValue::NULL)
+        .map_err(|e| format!("{e:?}"))?;
+    let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    if result.is_null() || result.is_undefined() {
+        return Ok(None);
+    }
+    let version = js_sys::Reflect::get(&result, &"version".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    Ok(version)
+}
+
 pub async fn get_mods_dir() -> Option<String> {
     let result = invoke("get_mods_dir", &JsValue::NULL).await.ok()?;
     result.as_string()
