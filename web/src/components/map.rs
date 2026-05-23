@@ -125,6 +125,7 @@ pub fn Map(
     enabled_types: ReadSignal<Vec<String>>,
     set_has_selection: WriteSignal<bool>,
     apply_speed_limits: ReadSignal<bool>,
+    clip_to_selection: ReadSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -290,7 +291,8 @@ pub fn Map(
                         set_available_types.set(types);
                         set_has_selection.set(true);
                         let enabled = enabled_types.get_untracked();
-                        let geojson = osm_json_to_geojson(&json, &enabled);
+                        let clip = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
+                        let geojson = osm_json_to_geojson(&json, &enabled, clip);
                         map_set_geojson("preview", &geojson);
                         cached_json.set_value(Some(json));
                         cached_bbox.set_value(Some((s, w, n, e)));
@@ -310,11 +312,13 @@ pub fn Map(
         preview_timeout.set_value(Some(h));
     });
 
-    // Re-filter preview when enabled types change
+    // Re-filter preview when enabled types or clip setting change
     create_effect(move |_| {
         let enabled = enabled_types.get();
+        let clip_on = clip_to_selection.get();
         if let Some(json) = cached_json.get_value() {
-            let geojson = osm_json_to_geojson(&json, &enabled);
+            let clip = if clip_on { cached_bbox.get_value() } else { None };
+            let geojson = osm_json_to_geojson(&json, &enabled, clip);
             map_set_geojson("preview", &geojson);
         }
     });
@@ -353,8 +357,9 @@ pub fn Map(
         let cached = cached_json.get_value();
         let types = enabled_types.get_untracked();
         let speed = apply_speed_limits.get_untracked();
+        let clip = clip_to_selection.get_untracked();
         spawn_local(async move {
-            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, set_status, set_success_message).await;
+            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, clip, set_status, set_success_message).await;
         });
     });
 
@@ -396,7 +401,7 @@ pub fn Map(
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, clip: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
     // Step 1: Use cached JSON or fetch
     let json = if let Some(cached) = cached_json {
         cached.to_string()
@@ -416,7 +421,8 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 
     // Step 2: Import via Tauri backend
     set_status.set("Processing tracks...".into());
-    let data = match tauri_import_orm(&json, name, railway_types, apply_speed_limits).await {
+    let clip_bbox = if clip { Some((s, w, n, e)) } else { None };
+    let data = match tauri_import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox).await {
         Ok(d) => d,
         Err(err) => {
             set_status.set(format!("Import failed: {err}"));
@@ -469,7 +475,7 @@ fn urlencoding(s: &str) -> String {
     }).collect()
 }
 
-async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool) -> Result<Vec<u8>, String> {
+async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<Vec<u8>, String> {
     let args = js_sys::Object::new();
     js_sys::Reflect::set(&args, &"json".into(), &json.into()).ok();
     js_sys::Reflect::set(&args, &"name".into(), &name.into()).ok();
@@ -479,6 +485,19 @@ async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], appl
     }
     js_sys::Reflect::set(&args, &"railwayTypes".into(), &js_types.into()).ok();
     js_sys::Reflect::set(&args, &"applySpeedLimits".into(), &JsValue::from_bool(apply_speed_limits)).ok();
+    match clip_bbox {
+        Some((s, w, n, e)) => {
+            let arr = js_sys::Array::new();
+            arr.push(&JsValue::from_f64(s));
+            arr.push(&JsValue::from_f64(w));
+            arr.push(&JsValue::from_f64(n));
+            arr.push(&JsValue::from_f64(e));
+            js_sys::Reflect::set(&args, &"clipBbox".into(), &arr.into()).ok();
+        }
+        None => {
+            js_sys::Reflect::set(&args, &"clipBbox".into(), &JsValue::NULL).ok();
+        }
+    }
     let result = tauri_invoke("import_orm", &args).await?;
     // Result is a JS array of u8
     let arr = js_sys::Uint8Array::new(&result);
@@ -509,7 +528,7 @@ async fn tauri_invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
         .map_err(|e| format!("{e:?}"))
 }
 
-fn osm_json_to_geojson(json: &str, enabled_types: &[String]) -> String {
+fn osm_json_to_geojson(json: &str, enabled_types: &[String], clip_bbox: Option<(f64, f64, f64, f64)>) -> String {
     let data: serde_json::Value = match serde_json::from_str(json) {
         Ok(d) => d,
         Err(_) => return empty_geojson().to_string(),
@@ -534,12 +553,24 @@ fn osm_json_to_geojson(json: &str, enabled_types: &[String]) -> String {
     for e in elements {
         if e["type"].as_str() != Some("way") { continue; }
         let Some(node_ids) = e["nodes"].as_array() else { continue };
-        let coords: Vec<String> = node_ids.iter()
+        let raw_coords: Vec<(f64, f64)> = node_ids.iter()
             .filter_map(|n| n.as_u64())
-            .filter_map(|id| nodes.get(&id))
-            .map(|(lon, lat)| format!("[{lon},{lat}]"))
+            .filter_map(|id| nodes.get(&id).copied())
             .collect();
-        if coords.len() < 2 { continue; }
+        if raw_coords.len() < 2 { continue; }
+
+        // Clip to bbox if enabled
+        let coord_groups = if let Some((s, w, n, e)) = clip_bbox {
+            clip_linestring(&raw_coords, s, w, n, e)
+        } else {
+            vec![raw_coords]
+        };
+
+        for coords_group in &coord_groups {
+            if coords_group.len() < 2 { continue; }
+            let coords: Vec<String> = coords_group.iter()
+                .map(|(lon, lat)| format!("[{lon},{lat}]"))
+                .collect();
 
         // Extract railway-relevant tags
         let tags = &e["tags"];
@@ -553,14 +584,82 @@ fn osm_json_to_geojson(json: &str, enabled_types: &[String]) -> String {
             }
         }
 
-        features.push(format!(
-            r#"{{"type":"Feature","properties":{{{}}},"geometry":{{"type":"LineString","coordinates":[{}]}}}}"#,
-            props.join(","),
-            coords.join(",")
-        ));
+            features.push(format!(
+                r#"{{"type":"Feature","properties":{{{}}},"geometry":{{"type":"LineString","coordinates":[{}]}}}}"#,
+                props.join(","),
+                coords.join(",")
+            ));
+        } // end coord_groups loop
     }
 
     format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(","))
+}
+
+/// Clip a linestring (as lon/lat pairs) to a bbox (s,w,n,e in lat/lon).
+/// Returns one or more clipped linestrings.
+fn clip_linestring(coords: &[(f64, f64)], s: f64, w: f64, n: f64, e: f64) -> Vec<Vec<(f64, f64)>> {
+    let is_inside = |lon: f64, lat: f64| lat >= s && lat <= n && lon >= w && lon <= e;
+    let mut result = Vec::new();
+    let mut current: Vec<(f64, f64)> = Vec::new();
+
+    for i in 0..coords.len() {
+        let (lon, lat) = coords[i];
+        let inside = is_inside(lon, lat);
+
+        if i > 0 {
+            let (prev_lon, prev_lat) = coords[i - 1];
+            let prev_inside = is_inside(prev_lon, prev_lat);
+
+            if prev_inside && !inside {
+                // Exiting — find intersection
+                if let Some(pt) = line_rect_intersect_lonlat(prev_lon, prev_lat, lon, lat, s, w, n, e) {
+                    current.push(pt);
+                }
+                if current.len() >= 2 { result.push(std::mem::take(&mut current)); }
+                current.clear();
+            } else if !prev_inside && inside {
+                // Entering — find intersection
+                if let Some(pt) = line_rect_intersect_lonlat(lon, lat, prev_lon, prev_lat, s, w, n, e) {
+                    current.push(pt);
+                }
+            }
+        }
+
+        if inside { current.push((lon, lat)); }
+    }
+
+    if current.len() >= 2 { result.push(current); }
+    result
+}
+
+fn line_rect_intersect_lonlat(in_lon: f64, in_lat: f64, out_lon: f64, out_lat: f64, s: f64, w: f64, n: f64, e: f64) -> Option<(f64, f64)> {
+    let dx = out_lon - in_lon;
+    let dy = out_lat - in_lat;
+    let mut best_t = f64::MAX;
+    let mut best_pt = (0.0, 0.0);
+
+    // South: lat = s
+    if dy.abs() > 1e-12 {
+        let t = (s - in_lat) / dy;
+        if t > 0.0 && t < best_t { let x = in_lon + t * dx; if x >= w && x <= e { best_t = t; best_pt = (x, s); } }
+    }
+    // North: lat = n
+    if dy.abs() > 1e-12 {
+        let t = (n - in_lat) / dy;
+        if t > 0.0 && t < best_t { let x = in_lon + t * dx; if x >= w && x <= e { best_t = t; best_pt = (x, n); } }
+    }
+    // West: lon = w
+    if dx.abs() > 1e-12 {
+        let t = (w - in_lon) / dx;
+        if t > 0.0 && t < best_t { let y = in_lat + t * dy; if y >= s && y <= n { best_t = t; best_pt = (w, y); } }
+    }
+    // East: lon = e
+    if dx.abs() > 1e-12 {
+        let t = (e - in_lon) / dx;
+        if t > 0.0 && t < best_t { let y = in_lat + t * dy; if y >= s && y <= n { best_t = t; best_pt = (e, y); } }
+    }
+
+    if best_t < f64::MAX { Some(best_pt) } else { None }
 }
 
 fn extract_railway_types(json: &str) -> Vec<String> {

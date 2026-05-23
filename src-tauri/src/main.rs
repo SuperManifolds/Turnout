@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[tauri::command]
-fn import_orm(json: String, name: String, railway_types: Vec<String>, apply_speed_limits: bool) -> Result<Vec<u8>, String> {
+fn import_orm(json: String, name: String, railway_types: Vec<String>, apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<Vec<u8>, String> {
     // Extract vanilla track kinds from game files
     let (track_kinds, mod_metas) = find_mods_dir()
         .and_then(|mods| {
@@ -16,7 +16,7 @@ fn import_orm(json: String, name: String, railway_types: Vec<String>, apply_spee
         })
         .unwrap_or_default();
 
-    nimby_gen_core::import::import_orm(&json, &name, &railway_types, apply_speed_limits, track_kinds, mod_metas)
+    nimby_gen_core::import::import_orm(&json, &name, &railway_types, apply_speed_limits, clip_bbox, track_kinds, mod_metas)
         .map_err(|e| e.to_string())
 }
 

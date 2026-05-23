@@ -15,6 +15,7 @@ fn App() -> impl IntoView {
     );
     let (has_selection, set_has_selection) = create_signal(false);
     let (apply_speed_limits, set_apply_speed_limits) = create_signal(true);
+    let (clip_to_selection, set_clip_to_selection) = create_signal(false);
 
     let on_filter_change = Callback::new(move |types: Vec<String>| {
         set_enabled_types.set(types);
@@ -28,6 +29,7 @@ fn App() -> impl IntoView {
                     enabled_types=enabled_types
                     set_has_selection=set_has_selection
                     apply_speed_limits=apply_speed_limits
+                    clip_to_selection=clip_to_selection
                 />
                 <components::Search />
                 <components::LayerSwitcher />
@@ -40,6 +42,8 @@ fn App() -> impl IntoView {
                         <components::Settings
                             apply_speed_limits=apply_speed_limits
                             set_apply_speed_limits=set_apply_speed_limits
+                            clip_to_selection=clip_to_selection
+                            set_clip_to_selection=set_clip_to_selection
                         />
                     </div>
                 </Show>

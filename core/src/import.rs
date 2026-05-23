@@ -96,6 +96,7 @@ pub fn import_orm(
     name: &str,
     railway_types: &[String],
     apply_speed_limits: bool,
+    clip_to_bbox: Option<(f64, f64, f64, f64)>, // (s, w, n, e) in lat/lon
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
 ) -> Result<Vec<u8>> {
@@ -159,6 +160,84 @@ pub fn import_orm(
         }
     }
     let n_elevated: usize = node_layer.values().filter(|&&l| l != 0).count();
+    // Clip ways to bbox if requested
+    if let Some((s_lat, w_lon, n_lat, e_lon)) = clip_to_bbox {
+        let mut clipped_ways = Vec::new();
+        let mut clipped_layers = Vec::new();
+        let mut clipped_track_types = Vec::new();
+        let mut next_synthetic_id: u64 = 0xFFFF_FFFF_0000_0000; // won't collide with OSM IDs
+
+        for (wi, way) in ways.iter().enumerate() {
+            let layer = way_layers[wi];
+            let tt = way_track_types[wi];
+            let mut current_segment: Vec<u64> = Vec::new();
+
+            for i in 0..way.len() {
+                let nid = way[i];
+                let Some(&(lat, lon)) = osm_nodes.get(&nid) else { continue };
+                let inside = lat >= s_lat && lat <= n_lat && lon >= w_lon && lon <= e_lon;
+
+                if i > 0 {
+                    let prev_nid = way[i - 1];
+                    let Some(&(prev_lat, prev_lon)) = osm_nodes.get(&prev_nid) else { continue };
+                    let prev_inside = prev_lat >= s_lat && prev_lat <= n_lat && prev_lon >= w_lon && prev_lon <= e_lon;
+
+                    if prev_inside && !inside {
+                        // Exiting bbox — add intersection point, end segment
+                        if let Some((ix_lat, ix_lon)) = line_rect_intersect(
+                            prev_lat, prev_lon, lat, lon, s_lat, w_lon, n_lat, e_lon
+                        ) {
+                            let syn_id = next_synthetic_id;
+                            next_synthetic_id += 1;
+                            osm_nodes.insert(syn_id, (ix_lat, ix_lon));
+                            node_layer.insert(syn_id, layer);
+                            node_track_type.insert(syn_id, tt);
+                            if let Some(&ms) = node_maxspeed.get(&prev_nid) {
+                                node_maxspeed.insert(syn_id, ms);
+                            }
+                            current_segment.push(syn_id);
+                        }
+                        if current_segment.len() >= 2 {
+                            clipped_ways.push(current_segment.clone());
+                            clipped_layers.push(layer);
+                            clipped_track_types.push(tt);
+                        }
+                        current_segment.clear();
+                    } else if !prev_inside && inside {
+                        // Entering bbox — add intersection point, start new segment
+                        if let Some((ix_lat, ix_lon)) = line_rect_intersect(
+                            lat, lon, prev_lat, prev_lon, s_lat, w_lon, n_lat, e_lon
+                        ) {
+                            let syn_id = next_synthetic_id;
+                            next_synthetic_id += 1;
+                            osm_nodes.insert(syn_id, (ix_lat, ix_lon));
+                            node_layer.insert(syn_id, layer);
+                            node_track_type.insert(syn_id, tt);
+                            if let Some(&ms) = node_maxspeed.get(&nid) {
+                                node_maxspeed.insert(syn_id, ms);
+                            }
+                            current_segment.push(syn_id);
+                        }
+                    }
+                }
+
+                if inside {
+                    current_segment.push(nid);
+                }
+            }
+
+            if current_segment.len() >= 2 {
+                clipped_ways.push(current_segment);
+                clipped_layers.push(layer);
+                clipped_track_types.push(tt);
+            }
+        }
+
+        ways = clipped_ways;
+        way_layers = clipped_layers;
+        way_track_types = clipped_track_types;
+    }
+
     // Build node→way index
     let mut node_ways: HashMap<u64, Vec<(usize, usize)>> = HashMap::new(); // nid → [(way_idx, pos)]
     for (wi, way) in ways.iter().enumerate() {
@@ -725,5 +804,63 @@ fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     let x = lon.to_radians() * 6_378_137.0;
     let y = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * 6_378_137.0;
     (x, y)
+}
+
+/// Find where a line segment (inside_point → outside_point) crosses a bbox.
+/// Returns the intersection point closest to the inside point, or None.
+fn line_rect_intersect(
+    in_lat: f64, in_lon: f64, out_lat: f64, out_lon: f64,
+    s: f64, w: f64, n: f64, e: f64,
+) -> Option<(f64, f64)> {
+    let dx = out_lon - in_lon;
+    let dy = out_lat - in_lat;
+    let mut best_t = f64::MAX;
+
+    // Test against each bbox edge
+    let edges: [(f64, f64, f64, f64); 4] = [
+        (s, w, s, e), // south edge (lat=s, lon varies)
+        (n, w, n, e), // north edge
+        (s, w, n, w), // west edge (lon=w, lat varies)
+        (s, e, n, e), // east edge
+    ];
+
+    // South: lat = s
+    if dy.abs() > 1e-12 {
+        let t = (s - in_lat) / dy;
+        if t > 0.0 && t < best_t {
+            let ix_lon = in_lon + t * dx;
+            if ix_lon >= w && ix_lon <= e { best_t = t; }
+        }
+    }
+    // North: lat = n
+    if dy.abs() > 1e-12 {
+        let t = (n - in_lat) / dy;
+        if t > 0.0 && t < best_t {
+            let ix_lon = in_lon + t * dx;
+            if ix_lon >= w && ix_lon <= e { best_t = t; }
+        }
+    }
+    // West: lon = w
+    if dx.abs() > 1e-12 {
+        let t = (w - in_lon) / dx;
+        if t > 0.0 && t < best_t {
+            let ix_lat = in_lat + t * dy;
+            if ix_lat >= s && ix_lat <= n { best_t = t; }
+        }
+    }
+    // East: lon = e
+    if dx.abs() > 1e-12 {
+        let t = (e - in_lon) / dx;
+        if t > 0.0 && t < best_t {
+            let ix_lat = in_lat + t * dy;
+            if ix_lat >= s && ix_lat <= n { best_t = t; }
+        }
+    }
+
+    if best_t < f64::MAX {
+        Some((in_lat + best_t * dy, in_lon + best_t * dx))
+    } else {
+        None
+    }
 }
 

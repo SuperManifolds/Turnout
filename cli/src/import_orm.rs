@@ -15,7 +15,7 @@ fn main() -> Result<()> {
         .and_then(|path| nimby_gen_core::import::extract_vanilla_track_kinds(&path).ok())
         .unwrap_or_default();
 
-    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name, &[], true, track_kinds, mod_metas)?;
+    let file_data = nimby_gen_core::import::import_orm(&json, &blueprint_name, &[], true, None, track_kinds, mod_metas)?;
 
     fs::write(output, &file_data)?;
     println!("Wrote {} bytes to {}", file_data.len(), output);
