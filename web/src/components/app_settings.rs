@@ -1,7 +1,6 @@
 use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalUpdate, spawn_local, store_value, web_sys, CollectView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -27,7 +26,7 @@ const THEME_OPTIONS: &[(&str, &str)] = &[
 ];
 
 pub async fn load_settings() -> Settings {
-    match tauri_invoke("get_settings", JsValue::NULL).await {
+    match crate::tauri::get_settings().await {
         Ok(val) => serde_wasm_bindgen::from_value(val).unwrap_or_default(),
         Err(_) => Settings::default(),
     }
@@ -35,29 +34,7 @@ pub async fn load_settings() -> Settings {
 
 async fn save_settings(settings: &Settings) -> Result<(), String> {
     let args = serde_wasm_bindgen::to_value(settings).map_err(|e| e.to_string())?;
-    let wrapper = js_sys::Object::new();
-    js_sys::Reflect::set(&wrapper, &"settings".into(), &args).map_err(|e| format!("{e:?}"))?;
-    tauri_invoke("set_settings", &wrapper).await.map(|_| ()).map_err(|e| format!("{e:?}"))
-}
-
-async fn pick_folder() -> Option<String> {
-    let result = tauri_invoke("pick_folder", JsValue::NULL).await.ok()?;
-    result.as_string()
-}
-
-async fn detect_mods_dir() -> Option<String> {
-    let result = tauri_invoke("get_mods_dir", JsValue::NULL).await.ok()?;
-    result.as_string()
-}
-
-async fn tauri_invoke(cmd: &str, args: impl Into<JsValue>) -> Result<JsValue, JsValue> {
-    let window = web_sys::window().expect("window");
-    let tauri = js_sys::Reflect::get(&window, &"__TAURI__".into())?;
-    let core = js_sys::Reflect::get(&tauri, &"core".into())?;
-    let invoke = js_sys::Reflect::get(&core, &"invoke".into())?
-        .dyn_into::<js_sys::Function>()?;
-    let promise = invoke.call2(&core, &cmd.into(), &args.into())?;
-    JsFuture::from(js_sys::Promise::from(promise)).await
+    crate::tauri::set_settings(&args).await
 }
 
 /// Returns true if this webview is the settings window.
@@ -89,7 +66,7 @@ pub fn AppSettings() -> impl IntoView {
             set_theme.set(settings.map_theme);
             set_loaded.set(true);
 
-            if let Some(dir) = detect_mods_dir().await {
+            if let Some(dir) = crate::tauri::get_mods_dir().await {
                 set_detected_dir.set(Some(dir));
             }
         });
@@ -128,7 +105,7 @@ pub fn AppSettings() -> impl IntoView {
 
     let on_browse = move |_| {
         spawn_local(async move {
-            if let Some(path) = pick_folder().await {
+            if let Some(path) = crate::tauri::pick_folder().await {
                 set_mods_dir.set(Some(path));
             }
         });

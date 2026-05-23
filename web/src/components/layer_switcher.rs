@@ -27,12 +27,12 @@ pub fn LayerSwitcher() -> impl IntoView {
     view! {
         <nav id="layer-switcher">
             {ORM_STYLES.iter().map(|&(id, label)| {
-                let id_owned = id.to_string();
-                let id2 = id.to_string();
+                let id_active = id.to_string();
+                let id_click = id.to_string();
                 view! {
                     <button
-                        class:active=move || active.get() == id_owned
-                        on:click=move |_| on_change(&id2)
+                        class:active=move || active.get() == id_active
+                        on:click=move |_| on_change(&id_click)
                     >
                         {label}
                     </button>

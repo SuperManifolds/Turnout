@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 mod components;
+pub mod tauri;
 mod utils;
 
 #[wasm_bindgen]
@@ -101,7 +102,7 @@ fn App() -> impl IntoView {
                     <components::Search />
                     <components::LayerSwitcher />
                     <Show when=move || has_selection.get()>
-                        <div id="sidebar">
+                        <aside id="sidebar">
                             <components::TrackFilter
                                 available=available_types
                                 on_change=on_filter_change
@@ -112,7 +113,7 @@ fn App() -> impl IntoView {
                                 clip_to_selection=clip_to_selection
                                 set_clip_to_selection=set_clip_to_selection
                             />
-                        </div>
+                        </aside>
                     </Show>
                 </section>
             </main>

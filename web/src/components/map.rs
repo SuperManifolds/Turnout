@@ -1,7 +1,6 @@
 use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, IntoView, create_node_ref, html, create_signal, store_value, create_effect, SignalGet, SignalGetUntracked, SignalSet, spawn_local, Callback, Show};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
 
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
 const OVERPASS_TIMEOUT: u32 = 60;
@@ -299,7 +298,7 @@ pub fn Map(
                 let query = format!(
                     "[out:json][timeout:{OVERPASS_TIMEOUT}];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
                 );
-                match fetch_overpass(&query).await {
+                match crate::tauri::fetch_overpass(&query).await {
                     Ok(json) => {
                         let enabled = enabled_types.get_untracked();
                         let stats = analyze_overpass_json(&json, &enabled);
@@ -320,7 +319,7 @@ pub fn Map(
                         } else {
                             set_status.set(format!("{} ways — counting nodes...", stats.way_count));
                             let clip_bbox = if clip_to_selection.get_untracked() { Some((s, w, n, e)) } else { None };
-                            match tauri_count_track_nodes(&json, &enabled, clip_bbox).await {
+                            match crate::tauri::count_track_nodes(&json, &enabled, clip_bbox).await {
                                 Ok(exact) => {
                                     set_over_limit.set(exact > MAX_TRACK_NODES);
                                     if exact > MAX_TRACK_NODES {
@@ -454,7 +453,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
         let query = format!(
             "[out:json][timeout:{OVERPASS_TIMEOUT}];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
         );
-        match fetch_overpass(&query).await {
+        match crate::tauri::fetch_overpass(&query).await {
             Ok(j) => j,
             Err(err) => {
                 set_status.set(format!("Fetch failed: {err}"));
@@ -466,7 +465,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
     // Step 2: Import via Tauri backend
     set_status.set("Processing tracks...".into());
     let clip_bbox = if clip { Some((s, w, n, e)) } else { None };
-    let (data, node_count) = match tauri_import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox).await {
+    let (data, node_count) = match crate::tauri::import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox).await {
         Ok(d) => d,
         Err(err) => {
             set_status.set(format!("Import failed: {err}"));
@@ -476,7 +475,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
 
     // Step 3: Save via Tauri backend
     set_status.set("Saving blueprint...".into());
-    match tauri_save_blueprint(name, &data).await {
+    match crate::tauri::save_blueprint(name, &data).await {
         Ok(path) => {
             set_status.set("Ready".into());
             set_success.set(Some(format!("{path}\n{node_count} / 50,000 nodes")));
@@ -487,92 +486,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
     }
 }
 
-async fn fetch_overpass(query: &str) -> Result<String, String> {
-    let args = js_sys::Object::new();
-    js_set(&args, "query", &query.into())?;
-    tauri_invoke("fetch_overpass", &args).await?
-        .as_string()
-        .ok_or("unexpected response".into())
-}
-
 use turnout_core::geojson::{osm_json_to_geojson, analyze_overpass_json, parse_orm_link};
 
 const MAX_TRACK_NODES: usize = 50_000;
 const BAIL_NODE_THRESHOLD: usize = 100_000;
-
-fn js_set(obj: &js_sys::Object, key: &str, val: &JsValue) -> Result<(), String> {
-    js_sys::Reflect::set(obj, &key.into(), val)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to set {key}: {e:?}"))
-}
-
-fn build_bbox_args(clip_bbox: Option<(f64, f64, f64, f64)>) -> JsValue {
-    match clip_bbox {
-        Some((s, w, n, e)) => {
-            let arr = js_sys::Array::new();
-            arr.push(&JsValue::from_f64(s));
-            arr.push(&JsValue::from_f64(w));
-            arr.push(&JsValue::from_f64(n));
-            arr.push(&JsValue::from_f64(e));
-            arr.into()
-        }
-        None => JsValue::NULL,
-    }
-}
-
-fn build_railway_types_array(railway_types: &[String]) -> js_sys::Array {
-    let arr = js_sys::Array::new();
-    for t in railway_types {
-        arr.push(&JsValue::from_str(t));
-    }
-    arr
-}
-
-async fn tauri_import_orm(json: &str, name: &str, railway_types: &[String], apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<(Vec<u8>, usize), String> {
-    let args = js_sys::Object::new();
-    js_set(&args, "json", &json.into())?;
-    js_set(&args, "name", &name.into())?;
-    js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
-    js_set(&args, "applySpeedLimits", &JsValue::from_bool(apply_speed_limits))?;
-    js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
-    let result = tauri_invoke("import_orm", &args).await?;
-    // Result is [bytes_array, node_count]
-    let tuple = js_sys::Array::from(&result);
-    let bytes = js_sys::Uint8Array::new(&tuple.get(0)).to_vec();
-    let node_count = tuple.get(1).as_f64().unwrap_or(0.0) as usize;
-    Ok((bytes, node_count))
-}
-
-async fn tauri_count_track_nodes(json: &str, railway_types: &[String], clip_bbox: Option<(f64, f64, f64, f64)>) -> Result<usize, String> {
-    let args = js_sys::Object::new();
-    js_set(&args, "json", &json.into())?;
-    js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
-    js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
-    let result = tauri_invoke("count_track_nodes", &args).await?;
-    Ok(result.as_f64().unwrap_or(0.0) as usize)
-}
-
-async fn tauri_save_blueprint(name: &str, data: &[u8]) -> Result<String, String> {
-    let args = js_sys::Object::new();
-    js_set(&args, "name", &name.into())?;
-    let js_data = js_sys::Uint8Array::from(data);
-    js_set(&args, "data", &js_data.into())?;
-    let result = tauri_invoke("save_blueprint", &args).await?;
-    result.as_string().ok_or("unexpected response".into())
-}
-
-async fn tauri_invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
-    let window = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
-        .map_err(|_| "Tauri not available")?;
-    let core = js_sys::Reflect::get(&window, &"core".into())
-        .map_err(|_| "Tauri core not available")?;
-    let invoke = js_sys::Reflect::get(&core, &"invoke".into())
-        .map_err(|_| "invoke not available")?;
-    let invoke_fn: js_sys::Function = invoke.unchecked_into();
-    let promise = invoke_fn.call2(&JsValue::NULL, &cmd.into(), args)
-        .map_err(|e| format!("{e:?}"))?;
-    JsFuture::from(js_sys::Promise::from(promise))
-        .await
-        .map_err(|e| format!("{e:?}"))
-}
-

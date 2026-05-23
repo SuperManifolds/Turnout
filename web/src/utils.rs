@@ -1,11 +1,15 @@
+use std::fmt::Write;
+
 pub fn urlencoding(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            ' ' => "+".to_string(),
-            c if c.is_alphanumeric() || "-_.~".contains(c) => c.to_string(),
-            c => format!("%{:02X}", c as u32),
-        })
-        .collect()
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            ' ' => result.push('+'),
+            c if c.is_alphanumeric() || "-_.~".contains(c) => result.push(c),
+            c => { let _ = write!(result, "%{:02X}", c as u32); }
+        }
+    }
+    result
 }
 
 fn storage() -> Option<web_sys::Storage> {

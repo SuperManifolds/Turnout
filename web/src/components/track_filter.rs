@@ -71,25 +71,25 @@ pub fn TrackFilter(
             <ul>
                 {TRACK_TYPES.iter().map(|t| {
                     let id = t.id.to_string();
-                    let id2 = t.id.to_string();
-                    let id3 = t.id.to_string();
-                    let id4 = t.id.to_string();
+                    let id_dis = id.clone();
+                    let id_act = id.clone();
+                    let id_chk = id.clone();
                     let icon_class = t.icon;
                     let label = t.label;
                     view! {
                         <li
-                            class:disabled=move || !available.get().contains(&id)
-                            class:active=move || enabled.get().contains(&id2) && available.get().contains(&id2)
+                            class:disabled=move || !available.get().contains(&id_dis)
+                            class:active=move || enabled.get().contains(&id_act) && available.get().contains(&id_act)
                             on:click=move |_| {
-                                if available.get_untracked().contains(&id3) {
-                                    toggle(&id3);
+                                if available.get_untracked().contains(&id) {
+                                    toggle(&id);
                                 }
                             }
                         >
                             <i class=icon_class></i>
                             <span class="label">{label}</span>
                             <span class="check">{move || {
-                                if available.get().contains(&id4) && enabled.get().contains(&id4) { "✓" } else { "" }
+                                if available.get().contains(&id_chk) && enabled.get().contains(&id_chk) { "✓" } else { "" }
                             }}</span>
                         </li>
                     }
