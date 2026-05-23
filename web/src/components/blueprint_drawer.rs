@@ -12,14 +12,12 @@ extern "C" {
     fn map_fly_to(lng: f64, lat: f64, zoom: f64);
 }
 
-fn format_file_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
+fn format_date(unix_secs: u64) -> String {
+    let js_date = js_sys::Date::new(&JsValue::from_f64(unix_secs as f64 * 1000.0));
+    let month = js_date.get_month() + 1;
+    let day = js_date.get_date();
+    let year = js_date.get_full_year();
+    format!("{year}-{month:02}-{day:02}")
 }
 
 fn display_name(info: &BlueprintInfo) -> String {
@@ -208,7 +206,7 @@ pub fn BlueprintDrawer(
                             move || confirm_delete.get().as_deref() == Some(&folder)
                         };
                         let name = display_name(&bp);
-                        let meta = format!("{} nodes — {}", bp.track_count, format_file_size(bp.file_size));
+                        let meta = format!("{} nodes — {}", bp.track_count, format_date(bp.modified));
 
                         let thumb_folder = folder.clone();
                         let thumb_clip_index = bp.clip_index;
