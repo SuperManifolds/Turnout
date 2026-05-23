@@ -4,6 +4,9 @@ use wasm_bindgen::JsCast;
 
 use crate::tauri::BlueprintInfo;
 
+#[derive(Clone, Copy, PartialEq)]
+enum SortBy { Date, Name, Nodes }
+
 #[wasm_bindgen]
 extern "C" {
     fn map_fly_to(lng: f64, lat: f64, zoom: f64);
@@ -34,6 +37,7 @@ pub fn BlueprintDrawer(
 ) -> impl IntoView {
     let (blueprints, set_blueprints) = create_signal::<Vec<BlueprintInfo>>(Vec::new());
     let (search, set_search) = create_signal(String::new());
+    let (sort_by, set_sort_by) = create_signal(SortBy::Date);
     let (loading, set_loading) = create_signal(false);
     let (confirm_delete, set_confirm_delete) = create_signal::<Option<String>>(None);
     let (editing, set_editing) = create_signal::<Option<String>>(None);
@@ -152,6 +156,11 @@ pub fn BlueprintDrawer(
             <aside id="blueprint-drawer">
                 <header>
                     <h3>"Blueprints"</h3>
+                    <nav class="sort-controls">
+                        <button class="link" class:active=move || sort_by.get() == SortBy::Date on:click=move |_| set_sort_by.set(SortBy::Date)>"Date"</button>
+                        <button class="link" class:active=move || sort_by.get() == SortBy::Name on:click=move |_| set_sort_by.set(SortBy::Name)>"Name"</button>
+                        <button class="link" class:active=move || sort_by.get() == SortBy::Nodes on:click=move |_| set_sort_by.set(SortBy::Nodes)>"Nodes"</button>
+                    </nav>
                 </header>
 
                 <input
@@ -177,9 +186,16 @@ pub fn BlueprintDrawer(
                 <ul>
                     {move || {
                         let query = search.get().to_lowercase();
-                        blueprints.get().into_iter()
-                        .filter(|bp| query.is_empty() || display_name(bp).to_lowercase().contains(&query) || bp.folder_name.to_lowercase().contains(&query))
-                        .map(|bp| {
+                        let sort = sort_by.get();
+                        let mut list: Vec<BlueprintInfo> = blueprints.get().into_iter()
+                            .filter(|bp| query.is_empty() || display_name(bp).to_lowercase().contains(&query) || bp.folder_name.to_lowercase().contains(&query))
+                            .collect();
+                        match sort {
+                            SortBy::Date => list.sort_by_key(|b| std::cmp::Reverse(b.modified)),
+                            SortBy::Name => list.sort_by_key(|b| display_name(b).to_lowercase()),
+                            SortBy::Nodes => list.sort_by_key(|b| std::cmp::Reverse(b.track_count)),
+                        }
+                        list.into_iter().map(|bp| {
                         let folder = bp.folder_name.clone();
                         let folder_fly = bp.clone();
                         let folder_open = folder.clone();

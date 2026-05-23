@@ -503,9 +503,11 @@ button {
             margin: 0;
         }
 
-        nav {
+        .sort-controls {
             display: flex;
-            gap: var(--spacing-sm);
+            gap: var(--spacing-xs);
+
+            button.active { font-weight: 600; }
         }
     }
 
