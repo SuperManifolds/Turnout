@@ -464,3 +464,151 @@ button {
         margin: 0;
     }
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Blueprint drawer
+// ══════════════════════════════════════════════════════════════════════
+
+#blueprint-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 280px;
+    height: 100%;
+    background: var(--color-bg-secondary);
+    border-left: 1px solid var(--color-border);
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+
+    header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-bottom: 1px solid var(--color-border);
+
+        h3 {
+            font-size: var(--font-size-sm);
+            font-weight: 600;
+            color: var(--color-text-primary);
+            margin: 0;
+        }
+
+        nav {
+            display: flex;
+            gap: var(--spacing-sm);
+        }
+    }
+
+    .error, .loading, .empty {
+        padding: var(--spacing-md);
+        font-size: var(--font-size-sm);
+        color: var(--color-text-muted);
+        text-align: center;
+        margin: 0;
+    }
+
+    .error { color: var(--color-danger); }
+
+    > ul {
+        flex: 1;
+        overflow-y: auto;
+        list-style: none;
+        padding: 0;
+    }
+
+    .blueprint-item {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-bottom: 1px solid var(--color-border);
+        transition: background var(--transition-fast);
+
+        &:hover { background: var(--color-bg-hover); }
+    }
+
+    .blueprint-thumb {
+        flex-shrink: 0;
+        width: 64px;
+        height: 48px;
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        cursor: pointer;
+        background: #1a1a1a;
+
+        img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .thumb-placeholder {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    .blueprint-info {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .blueprint-name {
+        font-size: var(--font-size-sm);
+        font-weight: 500;
+        color: var(--color-text-primary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: default;
+    }
+
+    .blueprint-meta {
+        font-size: 0.7rem;
+        color: var(--color-text-muted);
+    }
+
+    .rename-input {
+        width: 100%;
+        padding: 1px var(--spacing-xs);
+        border: 1px solid var(--color-accent);
+        border-radius: var(--radius-sm);
+        background: var(--color-bg-primary);
+        color: var(--color-text-primary);
+        font-size: var(--font-size-sm);
+        outline: none;
+    }
+
+    .blueprint-actions {
+        flex-shrink: 0;
+        display: flex;
+        gap: 2px;
+    }
+
+    .icon-btn {
+        background: none;
+        border: none;
+        padding: var(--spacing-xs);
+        cursor: pointer;
+        color: var(--color-text-muted);
+        font-size: var(--font-size-sm);
+        border-radius: var(--radius-sm);
+        box-shadow: none;
+
+        &:hover {
+            background: var(--color-bg-hover);
+            color: var(--color-text-primary);
+        }
+
+        &.danger:hover {
+            color: var(--color-danger);
+        }
+    }
+}

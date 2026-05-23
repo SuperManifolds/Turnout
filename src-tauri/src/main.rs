@@ -73,6 +73,7 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             setup_menu(app.handle())?;
+            blueprint::start_watcher(app.handle());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -86,6 +87,11 @@ fn main() {
             import::count_track_nodes,
             blueprint::get_mods_dir,
             blueprint::save_blueprint,
+            blueprint::list_blueprints,
+            blueprint::generate_thumbnail,
+            blueprint::delete_blueprint,
+            blueprint::rename_blueprint,
+            blueprint::open_blueprint_folder,
             settings::get_settings,
             settings::set_settings,
             settings::pick_folder,

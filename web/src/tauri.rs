@@ -115,3 +115,69 @@ pub async fn get_mods_dir() -> Option<String> {
     let result = invoke("get_mods_dir", &JsValue::NULL).await.ok()?;
     result.as_string()
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct BlueprintInfo {
+    pub folder_name: String,
+    pub clip_index: usize,
+    pub clip_name: String,
+    pub track_count: usize,
+    pub file_size: u64,
+    pub modified: u64,
+    pub center_lat: f64,
+    pub center_lon: f64,
+    pub has_thumbnail: bool,
+}
+
+impl BlueprintInfo {
+    fn from_js(val: &JsValue) -> Option<Self> {
+        let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
+        let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
+        let get_bool = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_bool();
+        Some(BlueprintInfo {
+            folder_name: get_str("folderName")?,
+            clip_index: get_f64("clipIndex").unwrap_or(0.0) as usize,
+            clip_name: get_str("clipName").unwrap_or_default(),
+            track_count: get_f64("trackCount")? as usize,
+            file_size: get_f64("fileSize")? as u64,
+            modified: get_f64("modified")? as u64,
+            center_lat: get_f64("centerLat").unwrap_or(0.0),
+            center_lon: get_f64("centerLon").unwrap_or(0.0),
+            has_thumbnail: get_bool("hasThumbnail").unwrap_or(false),
+        })
+    }
+}
+
+pub async fn list_blueprints() -> Result<Vec<BlueprintInfo>, String> {
+    let result = invoke("list_blueprints", &JsValue::NULL).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| BlueprintInfo::from_js(&v)).collect())
+}
+
+pub async fn generate_thumbnail(folder_name: &str, clip_index: usize) -> Result<String, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "folderName", &folder_name.into())?;
+    js_set(&args, "clipIndex", &JsValue::from_f64(clip_index as f64))?;
+    invoke("generate_thumbnail", &args).await?
+        .as_string()
+        .ok_or("unexpected response".into())
+}
+
+pub async fn delete_blueprint(folder_name: &str) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "folderName", &folder_name.into())?;
+    invoke("delete_blueprint", &args).await.map(|_| ())
+}
+
+pub async fn rename_blueprint(old_name: &str, new_name: &str) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "oldName", &old_name.into())?;
+    js_set(&args, "newName", &new_name.into())?;
+    invoke("rename_blueprint", &args).await.map(|_| ())
+}
+
+pub async fn open_blueprint_folder(folder_name: &str) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "folderName", &folder_name.into())?;
+    invoke("open_blueprint_folder", &args).await.map(|_| ())
+}

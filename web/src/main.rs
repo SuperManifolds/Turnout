@@ -91,6 +91,8 @@ fn App() -> impl IntoView {
         set_enabled_types.set(types);
     });
 
+    let (drawer_open, set_drawer_open) = create_signal(false);
+
     view! {
         <Show when=move || is_settings>
             <components::AppSettings />
@@ -105,6 +107,7 @@ fn App() -> impl IntoView {
                         apply_speed_limits=apply_speed_limits
                         clip_to_selection=clip_to_selection
                         tangent_mode=tangent_mode
+                        set_drawer_open=set_drawer_open
                     />
                     <components::Search />
                     <components::LayerSwitcher />
@@ -124,6 +127,10 @@ fn App() -> impl IntoView {
                             />
                         </aside>
                     </Show>
+                    <components::BlueprintDrawer
+                        open=drawer_open
+                        set_open=set_drawer_open
+                    />
                 </section>
             </main>
         </Show>

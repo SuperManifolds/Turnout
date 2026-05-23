@@ -5,6 +5,7 @@ mod name_prompt;
 pub mod track_filter;
 mod settings;
 pub mod app_settings;
+mod blueprint_drawer;
 
 pub use map::Map;
 pub use search::Search;
@@ -13,3 +14,4 @@ pub use name_prompt::NamePrompt;
 pub use track_filter::TrackFilter;
 pub use settings::Settings;
 pub use app_settings::AppSettings;
+pub use blueprint_drawer::BlueprintDrawer;

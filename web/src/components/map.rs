@@ -1,4 +1,4 @@
-use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, IntoView, create_node_ref, html, create_signal, store_value, create_effect, SignalGet, SignalGetUntracked, SignalSet, spawn_local, Callback, Show};
+use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, IntoView, create_node_ref, html, create_signal, store_value, create_effect, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, spawn_local, Callback, Show};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -129,6 +129,7 @@ pub fn Map(
     apply_speed_limits: ReadSignal<bool>,
     clip_to_selection: ReadSignal<bool>,
     tangent_mode: ReadSignal<bool>,
+    set_drawer_open: WriteSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -426,6 +427,7 @@ pub fn Map(
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
+                <button on:click=move |_| set_drawer_open.update(|v| *v = !*v)>"Blueprints"</button>
             </nav>
             <Show when=move || show_name_prompt.get()>
                 <super::NamePrompt
