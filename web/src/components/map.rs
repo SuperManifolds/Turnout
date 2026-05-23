@@ -144,6 +144,7 @@ pub fn Map(
 
     let mode = store_value(Mode::Idle);
     let draw_start = store_value::<Option<(f64, f64)>>(None);
+    let fetch_generation = store_value(0u32);
 
     // Listen for paste events on the window to handle ORM links
     create_effect(move |_| {
@@ -287,6 +288,8 @@ pub fn Map(
         if let Some(h) = preview_timeout.get_value() {
             web_sys::window().expect("window").clear_timeout_with_handle(h);
         }
+        let fetch_gen = fetch_generation.get_value().wrapping_add(1);
+        fetch_generation.set_value(fetch_gen);
         let cb = Closure::once(move || {
             spawn_local(async move {
                 // Guard against oversized bbox
@@ -302,6 +305,8 @@ pub fn Map(
                 );
                 match crate::tauri::fetch_overpass(&query).await {
                     Ok(json) => {
+                        // Discard stale response if a newer fetch was started
+                        if fetch_generation.get_value() != fetch_gen { return; }
                         let enabled = enabled_types.get_untracked();
                         let stats = analyze_overpass_json(&json, &enabled);
                         set_available_types.set(stats.railway_types);
