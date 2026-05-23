@@ -33,6 +33,7 @@ pub fn BlueprintDrawer(
     set_open: WriteSignal<bool>,
 ) -> impl IntoView {
     let (blueprints, set_blueprints) = create_signal::<Vec<BlueprintInfo>>(Vec::new());
+    let (search, set_search) = create_signal(String::new());
     let (loading, set_loading) = create_signal(false);
     let (confirm_delete, set_confirm_delete) = create_signal::<Option<String>>(None);
     let (editing, set_editing) = create_signal::<Option<String>>(None);
@@ -153,6 +154,14 @@ pub fn BlueprintDrawer(
                     <h3>"Blueprints"</h3>
                 </header>
 
+                <input
+                    class="drawer-search"
+                    type="text"
+                    placeholder="Search..."
+                    prop:value=move || search.get()
+                    on:input=move |ev| set_search.set(leptos::event_target_value(&ev))
+                />
+
                 <Show when=move || error_msg.get().is_some()>
                     <p class="error">{move || error_msg.get().unwrap_or_default()}</p>
                 </Show>
@@ -166,7 +175,11 @@ pub fn BlueprintDrawer(
                 </Show>
 
                 <ul>
-                    {move || blueprints.get().into_iter().map(|bp| {
+                    {move || {
+                        let query = search.get().to_lowercase();
+                        blueprints.get().into_iter()
+                        .filter(|bp| query.is_empty() || display_name(bp).to_lowercase().contains(&query) || bp.folder_name.to_lowercase().contains(&query))
+                        .map(|bp| {
                         let folder = bp.folder_name.clone();
                         let folder_fly = bp.clone();
                         let folder_open = folder.clone();
@@ -257,7 +270,8 @@ pub fn BlueprintDrawer(
                                 </nav>
                             </li>
                         }
-                    }).collect_view()}
+                    }).collect_view()
+                    }}
                 </ul>
             </aside>
         </Show>
