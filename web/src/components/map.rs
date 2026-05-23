@@ -5,7 +5,7 @@ use wasm_bindgen_futures::JsFuture;
 
 const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
 const OVERPASS_TIMEOUT: u32 = 60;
-const MAX_BBOX_AREA_DEG2: f64 = 0.25;
+const MAX_BBOX_AREA_DEG2: f64 = 1.0;
 const BBOX_COLOR: &str = "#4a9eff";
 const BBOX_ERROR_COLOR: &str = "#d32f2f";
 const HANDLE_COLOR: &str = "#4a9eff";
