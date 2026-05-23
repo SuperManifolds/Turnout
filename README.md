@@ -26,7 +26,7 @@
 
 ### Linux
 
-[AppImage](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) · [DEB](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.deb)
+[AppImage (x86)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.AppImage) · [AppImage (ARM64)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.AppImage) · [DEB (x86)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_amd64.deb) · [DEB (ARM64)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.deb)
 
 ## Building
 
