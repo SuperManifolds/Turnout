@@ -14,12 +14,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos
+          - platform: macos-aarch64
             runner: macos-latest
+            args: --target aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
+          - platform: macos-x86
+            runner: macos-latest
+            args: --target x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
           - platform: linux
             runner: ubuntu-22.04
+            args: ""
+            rust_target: ""
           - platform: windows
             runner: windows-latest
+            args: ""
+            rust_target: ""
 
     runs-on: ${{ matrix.runner }}
 
@@ -29,7 +39,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown${{ matrix.rust_target && format(',{0}', matrix.rust_target) }}
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -39,8 +49,8 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-release-
+          key: ${{ matrix.platform }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.platform }}-cargo-release-
 
       - name: Install system dependencies (Linux)
         if: matrix.platform == 'linux'
@@ -69,6 +79,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Turnout ${{ github.ref_name }}"
+          args: ${{ matrix.args }}
           releaseDraft: true
           releaseAssetNamePattern: "[name]_[arch][_setup][ext]"
           generateReleaseNotes: 'true'

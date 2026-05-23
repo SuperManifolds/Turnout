@@ -18,7 +18,7 @@
 
 ### macOS
 
-[DMG (Apple Silicon)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.dmg)
+[DMG (Apple Silicon)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_aarch64.dmg) · [DMG (Intel)](https://github.com/SuperManifolds/Turnout/releases/latest/download/Turnout_x86_64.dmg)
 
 ### Windows
 
