@@ -1,4 +1,5 @@
 use leptos::{wasm_bindgen, component, view, web_sys, IntoView, create_signal, store_value, SignalSet, spawn_local, event_target_value, SignalGetUntracked, Show, SignalGet, CollectView};
+use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -10,10 +11,17 @@ extern "C" {
     fn map_fly_to(lng: f64, lat: f64, zoom: f64);
 }
 
+fn deserialize_f64_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    let s = String::deserialize(d)?;
+    s.parse().map_err(serde::de::Error::custom)
+}
+
 #[derive(Clone, serde::Deserialize)]
 struct NominatimResult {
-    lat: String,
-    lon: String,
+    #[serde(deserialize_with = "deserialize_f64_string")]
+    lat: f64,
+    #[serde(deserialize_with = "deserialize_f64_string")]
+    lon: f64,
     display_name: String,
 }
 
@@ -34,9 +42,7 @@ async fn geocode(query: &str) -> Result<Vec<NominatimResult>, String> {
 use crate::utils::urlencoding;
 
 fn fly_to_result(r: &NominatimResult) {
-    if let (Ok(lat), Ok(lng)) = (r.lat.parse::<f64>(), r.lon.parse::<f64>()) {
-        map_fly_to(lng, lat, 14.0);
-    }
+    map_fly_to(r.lon, r.lat, 14.0);
 }
 
 #[component]

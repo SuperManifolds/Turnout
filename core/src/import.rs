@@ -566,7 +566,7 @@ fn spline_simplify(coords: &[(f64, f64)], keep: &mut [bool]) {
             .filter(|&i| keep[i]).collect();
 
         if kept_pts.len() < 2 { break; }
-        let segs = hobby::hobby_spline(&kept_pts, 0.0);
+        let segs = hobby::hobby_spline(&kept_pts);
         let mut added = false;
 
         for (si, seg) in segs.iter().enumerate() {
@@ -904,51 +904,15 @@ fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     (x, y)
 }
 
-/// Find where a line segment (`inside_point` → `outside_point`) crosses a bbox.
+/// Find where a line segment (inside → outside) crosses a bbox. Returns (lat, lon).
 fn line_rect_intersect(
     in_lat: f64, in_lon: f64, out_lat: f64, out_lon: f64,
     s: f64, w: f64, n: f64, e: f64,
 ) -> Option<(f64, f64)> {
-    let dx = out_lon - in_lon;
-    let dy = out_lat - in_lat;
-    let mut best_t = f64::MAX;
-
-    // South
-    if dy.abs() > 1e-12 {
-        let t = (s - in_lat) / dy;
-        if t > 0.0 && t < best_t {
-            let ix_lon = in_lon + t * dx;
-            if ix_lon >= w && ix_lon <= e { best_t = t; }
-        }
-    }
-    // North
-    if dy.abs() > 1e-12 {
-        let t = (n - in_lat) / dy;
-        if t > 0.0 && t < best_t {
-            let ix_lon = in_lon + t * dx;
-            if ix_lon >= w && ix_lon <= e { best_t = t; }
-        }
-    }
-    // West
-    if dx.abs() > 1e-12 {
-        let t = (w - in_lon) / dx;
-        if t > 0.0 && t < best_t {
-            let ix_lat = in_lat + t * dy;
-            if ix_lat >= s && ix_lat <= n { best_t = t; }
-        }
-    }
-    // East
-    if dx.abs() > 1e-12 {
-        let t = (e - in_lon) / dx;
-        if t > 0.0 && t < best_t {
-            let ix_lat = in_lat + t * dy;
-            if ix_lat >= s && ix_lat <= n { best_t = t; }
-        }
-    }
-
-    if best_t < f64::MAX {
-        Some((in_lat + best_t * dy, in_lon + best_t * dx))
-    } else {
-        None
-    }
+    // geo::segment_rect_intersect uses (x, y) = (lon, lat)
+    let (lon, lat) = crate::geo::segment_rect_intersect(
+        in_lon, in_lat, out_lon, out_lat,
+        w, s, e, n,
+    )?;
+    Some((lat, lon))
 }

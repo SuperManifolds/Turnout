@@ -166,33 +166,12 @@ pub fn parse_orm_link(text: &str) -> Option<(f64, f64, f64)> {
     }
 }
 
+/// Line-rect intersection with (lon, lat) coordinates. Returns (lon, lat).
 fn line_rect_intersect_lonlat(
     in_lon: f64, in_lat: f64, out_lon: f64, out_lat: f64,
     s: f64, w: f64, n: f64, e: f64,
 ) -> Option<(f64, f64)> {
-    let dx = out_lon - in_lon;
-    let dy = out_lat - in_lat;
-    let mut best_t = f64::MAX;
-    let mut best_pt = (0.0, 0.0);
-
-    if dy.abs() > 1e-12 {
-        let t = (s - in_lat) / dy;
-        if t > 0.0 && t < best_t { let x = in_lon + t * dx; if x >= w && x <= e { best_t = t; best_pt = (x, s); } }
-    }
-    if dy.abs() > 1e-12 {
-        let t = (n - in_lat) / dy;
-        if t > 0.0 && t < best_t { let x = in_lon + t * dx; if x >= w && x <= e { best_t = t; best_pt = (x, n); } }
-    }
-    if dx.abs() > 1e-12 {
-        let t = (w - in_lon) / dx;
-        if t > 0.0 && t < best_t { let y = in_lat + t * dy; if y >= s && y <= n { best_t = t; best_pt = (w, y); } }
-    }
-    if dx.abs() > 1e-12 {
-        let t = (e - in_lon) / dx;
-        if t > 0.0 && t < best_t { let y = in_lat + t * dy; if y >= s && y <= n { best_t = t; best_pt = (e, y); } }
-    }
-
-    if best_t < f64::MAX { Some(best_pt) } else { None }
+    crate::geo::segment_rect_intersect(in_lon, in_lat, out_lon, out_lat, w, s, e, n)
 }
 
 const EMPTY_GEOJSON: &str = r#"{"type":"FeatureCollection","features":[]}"#;

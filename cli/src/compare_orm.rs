@@ -96,7 +96,7 @@ fn main() -> Result<()> {
 
         for chain in &chains {
             let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
-            let segments = hobby::hobby_spline(&points, 0.0);
+            let segments = hobby::hobby_spline(&points);
 
             let mut devs = Vec::new();
             for seg in &segments {
@@ -203,7 +203,7 @@ fn render_overlay(
     for chain in chains {
         if chain.len() < 2 { continue; }
         let points: Vec<(f64, f64)> = chain.iter().map(|t| (t.x, t.y)).collect();
-        let segs = hobby::hobby_spline(&points, 0.0);
+        let segs = hobby::hobby_spline(&points);
         for seg in &segs {
             let mut prev = to_px(seg.p0.0, seg.p0.1);
             for s in 1..=16 {

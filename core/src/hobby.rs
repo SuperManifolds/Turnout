@@ -21,7 +21,7 @@ pub struct BezierSegment {
 /// Compute track curves through a sequence of points using the game's
 /// actual algorithm: local bisector tangents + Hobby rho velocity function.
 #[must_use]
-pub fn hobby_spline(points: &[(f64, f64)], _omega: f64) -> Vec<BezierSegment> {
+pub fn hobby_spline(points: &[(f64, f64)]) -> Vec<BezierSegment> {
     hobby_spline_with_tangents(points, None, None)
 }
 
