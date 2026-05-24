@@ -44,3 +44,4 @@ path = "src/check_coords.rs"
 [[bin]]
 name = "verify_coords"
 path = "src/verify_coords.rs"
+
