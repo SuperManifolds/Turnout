@@ -36,3 +36,11 @@ path = "src/dump_branches.rs"
 [[bin]]
 name = "compare_orm"
 path = "src/compare_orm.rs"
+
+[[bin]]
+name = "check_coords"
+path = "src/check_coords.rs"
+
+[[bin]]
+name = "verify_coords"
+path = "src/verify_coords.rs"

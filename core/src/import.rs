@@ -907,8 +907,12 @@ fn serialize_to_nrclip(
     let center_lat = (cy / EARTH_RADIUS).sinh().atan();
     let cos_lat = center_lat.cos();
     for t in &mut track_nodes {
+        // Equirectangular projection (matches game's internal formula):
+        //   x_offset = (merc_x - center_merc_x) * cos(center_lat)
+        //   y_offset = R * (node_lat - center_lat)
         t.x = (t.x - cx) * cos_lat;
-        t.y = (t.y - cy) * cos_lat;
+        let node_lat = (t.y / EARTH_RADIUS).sinh().atan();
+        t.y = EARTH_RADIUS * (node_lat - center_lat);
     }
 
     let name_hash = name.bytes().fold(0x0012_3456_7890_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));

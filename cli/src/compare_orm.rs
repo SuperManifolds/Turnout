@@ -50,9 +50,10 @@ fn main() -> Result<()> {
     let cos_lat = center_lat.cos();
 
     let osm_rel: HashMap<u64, (f64, f64)> = osm_nodes.iter().map(|(&nid, &(lat, lon))| {
-        let mx = lon.to_radians() * 6_378_137.0;
-        let my = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * 6_378_137.0;
-        (nid, ((mx - cx) * cos_lat, (my - cy) * cos_lat))
+        let r = 6_378_137.0_f64;
+        let mx = lon.to_radians() * r;
+        let node_lat = lat.to_radians();
+        (nid, ((mx - cx) * cos_lat, r * (node_lat - center_lat)))
     }).collect();
 
     // Build OSM segment list for nearest-distance queries
