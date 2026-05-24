@@ -66,9 +66,10 @@ fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn main() {
-    // Work around WebKitGTK EGL crashes on some Linux GPU drivers
+    // Work around WebKitGTK EGL crashes on some Linux GPU drivers.
+    // SAFETY: Called at the very start of main, before any threads are spawned.
     #[cfg(target_os = "linux")]
-    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
