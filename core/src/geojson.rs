@@ -151,19 +151,19 @@ pub fn clip_linestring(coords: &[(f64, f64)], s: f64, w: f64, n: f64, e: f64) ->
 /// Parse an ORM link like `https://openrailwaymap.app/#view=9.49/34.1997/-117.2839`.
 /// Returns (zoom, lat, lng) if valid.
 #[must_use]
+/// Parse an `OpenRailwayMap` link like `https://openrailwaymap.app/#view=17.33/55.86/-4.25&style=speed`
+/// Returns `(zoom, lat, lng)`.
 pub fn parse_orm_link(text: &str) -> Option<(f64, f64, f64)> {
-    let text = text.trim();
-    let hash_pos = text.find("#view=")?;
-    let fragment = &text[hash_pos + 6..];
-    let parts: Vec<&str> = fragment.split('/').collect();
-    if parts.len() >= 3 {
-        let zoom = parts[0].parse::<f64>().ok()?;
-        let lat = parts[1].parse::<f64>().ok()?;
-        let lng = parts[2].parse::<f64>().ok()?;
-        Some((zoom, lat, lng))
-    } else {
-        None
-    }
+    let url = url::Url::parse(text.trim()).ok()?;
+    let fragment = url.fragment()?;
+    let view = fragment
+        .split('&')
+        .find_map(|part| part.strip_prefix("view="))?;
+    let parts: Vec<&str> = view.split('/').collect();
+    let zoom = parts.first()?.parse::<f64>().ok()?;
+    let lat = parts.get(1)?.parse::<f64>().ok()?;
+    let lng = parts.get(2)?.parse::<f64>().ok()?;
+    Some((zoom, lat, lng))
 }
 
 /// Line-rect intersection with (lon, lat) coordinates. Returns (lon, lat).
