@@ -905,14 +905,18 @@ fn serialize_to_nrclip(
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
     let center_lat = (cy / EARTH_RADIUS).sinh().atan();
-    let cos_lat = center_lat.cos();
+    let center_lon = cx / EARTH_RADIUS;
     for t in &mut track_nodes {
-        // Equirectangular projection (matches game's internal formula):
-        //   x_offset = (merc_x - center_merc_x) * cos(center_lat)
-        //   y_offset = R * (node_lat - center_lat)
-        t.x = (t.x - cx) * cos_lat;
+        // Convert from Mercator to lat/lon
         let node_lat = (t.y / EARTH_RADIUS).sinh().atan();
-        t.y = EARTH_RADIUS * (node_lat - center_lat);
+        let node_lon = t.x / EARTH_RADIUS;
+
+        // Compute inverse geodesic: the (dx, dy) ground-meter offset that the
+        // game's spherical destination formula (RVA 0xB9300) will reconstruct
+        // back to this node's exact lat/lon.
+        let (dx, dy) = inverse_geodesic(center_lat, center_lon, node_lat, node_lon);
+        t.x = dx;
+        t.y = dy;
     }
 
     let name_hash = name.bytes().fold(0x0012_3456_7890_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
@@ -942,6 +946,35 @@ fn serialize_to_nrclip(
 // ══════════════════════════════════════════════════════════════════════
 // Geometry helpers
 // ══════════════════════════════════════════════════════════════════════
+
+/// Compute the ground-meter offset (dx, dy) from center to node such that the
+/// game's spherical great-circle destination formula reconstructs the correct
+/// lat/lon. This is the inverse of the Vincenty direct problem on a sphere.
+fn inverse_geodesic(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> (f64, f64) {
+    let dlon = lon2 - lon1;
+    let dlat = lat2 - lat1;
+
+    // Spherical distance (haversine)
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    let dist = EARTH_RADIUS * c;
+
+    if dist < 0.001 {
+        return (0.0, 0.0);
+    }
+
+    // Forward bearing from center to node
+    let y_comp = lat2.cos() * dlon.sin();
+    let x_comp = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos();
+    let bearing = y_comp.atan2(x_comp);
+
+    // Decompose into (dx, dy) = (dist * sin(bearing), dist * cos(bearing))
+    let dx = dist * bearing.sin();
+    let dy = dist * bearing.cos();
+
+    (dx, dy)
+}
 
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     let x = lon.to_radians() * EARTH_RADIUS;
