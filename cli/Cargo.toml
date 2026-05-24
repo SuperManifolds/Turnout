@@ -41,7 +41,3 @@ path = "src/compare_orm.rs"
 name = "check_coords"
 path = "src/check_coords.rs"
 
-[[bin]]
-name = "verify_coords"
-path = "src/verify_coords.rs"
-
