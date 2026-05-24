@@ -13,12 +13,18 @@ fn open_settings_window(app: &tauri::AppHandle) {
         let _ = window.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("Settings")
         .inner_size(480.0, 450.0)
         .resizable(false)
-        .maximizable(false)
-        .build();
+        .maximizable(false);
+
+    // Inherit system theme so CSS prefers-color-scheme works
+    if let Some(theme) = app.get_webview_window("main").and_then(|w| w.theme().ok()) {
+        builder = builder.theme(Some(theme));
+    }
+
+    let _ = builder.build();
 }
 
 fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
