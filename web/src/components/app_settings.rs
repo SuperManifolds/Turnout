@@ -7,7 +7,11 @@ pub struct Settings {
     pub mods_dir_override: Option<String>,
     pub check_for_updates: bool,
     pub map_theme: String,
+    #[serde(default = "default_overpass_timeout")]
+    pub overpass_timeout: u32,
 }
+
+fn default_overpass_timeout() -> u32 { 60 }
 
 impl Default for Settings {
     fn default() -> Self {
@@ -15,6 +19,7 @@ impl Default for Settings {
             mods_dir_override: None,
             check_for_updates: true,
             map_theme: "system".to_string(),
+            overpass_timeout: 60,
         }
     }
 }
@@ -54,6 +59,7 @@ pub fn AppSettings() -> impl IntoView {
     let (detected_dir, set_detected_dir) = create_signal::<Option<String>>(None);
     let (check_updates, set_check_updates) = create_signal(true);
     let (theme, set_theme) = create_signal("system".to_string());
+    let (timeout, set_timeout) = create_signal(60u32);
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
     let (update_status, set_update_status) = create_signal(String::new());
@@ -66,6 +72,7 @@ pub fn AppSettings() -> impl IntoView {
             set_mods_dir.set(settings.mods_dir_override);
             set_check_updates.set(settings.check_for_updates);
             set_theme.set(settings.map_theme);
+            set_timeout.set(settings.overpass_timeout);
             set_loaded.set(true);
 
             if let Some(dir) = crate::tauri::get_mods_dir().await {
@@ -82,6 +89,7 @@ pub fn AppSettings() -> impl IntoView {
         let mods = mods_dir.get();
         let updates = check_updates.get();
         let t = theme.get();
+        let tout = timeout.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -92,6 +100,7 @@ pub fn AppSettings() -> impl IntoView {
                 mods_dir_override: mods,
                 check_for_updates: updates,
                 map_theme: t,
+                overpass_timeout: tout,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -165,6 +174,25 @@ pub fn AppSettings() -> impl IntoView {
                         }
                     }).collect_view()}
                 </nav>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Overpass API"</legend>
+                <label>
+                    "Query timeout: "
+                    <input
+                        type="number"
+                        min="10"
+                        max="300"
+                        prop:value=move || timeout.get().to_string()
+                        on:change=move |ev| {
+                            if let Ok(v) = leptos::event_target_value(&ev).parse::<u32>() {
+                                set_timeout.set(v.clamp(10, 300));
+                            }
+                        }
+                    />
+                    " seconds"
+                </label>
             </fieldset>
 
             <fieldset>

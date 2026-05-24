@@ -1,4 +1,4 @@
-use leptos::{component, view, ReadSignal, WriteSignal, IntoView, SignalUpdate, SignalGet, SignalSet, event_target_value};
+use leptos::{component, view, ReadSignal, WriteSignal, IntoView, SignalUpdate, SignalGet, SignalSet};
 
 #[component]
 pub fn Settings(
@@ -8,8 +8,6 @@ pub fn Settings(
     set_clip_to_selection: WriteSignal<bool>,
     tangent_mode: ReadSignal<bool>,
     set_tangent_mode: WriteSignal<bool>,
-    overpass_timeout: ReadSignal<u32>,
-    set_overpass_timeout: WriteSignal<u32>,
 ) -> impl IntoView {
     view! {
         <aside id="settings-panel">
@@ -43,25 +41,6 @@ pub fn Settings(
                         class:active=move || tangent_mode.get()
                         on:click=move |_| set_tangent_mode.set(true)
                     >"Tangent"</button>
-                </div>
-            </nav>
-            <nav class="mode-switch"
-                title="Overpass API query timeout in seconds"
-            >
-                <span class="mode-label">"Timeout"</span>
-                <div class="timeout-input">
-                    <input
-                        type="number"
-                        min="10"
-                        max="300"
-                        prop:value=move || overpass_timeout.get().to_string()
-                        on:change=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                set_overpass_timeout.set(v.clamp(10, 300));
-                            }
-                        }
-                    />
-                    <span class="unit">"s"</span>
                 </div>
             </nav>
         </aside>

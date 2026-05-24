@@ -71,10 +71,6 @@ fn App() -> impl IntoView {
     let (tangent_mode, set_tangent_mode) = create_signal(
         utils::load_bool("tangent_mode", false)
     );
-    let (overpass_timeout, set_overpass_timeout) = create_signal(
-        utils::load_u32("overpass_timeout", 60)
-    );
-
     // Persist on change
     create_effect(move |_| {
         utils::save_bool("apply_speed_limits", apply_speed_limits.get());
@@ -84,9 +80,6 @@ fn App() -> impl IntoView {
     });
     create_effect(move |_| {
         utils::save_bool("tangent_mode", tangent_mode.get());
-    });
-    create_effect(move |_| {
-        utils::save_u32("overpass_timeout", overpass_timeout.get());
     });
     create_effect(move |_| {
         let types = enabled_types.get();
@@ -113,7 +106,6 @@ fn App() -> impl IntoView {
                         apply_speed_limits=apply_speed_limits
                         clip_to_selection=clip_to_selection
                         tangent_mode=tangent_mode
-                        overpass_timeout=overpass_timeout
                         set_drawer_open=set_drawer_open
                     />
                     <components::Search />
@@ -131,8 +123,6 @@ fn App() -> impl IntoView {
                                 set_clip_to_selection=set_clip_to_selection
                                 tangent_mode=tangent_mode
                                 set_tangent_mode=set_tangent_mode
-                                overpass_timeout=overpass_timeout
-                                set_overpass_timeout=set_overpass_timeout
                             />
                         </aside>
                     </Show>

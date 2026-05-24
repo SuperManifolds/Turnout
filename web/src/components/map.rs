@@ -128,7 +128,6 @@ pub fn Map(
     apply_speed_limits: ReadSignal<bool>,
     clip_to_selection: ReadSignal<bool>,
     tangent_mode: ReadSignal<bool>,
-    overpass_timeout: ReadSignal<u32>,
     set_drawer_open: WriteSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
@@ -300,7 +299,7 @@ pub fn Map(
                     return;
                 }
                 set_status.set("Fetching tracks...".into());
-                let timeout = overpass_timeout.get_untracked();
+                let timeout = crate::components::app_settings::load_settings().await.overpass_timeout;
                 let query = format!(
                     "[out:json][timeout:{timeout}];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
                 );
@@ -411,9 +410,8 @@ pub fn Map(
         let speed = apply_speed_limits.get_untracked();
         let clip = clip_to_selection.get_untracked();
         let tangent = tangent_mode.get_untracked();
-        let timeout = overpass_timeout.get_untracked();
         spawn_local(async move {
-            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, clip, tangent, timeout, set_status, set_success_message).await;
+            do_import(s, w, n, e, &name, cached.as_deref(), &types, speed, clip, tangent, set_status, set_success_message).await;
         });
     });
 
@@ -456,13 +454,13 @@ pub fn Map(
     }
 }
 
-async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, clip: bool, tangent_mode: bool, overpass_timeout: u32, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
+async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Option<&str>, railway_types: &[String], apply_speed_limits: bool, clip: bool, tangent_mode: bool, set_status: WriteSignal<String>, set_success: WriteSignal<Option<String>>) {
     // Step 1: Use cached JSON or fetch (preview should always have cached it)
     let json = if let Some(cached) = cached_json {
         cached.to_string()
     } else {
         set_status.set("Fetching railway data...".into());
-        let timeout = overpass_timeout;
+        let timeout = crate::components::app_settings::load_settings().await.overpass_timeout;
         let query = format!(
             "[out:json][timeout:{timeout}];(way[\"railway\"]({s},{w},{n},{e}););(._;>;);out body;"
         );
