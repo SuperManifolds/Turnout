@@ -73,12 +73,27 @@ fn osm_to_track_type(tags: &serde_json::Value) -> i32 {
     if tags.get("usage").and_then(|v| v.as_str()) == Some("highspeed") {
         return TRACK_TYPE_HIGH_SPEED;
     }
-    if let Some(ms) = tags.get("maxspeed").and_then(|v| v.as_str())
-        && parse_maxspeed_kmh(ms) >= 200.0 {
-            return TRACK_TYPE_HIGH_SPEED;
-        }
+    if parse_maxspeed_tag(tags).is_some_and(|kmh| kmh >= 200.0) {
+        return TRACK_TYPE_HIGH_SPEED;
+    }
 
     TRACK_TYPE_MEDIUM
+}
+
+/// Extract the best maxspeed value from OSM tags in km/h.
+/// Checks `maxspeed`, then falls back to `maxspeed:forward`/`maxspeed:backward`
+/// (taking the higher value since Nimby Rails has no directional speed limits).
+fn parse_maxspeed_tag(tags: &serde_json::Value) -> Option<f64> {
+    // Try plain maxspeed first
+    if let Some(s) = tags.get("maxspeed").and_then(|v| v.as_str()) {
+        let kmh = parse_maxspeed_kmh(s);
+        if kmh > 0.0 { return Some(kmh); }
+    }
+    // Fall back to directional tags — use the higher value
+    let fwd = tags.get("maxspeed:forward").and_then(|v| v.as_str()).map_or(0.0, parse_maxspeed_kmh);
+    let bwd = tags.get("maxspeed:backward").and_then(|v| v.as_str()).map_or(0.0, parse_maxspeed_kmh);
+    let best = fwd.max(bwd);
+    if best > 0.0 { Some(best) } else { None }
 }
 
 /// Parse an OSM maxspeed value to km/h. Handles "200", "79 mph", etc.
@@ -242,9 +257,8 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
                 let tt = osm_to_track_type(&tags);
-                let maxspeed_ms = tags.get("maxspeed")
-                    .and_then(|v| v.as_str())
-                    .map(|s| (parse_maxspeed_kmh(s) / 3.6) as f32)
+                let maxspeed_ms = parse_maxspeed_tag(&tags)
+                    .map(|kmh| (kmh / 3.6) as f32)
                     .filter(|&v| v > 0.0);
 
                 if nids.len() >= 2 {
