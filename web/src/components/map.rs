@@ -428,7 +428,7 @@ pub fn Map(
                     <button on:click=on_select_area>"Select Area"</button>
                 </Show>
                 <Show when=move || bbox.get().is_some()>
-                    <button class="primary" on:click=on_import_click disabled=move || over_limit.get()>"Import Tracks"</button>
+                    <button class="primary" on:click=on_import_click disabled=move || over_limit.get() || cached_json.get_value().is_none()>"Import Tracks"</button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
