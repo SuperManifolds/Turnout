@@ -902,41 +902,16 @@ fn serialize_to_nrclip(
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
 ) -> Result<Vec<u8>> {
-    // Compute center in Mercator (for clip storage) and in lat/lon (for offset math)
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
     let center_lat = (cy / EARTH_RADIUS).sinh().atan();
-    let center_lon = cx / EARTH_RADIUS;
-
-    // Convert each node from Mercator to ground-meter offset relative to center.
-    // Instead of using a single cos(center_lat) which distorts nodes far from
-    // center, compute each node's true lat/lon and use proper ground distance.
-    // The game reconstructs Mercator as center + offset/cos(center_lat), so we
-    // store the offset that produces the correct Mercator position when divided
-    // by cos(center_lat).
-    let cos_center = center_lat.cos();
+    let cos_lat = center_lat.cos();
     for t in &mut track_nodes {
-        // Node's true latitude and longitude from its Mercator position
-        let node_lat = (t.y / EARTH_RADIUS).sinh().atan();
-        let node_lon = t.x / EARTH_RADIUS;
-
-        // Ground-meter offset: true geographic distance from center
-        // X: along parallel, Y: along meridian
-        let dx_ground = (node_lon - center_lon) * EARTH_RADIUS * node_lat.cos();
-        let dy_ground = (node_lat - center_lat) * EARTH_RADIUS;
-
-        // The game will reconstruct as: merc = center + offset / cos(center_lat)
-        // We want the reconstructed merc position to match the node's true merc position.
-        // So: offset = (true_merc - center_merc) * cos(center_lat)
-        // But that's the old formula with its distortion. Instead, store ground offsets
-        // directly — the game's reconstruction will place nodes slightly off in Mercator,
-        // but the ground-meter geometry (what the player sees as track shape) will be correct.
-        t.x = dx_ground;
-        t.y = dy_ground;
+        t.x = (t.x - cx) * cos_lat;
+        t.y = (t.y - cy) * cos_lat;
     }
 
     let name_hash = name.bytes().fold(0x0012_3456_7890_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
-    let _ = cos_center;
     let file = NrclipFile {
         version: MODEL_VERSION,
         collections: vec![Collection {
