@@ -269,7 +269,11 @@ pub fn save_blueprint(app: tauri::AppHandle, name: String, data: Vec<u8>) -> Res
     let mods_dir = resolve_mods_dir(&app)
         .ok_or_else(|| "Could not find Nimby Rails mods folder. Set it in Settings.".to_string())?;
 
-    let blueprint_dir = mods_dir.join(&name);
+    let folder = sanitize_folder_name(&name);
+    if folder.is_empty() {
+        return Err("Invalid blueprint name".to_string());
+    }
+    let blueprint_dir = mods_dir.join(&folder);
     fs::create_dir_all(&blueprint_dir)
         .map_err(|e| format!("Failed to create directory: {e}"))?;
 
@@ -280,11 +284,21 @@ pub fn save_blueprint(app: tauri::AppHandle, name: String, data: Vec<u8>) -> Res
     Ok(path.to_string_lossy().to_string())
 }
 
+fn sanitize_folder_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_lowercase()
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn blueprint_exists(app: tauri::AppHandle, name: String) -> bool {
+    let folder = sanitize_folder_name(&name);
     resolve_mods_dir(&app)
-        .is_some_and(|mods| mods.join(&name).join("blueprints.nrclip").exists())
+        .is_some_and(|mods| mods.join(&folder).join("blueprints.nrclip").exists())
 }
 
 #[tauri::command]

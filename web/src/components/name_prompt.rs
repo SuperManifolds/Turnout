@@ -22,16 +22,18 @@ pub fn NamePrompt(
     let do_confirm = move || {
         let n = name.get_untracked().trim().to_string();
         if !n.is_empty() {
-            on_confirm.call(sanitize_name(&n));
+            on_confirm.call(n);
         }
     };
 
     let on_submit = move |ev: web_sys::SubmitEvent| {
         ev.prevent_default();
-        let n = sanitize_name(&name.get_untracked());
+        let n = name.get_untracked().trim().to_string();
         if n.is_empty() { return; }
+        let folder = sanitize_name(&n);
+        if folder.is_empty() { return; }
         spawn_local(async move {
-            if crate::tauri::blueprint_exists(&n).await {
+            if crate::tauri::blueprint_exists(&folder).await {
                 set_exists.set(true);
             } else {
                 do_confirm();
