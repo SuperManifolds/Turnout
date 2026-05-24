@@ -22,6 +22,7 @@ const ALIGNMENT_THRESHOLD: f64 = 2.5; // ~143° — reject near-reversal continu
 const JUNCTION_ENDPOINT_SPACING: f64 = 30.0; // meters — control point near junction endpoints
 const SPLINE_TOLERANCE: f64 = 5.0; // meters — max deviation before adding subdivision node
 const BRANCH_OFFSET: f64 = 5.0; // meters — nudge branch root away from parent
+const EARTH_RADIUS: f64 = 6_378_137.0;
 
 type VanillaTrackData = (Vec<(i32, TrackKind)>, Vec<ModMeta>);
 type PipelineResult = (Vec<Track>, Vec<Vec<(usize, f64, f64)>>, RouteData, OsmData);
@@ -43,6 +44,8 @@ struct OsmData {
     node_maxspeed: HashMap<u64, f32>,
     way_layers: Vec<i32>,
     way_track_types: Vec<i32>,
+    /// Cosine of reference latitude for equirectangular projection
+    cos_ref_lat: f64,
 }
 
 struct RouteData {
@@ -195,7 +198,7 @@ pub fn import_orm(
 
     on_progress("Attaching junctions...");
     attach_branches(
-        &mut track_nodes, &simplified, &route_data, &osm.nodes,
+        &mut track_nodes, &simplified, &route_data, &osm.nodes, osm.cos_ref_lat,
     );
 
     // Branch roots at junctions must remain point mode — their tangent is
@@ -209,7 +212,7 @@ pub fn import_orm(
     }
 
     on_progress("Serializing blueprint...");
-    let bytes = serialize_to_nrclip(track_nodes, name, track_kinds, mod_metas)?;
+    let bytes = serialize_to_nrclip(track_nodes, name, track_kinds, mod_metas, osm.cos_ref_lat)?;
     Ok((bytes, node_count))
 }
 
@@ -229,6 +232,7 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
         node_maxspeed: HashMap::new(),
         way_layers: Vec::new(),
         way_track_types: Vec::new(),
+        cos_ref_lat: 1.0, // computed after parsing
     };
 
     for e in elements {
@@ -280,6 +284,12 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
             }
             _ => {}
         }
+    }
+
+    // Compute reference latitude from centroid of all nodes
+    if !osm.nodes.is_empty() {
+        let avg_lat = osm.nodes.values().map(|(lat, _)| lat).sum::<f64>() / osm.nodes.len() as f64;
+        osm.cos_ref_lat = avg_lat.to_radians().cos();
     }
 
     Ok(osm)
@@ -391,9 +401,10 @@ fn merge_ways_into_routes(osm: &OsmData) -> RouteData {
 
     routes.sort_by_key(|r| std::cmp::Reverse(r.len()));
 
+    let cos_ref = osm.cos_ref_lat;
     let route_coords: Vec<Vec<(f64, f64)>> = routes.iter().map(|route| {
         route.iter().filter_map(|nid| {
-            osm.nodes.get(nid).map(|&(lat, lon)| latlon_to_mercator(lat, lon))
+            osm.nodes.get(nid).map(|&(lat, lon)| latlon_to_ground_meters(lat, lon, cos_ref))
         }).collect()
     }).collect();
 
@@ -751,6 +762,7 @@ fn attach_branches(
     simplified: &[Vec<(usize, f64, f64)>],
     rd: &RouteData,
     osm_nodes: &HashMap<u64, (f64, f64)>,
+    cos_ref: f64,
 ) {
     // Build route → game node chains and junction game ID map
     let mut route_game_nodes: Vec<Vec<RouteNodeInfo>> = Vec::new();
@@ -799,7 +811,7 @@ fn attach_branches(
 
             let junction_orig = rd.routes[ri][endpoint_orig_idx];
             let junction_pos = osm_nodes.get(&junction_orig)
-                .map_or((0.0, 0.0), |&(lat, lon)| latlon_to_mercator(lat, lon));
+                .map_or((0.0, 0.0), |&(lat, lon)| latlon_to_ground_meters(lat, lon, cos_ref));
 
             let parent_chain = &route_game_nodes[owner_ri];
             if parent_chain.len() < 2 { continue; }
@@ -900,14 +912,21 @@ fn serialize_to_nrclip(
     name: &str,
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
+    cos_ref_lat: f64,
 ) -> Result<Vec<u8>> {
-    let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
-    let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
-    let center_lat = (cy / 6_378_137.0).sinh().atan();
-    let cos_lat = center_lat.cos();
+    // Compute center in ground meters, then convert to Mercator for the clip
+    let gx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
+    let gy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
+
+    // Convert ground-meter center back to lat/lon, then to Mercator
+    let center_lon = gx / (EARTH_RADIUS * cos_ref_lat);
+    let center_lat = gy / EARTH_RADIUS;
+    let (merc_cx, merc_cy) = latlon_to_mercator(center_lat.to_degrees(), center_lon.to_degrees());
+
+    // Track offsets are already in ground meters — just subtract center
     for t in &mut track_nodes {
-        t.x = (t.x - cx) * cos_lat;
-        t.y = (t.y - cy) * cos_lat;
+        t.x -= gx;
+        t.y -= gy;
     }
 
     let name_hash = name.bytes().fold(0x0012_3456_7890_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
@@ -920,8 +939,8 @@ fn serialize_to_nrclip(
             clips: vec![Clip {
                 guid: name.to_string(),
                 clip_id: name_hash.wrapping_mul(13),
-                center_x: cx,
-                center_y: cy,
+                center_x: merc_cx,
+                center_y: merc_cy,
                 tracks: track_nodes,
                 track_kinds,
                 mod_metas,
@@ -938,9 +957,19 @@ fn serialize_to_nrclip(
 // Geometry helpers
 // ══════════════════════════════════════════════════════════════════════
 
+/// Convert lat/lon to Mercator meters (for clip center storage only).
 fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
-    let x = lon.to_radians() * 6_378_137.0;
-    let y = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * 6_378_137.0;
+    let x = lon.to_radians() * EARTH_RADIUS;
+    let y = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * EARTH_RADIUS;
+    (x, y)
+}
+
+/// Convert lat/lon to ground meters using an equirectangular projection
+/// centered at `ref_lat`. This produces true ground distances at the
+/// reference latitude, matching how the game stores track coordinates.
+fn latlon_to_ground_meters(lat: f64, lon: f64, cos_ref: f64) -> (f64, f64) {
+    let x = lon.to_radians() * EARTH_RADIUS * cos_ref;
+    let y = lat.to_radians() * EARTH_RADIUS;
     (x, y)
 }
 
