@@ -904,14 +904,11 @@ fn serialize_to_nrclip(
 ) -> Result<Vec<u8>> {
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
-
-    // Convert Mercator offsets to ground meters using each node's own latitude.
-    // This preserves correct distances between adjacent nodes across the entire
-    // selection, at the cost of slight absolute position shift at the edges.
+    let center_lat = (cy / EARTH_RADIUS).sinh().atan();
+    let cos_center = center_lat.cos();
     for t in &mut track_nodes {
-        let cos_node = (t.y / EARTH_RADIUS).sinh().atan().cos();
-        t.x = (t.x - cx) * cos_node;
-        t.y = (t.y - cy) * cos_node;
+        t.x = (t.x - cx) * cos_center;
+        t.y = (t.y - cy) * cos_center;
     }
 
     let name_hash = name.bytes().fold(0x0012_3456_7890_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
