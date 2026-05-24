@@ -11,6 +11,7 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 
+use crate::geo::{latlon_to_mercator, merc_y_to_lat_rad, inverse_geodesic};
 use crate::hobby;
 use crate::nrc1::NrclipFile;
 use crate::types::{Collection, Clip, Track, TrackKind, ModMeta};
@@ -904,11 +905,10 @@ fn serialize_to_nrclip(
 ) -> Result<Vec<u8>> {
     let cx = track_nodes.iter().map(|t| t.x).sum::<f64>() / track_nodes.len() as f64;
     let cy = track_nodes.iter().map(|t| t.y).sum::<f64>() / track_nodes.len() as f64;
-    let center_lat = (cy / EARTH_RADIUS).sinh().atan();
+    let center_lat = merc_y_to_lat_rad(cy);
     let center_lon = cx / EARTH_RADIUS;
     for t in &mut track_nodes {
-        // Convert from Mercator to lat/lon
-        let node_lat = (t.y / EARTH_RADIUS).sinh().atan();
+        let node_lat = merc_y_to_lat_rad(t.y);
         let node_lon = t.x / EARTH_RADIUS;
 
         // Compute inverse geodesic: the (dx, dy) ground-meter offset that the
@@ -947,40 +947,6 @@ fn serialize_to_nrclip(
 // Geometry helpers
 // ══════════════════════════════════════════════════════════════════════
 
-/// Compute the ground-meter offset (dx, dy) from center to node such that the
-/// game's spherical great-circle destination formula reconstructs the correct
-/// lat/lon. This is the inverse of the Vincenty direct problem on a sphere.
-fn inverse_geodesic(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> (f64, f64) {
-    let dlon = lon2 - lon1;
-    let dlat = lat2 - lat1;
-
-    // Spherical distance (haversine)
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
-    let dist = EARTH_RADIUS * c;
-
-    if dist < 0.001 {
-        return (0.0, 0.0);
-    }
-
-    // Forward bearing from center to node
-    let y_comp = lat2.cos() * dlon.sin();
-    let x_comp = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos();
-    let bearing = y_comp.atan2(x_comp);
-
-    // Decompose into (dx, dy) = (dist * sin(bearing), dist * cos(bearing))
-    let dx = dist * bearing.sin();
-    let dy = dist * bearing.cos();
-
-    (dx, dy)
-}
-
-fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
-    let x = lon.to_radians() * EARTH_RADIUS;
-    let y = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * EARTH_RADIUS;
-    (x, y)
-}
 
 /// Find where a line segment (inside → outside) crosses a bbox. Returns (lat, lon).
 fn line_rect_intersect(

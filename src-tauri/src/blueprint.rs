@@ -107,9 +107,7 @@ fn thumbnail_path(app: &tauri::AppHandle, folder_name: &str, clip_index: usize) 
 }
 
 fn mercator_to_latlon(x: f64, y: f64) -> (f64, f64) {
-    let lat = (y / 6_378_137.0).sinh().atan().to_degrees();
-    let lon = (x / 6_378_137.0).to_degrees();
-    (lat, lon)
+    turnout_core::geo::mercator_to_latlon(x, y)
 }
 
 fn file_modified_secs(path: &std::path::Path) -> u64 {

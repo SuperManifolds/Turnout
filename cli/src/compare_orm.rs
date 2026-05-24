@@ -45,15 +45,13 @@ fn main() -> Result<()> {
     let cx = clip.center_x;
     let cy = clip.center_y;
 
-    // Convert OSM nodes to ground-meter offsets from center
-    let center_lat = (cy / 6_378_137.0_f64).sinh().atan();
-    let cos_lat = center_lat.cos();
+    // Convert OSM nodes to ground-meter offsets via inverse geodesic
+    let r = 6_378_137.0_f64;
+    let center_lat = turnout_core::geo::merc_y_to_lat_rad(cy);
+    let center_lon = cx / r;
 
     let osm_rel: HashMap<u64, (f64, f64)> = osm_nodes.iter().map(|(&nid, &(lat, lon))| {
-        let r = 6_378_137.0_f64;
-        let mx = lon.to_radians() * r;
-        let node_lat = lat.to_radians();
-        (nid, ((mx - cx) * cos_lat, r * (node_lat - center_lat)))
+        (nid, turnout_core::geo::inverse_geodesic(center_lat, center_lon, lat.to_radians(), lon.to_radians()))
     }).collect();
 
     // Build OSM segment list for nearest-distance queries
@@ -270,3 +268,4 @@ fn draw_line(img: &mut image::RgbImage, x0: i32, y0: i32, x1: i32, y1: i32, colo
         if e2 <= dx { err += dx; y += sy; }
     }
 }
+
