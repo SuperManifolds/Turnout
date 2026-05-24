@@ -184,7 +184,7 @@ pub fn import_orm(
     mod_metas: Vec<ModMeta>,
     on_progress: &dyn Fn(&str),
 ) -> Result<(Vec<u8>, usize)> {
-    let (mut track_nodes, simplified, route_data, osm) =
+    let (mut track_nodes, simplified, route_data, _) =
         run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits, tangent_mode, on_progress)?;
 
     let node_count = track_nodes.len();
@@ -197,7 +197,7 @@ pub fn import_orm(
 
     on_progress("Attaching junctions...");
     attach_branches(
-        &mut track_nodes, &simplified, &route_data, &osm.nodes,
+        &mut track_nodes, &simplified, &route_data,
     );
 
     // Branch roots at junctions must remain point mode — their tangent is
@@ -752,7 +752,6 @@ fn attach_branches(
     track_nodes: &mut [Track],
     simplified: &[Vec<(usize, f64, f64)>],
     rd: &RouteData,
-    osm_nodes: &HashMap<u64, (f64, f64)>,
 ) {
     // Build route → game node chains and junction game ID map
     let mut route_game_nodes: Vec<Vec<RouteNodeInfo>> = Vec::new();
@@ -800,25 +799,23 @@ fn attach_branches(
             };
 
             let junction_orig = rd.routes[ri][endpoint_orig_idx];
-            let junction_pos = osm_nodes.get(&junction_orig)
-                .map_or((0.0, 0.0), |&(lat, lon)| latlon_to_mercator(lat, lon));
 
-            let parent_chain = &route_game_nodes[owner_ri];
-            if parent_chain.len() < 2 { continue; }
+            // Attach to the junction owner's game node directly
+            let Some(&parent_game_id) = junction_game_ids.get(&junction_orig) else { continue };
+            let parent_node_id = parent_game_id;
 
-            // Find nearest segment on parent chain
-            let (parent_seg_idx, t) = find_parent_segment(
-                junction_pos, parent_chain, track_nodes, &node_idx,
-            );
-            let parent_node_id = parent_chain[parent_seg_idx].game_id;
+            // Compute t = 0.5 (center of parent node's shape polyline)
+            let t = 0.5;
 
-            // Determine branch direction relative to parent
+            // Determine branch direction relative to parent's next node
             let br_idx = node_idx[&branch_gid];
             let pi = node_idx[&parent_node_id];
-            let next_idx = if parent_seg_idx + 1 < parent_chain.len() { parent_seg_idx + 1 }
-                else if parent_seg_idx > 0 { parent_seg_idx - 1 }
-                else { continue; };
-            let qi = node_idx[&parent_chain[next_idx].game_id];
+            let parent_next = track_nodes[pi].next_node;
+            let parent_prev = track_nodes[pi].prev_node;
+            let neighbor_node = if parent_next != 0 { parent_next }
+                else if parent_prev != 0 { parent_prev }
+                else { continue };
+            let qi = node_idx[&neighbor_node];
             let seg_dx = track_nodes[qi].x - track_nodes[pi].x;
             let seg_dy = track_nodes[qi].y - track_nodes[pi].y;
 
@@ -834,10 +831,13 @@ fn attach_branches(
             let dot = br_dx * seg_dx + br_dy * seg_dy;
             let dir = if dot >= 0.0 { 1 } else { -1 };
 
-            // Nudge branch root away from parent
+            // Nudge branch root away from parent in ground meters.
+            // Pipeline works in Mercator where distances are stretched by 1/cos(lat),
+            // so scale the offset to achieve the desired ground-meter distance.
+            let merc_offset = BRANCH_OFFSET / merc_y_to_lat_rad(track_nodes[br_idx].y).cos();
             let br_len = (br_dx * br_dx + br_dy * br_dy).sqrt().max(1e-10);
-            track_nodes[br_idx].x += (br_dx / br_len) * BRANCH_OFFSET;
-            track_nodes[br_idx].y += (br_dy / br_len) * BRANCH_OFFSET;
+            track_nodes[br_idx].x += (br_dx / br_len) * merc_offset;
+            track_nodes[br_idx].y += (br_dy / br_len) * merc_offset;
 
             // Set attachment fields
             track_nodes[br_idx].attached_to_id = parent_node_id;
@@ -850,52 +850,6 @@ fn attach_branches(
     }
 }
 
-fn find_parent_segment(
-    junction_pos: (f64, f64),
-    parent_chain: &[RouteNodeInfo],
-    track_nodes: &[Track],
-    node_idx: &HashMap<i64, usize>,
-) -> (usize, f64) {
-    let mut best_seg = 0usize;
-    let mut best_t = 0.5f64;
-    let mut best_dist = f64::MAX;
-
-    for si in 0..parent_chain.len() - 1 {
-        let pi = node_idx[&parent_chain[si].game_id];
-        let qi = node_idx[&parent_chain[si + 1].game_id];
-        let (px, py) = (track_nodes[pi].x, track_nodes[pi].y);
-        let (qx, qy) = (track_nodes[qi].x, track_nodes[qi].y);
-        let sx = qx - px;
-        let sy = qy - py;
-        let seg_len_sq = sx * sx + sy * sy;
-        if seg_len_sq < 0.01 { continue; }
-
-        let bx = junction_pos.0 - px;
-        let by = junction_pos.1 - py;
-        let t_raw = (bx * sx + by * sy) / seg_len_sq;
-        let t = t_raw.clamp(0.0, 1.0);
-        let proj_x = px + t * sx;
-        let proj_y = py + t * sy;
-        let perp = ((junction_pos.0 - proj_x).powi(2) + (junction_pos.1 - proj_y).powi(2)).sqrt();
-        let overshoot = (t_raw - t_raw.clamp(0.0, 1.0)).abs() * seg_len_sq.sqrt();
-        let d = perp + overshoot;
-
-        if d < best_dist {
-            best_dist = d;
-            best_seg = si;
-            best_t = t;
-        }
-    }
-
-    // Adjust t near segment boundaries to avoid degenerate cases
-    if best_t > 0.95 && best_seg + 1 < parent_chain.len() - 1 {
-        (best_seg + 1, 0.5)
-    } else if best_t < 0.05 && best_seg > 0 {
-        (best_seg - 1, 0.5)
-    } else {
-        (best_seg, best_t.clamp(0.05, 0.95))
-    }
-}
 
 fn serialize_to_nrclip(
     mut track_nodes: Vec<Track>,
