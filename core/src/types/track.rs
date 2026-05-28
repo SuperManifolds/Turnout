@@ -79,7 +79,7 @@ impl Default for Track {
             station_group_id: 0,
             blueprint: Some(0),
             name: Some(String::new()),
-            station_platform_auto_name: Some(0),
+            station_platform_auto_name: Some(1),
             straight: Some(0),
             tangential: Some(0),
             limited_shapes: Some(0),
