@@ -17,7 +17,7 @@ const TRACK_TYPES: &[TrackType] = &[
     TrackType { id: "funicular",      icon: "fa-solid fa-cable-car",       label: "Funicular",      default_on: true },
     TrackType { id: "preserved",      icon: "fa-solid fa-landmark",        label: "Preserved",      default_on: true },
     TrackType { id: "construction",   icon: "fa-solid fa-helmet-safety",   label: "Construction",   default_on: false },
-    TrackType { id: "proposed",       icon: "fa-solid fa-compass-drafting",label: "Proposed",       default_on: false },
+    TrackType { id: "proposed",       icon: "fa-solid fa-paintbrush",      label: "Proposed",       default_on: false },
     TrackType { id: "miniature",      icon: "fa-solid fa-minimize",        label: "Miniature",      default_on: false },
     TrackType { id: "disused",        icon: "fa-solid fa-pause",           label: "Disused",        default_on: false },
     TrackType { id: "abandoned",      icon: "fa-solid fa-ban",             label: "Abandoned",      default_on: false },
