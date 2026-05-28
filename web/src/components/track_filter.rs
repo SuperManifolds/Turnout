@@ -8,18 +8,20 @@ struct TrackType {
 }
 
 const TRACK_TYPES: &[TrackType] = &[
-    TrackType { id: "rail",         icon: "fa-solid fa-train",           label: "Rail",         default_on: true },
-    TrackType { id: "light_rail",   icon: "fa-solid fa-train-tram",      label: "Light Rail",   default_on: true },
-    TrackType { id: "tram",         icon: "fa-solid fa-train-tram",      label: "Tram",         default_on: true },
-    TrackType { id: "subway",       icon: "fa-solid fa-train-subway",    label: "Subway",       default_on: true },
-    TrackType { id: "narrow_gauge", icon: "fa-solid fa-train",           label: "Narrow Gauge", default_on: true },
-    TrackType { id: "monorail",     icon: "fa-solid fa-cable-car",       label: "Monorail",     default_on: true },
-    TrackType { id: "funicular",    icon: "fa-solid fa-cable-car",       label: "Funicular",    default_on: true },
-    TrackType { id: "preserved",    icon: "fa-solid fa-landmark",        label: "Preserved",    default_on: true },
-    TrackType { id: "construction", icon: "fa-solid fa-helmet-safety",   label: "Construction", default_on: false },
-    TrackType { id: "miniature",    icon: "fa-solid fa-minimize",        label: "Miniature",    default_on: false },
-    TrackType { id: "disused",      icon: "fa-solid fa-pause",           label: "Disused",      default_on: false },
-    TrackType { id: "abandoned",    icon: "fa-solid fa-ban",             label: "Abandoned",    default_on: false },
+    TrackType { id: "rail",           icon: "fa-solid fa-train",           label: "Rail",           default_on: true },
+    TrackType { id: "light_rail",     icon: "fa-solid fa-train-tram",      label: "Light Rail",     default_on: true },
+    TrackType { id: "tram",           icon: "fa-solid fa-train-tram",      label: "Tram",           default_on: true },
+    TrackType { id: "subway",         icon: "fa-solid fa-train-subway",    label: "Subway",         default_on: true },
+    TrackType { id: "narrow_gauge",   icon: "fa-solid fa-train",           label: "Narrow Gauge",   default_on: true },
+    TrackType { id: "monorail",       icon: "fa-solid fa-cable-car",       label: "Monorail",       default_on: true },
+    TrackType { id: "funicular",      icon: "fa-solid fa-cable-car",       label: "Funicular",      default_on: true },
+    TrackType { id: "preserved",      icon: "fa-solid fa-landmark",        label: "Preserved",      default_on: true },
+    TrackType { id: "construction",   icon: "fa-solid fa-helmet-safety",   label: "Construction",   default_on: false },
+    TrackType { id: "proposed",       icon: "fa-solid fa-compass-drafting",label: "Proposed",       default_on: false },
+    TrackType { id: "miniature",      icon: "fa-solid fa-minimize",        label: "Miniature",      default_on: false },
+    TrackType { id: "disused",        icon: "fa-solid fa-pause",           label: "Disused",        default_on: false },
+    TrackType { id: "abandoned",      icon: "fa-solid fa-ban",             label: "Abandoned",      default_on: false },
+    TrackType { id: "razed",          icon: "fa-solid fa-xmark",           label: "Razed",          default_on: false },
 ];
 
 pub fn default_enabled_types() -> Vec<String> {
