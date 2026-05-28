@@ -9,6 +9,8 @@ pub struct Settings {
     pub map_theme: String,
     #[serde(default = "default_overpass_timeout")]
     pub overpass_timeout: u32,
+    #[serde(default)]
+    pub type_speed_overrides: std::collections::HashMap<String, u32>,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
@@ -20,9 +22,34 @@ impl Default for Settings {
             check_for_updates: true,
             map_theme: "system".to_string(),
             overpass_timeout: 60,
+            type_speed_overrides: std::collections::HashMap::new(),
         }
     }
 }
+
+const SPEED_TRACK_TYPES: &[(&str, &str, u32)] = &[
+    ("rail", "Rail", 160),
+    ("rail:yard", "Rail — Yard", 40),
+    ("rail:siding", "Rail — Siding", 60),
+    ("rail:crossover", "Rail — Crossover", 60),
+    ("rail:spur", "Rail — Spur", 60),
+    ("rail:main", "Rail — Main", 160),
+    ("rail:branch", "Rail — Branch", 160),
+    ("rail:industrial", "Rail — Industrial", 60),
+    ("light_rail", "Light Rail", 90),
+    ("tram", "Tram", 60),
+    ("subway", "Subway", 100),
+    ("narrow_gauge", "Narrow Gauge", 120),
+    ("monorail", "Monorail", 120),
+    ("funicular", "Funicular", 80),
+    ("preserved", "Preserved", 160),
+    ("construction", "Construction", 160),
+    ("proposed", "Proposed", 160),
+    ("miniature", "Miniature", 160),
+    ("disused", "Disused", 160),
+    ("abandoned", "Abandoned", 160),
+    ("razed", "Razed", 160),
+];
 
 const THEME_OPTIONS: &[(&str, &str)] = &[
     ("system", "Follow System"),
@@ -53,6 +80,38 @@ pub fn is_settings_window() -> bool {
     label_obj.as_string().as_deref() == Some("settings")
 }
 
+fn fit_window_to_content() {
+    spawn_local(async {
+        // Wait a frame for content to render
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            let _ = web_sys::window().expect("window")
+                .request_animation_frame(&resolve);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+
+        let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) else { return };
+        let height = f64::from(body.scroll_height()) + 40.0;
+
+        let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
+        let Ok(window_mod) = js_sys::Reflect::get(&tauri, &"window".into()) else { return };
+        let Ok(get_current) = js_sys::Reflect::get(&window_mod, &"getCurrentWindow".into()) else { return };
+        let Ok(get_current) = get_current.dyn_into::<js_sys::Function>() else { return };
+        let Ok(win) = get_current.call0(&JsValue::NULL) else { return };
+        let Ok(set_size) = js_sys::Reflect::get(&win, &"setSize".into()) else { return };
+        let Ok(set_size) = set_size.dyn_into::<js_sys::Function>() else { return };
+
+        // Create LogicalSize
+        let Ok(logical_size_class) = js_sys::Reflect::get(&window_mod, &"LogicalSize".into()) else { return };
+        let Ok(logical_size_class) = logical_size_class.dyn_into::<js_sys::Function>() else { return };
+        let Ok(size) = js_sys::Reflect::construct(&logical_size_class, &js_sys::Array::of2(
+            &JsValue::from_f64(480.0),
+            &JsValue::from_f64(height.min(900.0)),
+        )) else { return };
+
+        let _ = set_size.call1(&win, &size);
+    });
+}
+
 #[component]
 pub fn AppSettings() -> impl IntoView {
     let (mods_dir, set_mods_dir) = create_signal::<Option<String>>(None);
@@ -60,6 +119,7 @@ pub fn AppSettings() -> impl IntoView {
     let (check_updates, set_check_updates) = create_signal(true);
     let (theme, set_theme) = create_signal("system".to_string());
     let (timeout, set_timeout) = create_signal(60u32);
+    let (speed_overrides, set_speed_overrides) = create_signal(std::collections::HashMap::<String, u32>::new());
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
     let (update_status, set_update_status) = create_signal(String::new());
@@ -73,7 +133,9 @@ pub fn AppSettings() -> impl IntoView {
             set_check_updates.set(settings.check_for_updates);
             set_theme.set(settings.map_theme);
             set_timeout.set(settings.overpass_timeout);
+            set_speed_overrides.set(settings.type_speed_overrides);
             set_loaded.set(true);
+            fit_window_to_content();
 
             if let Some(dir) = crate::tauri::get_mods_dir().await {
                 set_detected_dir.set(Some(dir));
@@ -90,6 +152,7 @@ pub fn AppSettings() -> impl IntoView {
         let updates = check_updates.get();
         let t = theme.get();
         let tout = timeout.get();
+        let speeds = speed_overrides.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -101,6 +164,7 @@ pub fn AppSettings() -> impl IntoView {
                 check_for_updates: updates,
                 map_theme: t,
                 overpass_timeout: tout,
+                type_speed_overrides: speeds,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -193,6 +257,63 @@ pub fn AppSettings() -> impl IntoView {
                     />
                     " seconds"
                 </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Speed Overrides"</legend>
+                <p class="path-display">"Set a fixed speed limit per track type. Overrides OSM data."</p>
+                {SPEED_TRACK_TYPES.iter().map(|&(id, label, default_speed)| {
+                    let id_check = id.to_string();
+                    let id_toggle = id.to_string();
+                    let id_value = id.to_string();
+                    let id_disabled = id.to_string();
+                    let id_input = id.to_string();
+                    view! {
+                        <div class="speed-override-row">
+                            <label on:click={
+                                let id = id_toggle;
+                                move |_| {
+                                    let id = id.clone();
+                                    set_speed_overrides.update(move |m| {
+                                        use std::collections::hash_map::Entry;
+                                        match m.entry(id) {
+                                            Entry::Occupied(e) => { e.remove(); }
+                                            Entry::Vacant(e) => { e.insert(default_speed); }
+                                        }
+                                    });
+                                }
+                            }>
+                                <i class=move || {
+                                    if speed_overrides.get().contains_key(&id_check) {
+                                        "fa-solid fa-square-check"
+                                    } else {
+                                        "fa-regular fa-square"
+                                    }
+                                }></i>
+                                " "{label}
+                            </label>
+                            <input
+                                type="number"
+                                min="1"
+                                max="500"
+                                prop:value=move || speed_overrides.get().get(&id_value).copied().unwrap_or(default_speed).to_string()
+                                disabled=move || !speed_overrides.get().contains_key(&id_disabled)
+                                on:change={
+                                    let id = id_input;
+                                    move |ev| {
+                                        if let Ok(v) = leptos::event_target_value(&ev).parse::<u32>() {
+                                            let id = id.clone();
+                                            set_speed_overrides.update(move |m| {
+                                                m.insert(id, v.clamp(1, 500));
+                                            });
+                                        }
+                                    }
+                                }
+                            />
+                            <span class="speed-unit">"km/h"</span>
+                        </div>
+                    }
+                }).collect_view()}
             </fieldset>
 
             <fieldset>

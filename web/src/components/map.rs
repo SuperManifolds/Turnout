@@ -477,7 +477,8 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
     set_status.set("Processing tracks...".into());
     let unlisten = listen_for_progress(set_status).await;
     let clip_bbox = if clip { Some((s, w, n, e)) } else { None };
-    let (data, node_count) = match crate::tauri::import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox, tangent_mode).await {
+    let type_speed_overrides = crate::components::app_settings::load_settings().await.type_speed_overrides;
+    let (data, node_count) = match crate::tauri::import_orm(&json, name, railway_types, apply_speed_limits, clip_bbox, tangent_mode, &type_speed_overrides).await {
         Ok(d) => { unlisten(); d }
         Err(err) => {
             unlisten();

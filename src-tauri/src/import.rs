@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use tauri::Emitter;
 
 use crate::blueprint;
@@ -12,6 +13,7 @@ pub fn import_orm(
     apply_speed_limits: bool,
     clip_bbox: Option<(f64, f64, f64, f64)>,
     tangent_mode: bool,
+    type_speed_overrides: HashMap<String, u32>,
 ) -> Result<(Vec<u8>, usize), String> {
     let (track_kinds, mod_metas) = blueprint::resolve_mods_dir(&app)
         .and_then(|mods| {
@@ -28,7 +30,8 @@ pub fn import_orm(
     };
 
     turnout_core::import::import_orm(
-        &json, &name, &railway_types, apply_speed_limits, clip_bbox, tangent_mode, track_kinds, mod_metas, &on_progress,
+        &json, &name, &railway_types, apply_speed_limits, clip_bbox, tangent_mode,
+        &type_speed_overrides, track_kinds, mod_metas, &on_progress,
     )
     .map_err(|e| e.to_string())
 }

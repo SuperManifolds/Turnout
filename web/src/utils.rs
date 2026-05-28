@@ -39,3 +39,4 @@ pub fn save_string_vec(key: &str, values: &[String]) {
             let _ = s.set_item(key, &json);
     }
 }
+

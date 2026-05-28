@@ -43,6 +43,7 @@ struct OsmData {
     node_layer: HashMap<u64, i32>,
     node_track_type: HashMap<u64, i32>,
     node_maxspeed: HashMap<u64, f32>,
+    node_railway_type: HashMap<u64, String>,
     way_layers: Vec<i32>,
     way_track_types: Vec<i32>,
 }
@@ -141,6 +142,7 @@ fn run_pipeline(
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     apply_speed_limits: bool,
     tangent_mode: bool,
+    type_speed_overrides: &HashMap<String, u32>,
     on_progress: &dyn Fn(&str),
 ) -> Result<PipelineResult> {
     on_progress("Parsing OSM data...");
@@ -155,7 +157,7 @@ fn run_pipeline(
     let simplified = simplify_routes(&route_data, &osm.node_layer);
     let simplified = subdivide_long_segments(simplified, &route_data.route_coords);
     on_progress("Building track nodes...");
-    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, apply_speed_limits, tangent_mode);
+    let track_nodes = build_track_nodes(&simplified, &route_data, &osm, apply_speed_limits, tangent_mode, type_speed_overrides);
     Ok((track_nodes, simplified, route_data, osm))
 }
 
@@ -167,7 +169,8 @@ pub fn count_track_nodes(
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     tangent_mode: bool,
 ) -> Result<usize> {
-    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false, tangent_mode, &|_| {})?;
+    let empty = HashMap::new();
+    let (track_nodes, _, _, _) = run_pipeline(json, railway_types, clip_to_bbox, false, tangent_mode, &empty, &|_| {})?;
     Ok(track_nodes.len())
 }
 
@@ -180,12 +183,13 @@ pub fn import_orm(
     apply_speed_limits: bool,
     clip_to_bbox: Option<(f64, f64, f64, f64)>,
     tangent_mode: bool,
+    type_speed_overrides: &HashMap<String, u32>,
     track_kinds: Vec<(i32, TrackKind)>,
     mod_metas: Vec<ModMeta>,
     on_progress: &dyn Fn(&str),
 ) -> Result<(Vec<u8>, usize)> {
     let (mut track_nodes, simplified, route_data, _) =
-        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits, tangent_mode, on_progress)?;
+        run_pipeline(json, railway_types, clip_to_bbox, apply_speed_limits, tangent_mode, type_speed_overrides, on_progress)?;
 
     let node_count = track_nodes.len();
     if node_count > MAX_TRACK_NODES {
@@ -229,6 +233,7 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
         node_layer: HashMap::new(),
         node_track_type: HashMap::new(),
         node_maxspeed: HashMap::new(),
+        node_railway_type: HashMap::new(),
         way_layers: Vec::new(),
         way_track_types: Vec::new(),
     };
@@ -254,6 +259,17 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
                     .filter_map(serde_json::Value::as_u64)
                     .collect();
                 let tags = e.get("tags").cloned().unwrap_or_default();
+                let base_type = tags.get("railway")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("rail");
+                let service = tags.get("service").and_then(|s| s.as_str());
+                let usage = tags.get("usage").and_then(|s| s.as_str());
+                // Build a specific type key: "rail:yard", "rail:siding", or just "rail"
+                let railway_type = match (service, usage) {
+                    (Some(s), _) => format!("{base_type}:{s}"),
+                    (None, Some(u)) => format!("{base_type}:{u}"),
+                    _ => base_type.to_string(),
+                };
                 let layer: i32 = tags.get("layer")
                     .and_then(|l| l.as_str())
                     .and_then(|s| s.parse().ok())
@@ -271,6 +287,7 @@ fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
                             })
                             .or_insert(layer);
                         osm.node_track_type.entry(nid).or_insert(tt);
+                        osm.node_railway_type.entry(nid).or_insert_with(|| railway_type.clone());
                         if let Some(ms) = maxspeed_ms {
                             osm.node_maxspeed.entry(nid).or_insert(ms);
                         }
@@ -704,6 +721,7 @@ fn build_track_nodes(
     osm: &OsmData,
     apply_speed_limits: bool,
     tangent_mode: bool,
+    type_speed_overrides: &HashMap<String, u32>,
 ) -> Vec<Track> {
     let mut track_nodes: Vec<Track> = Vec::new();
     let mut node_id_counter: i64 = 100;
@@ -712,28 +730,43 @@ fn build_track_nodes(
         let mut last_layer: i32 = 0;
         let mut last_track_type: i32 = TRACK_TYPE_MEDIUM;
         let mut last_maxspeed: Option<f32> = None;
+        let mut last_railway_type = String::new();
 
         for (si, &(orig_idx, x, y)) in simp.iter().enumerate() {
             let gid = node_id_counter;
             node_id_counter += 100;
             let prev = if si > 0 { track_nodes[track_nodes.len() - 1].node_id } else { 0 };
 
-            let (layer, track_type, max_speed) = if orig_idx == usize::MAX {
-                (last_layer, last_track_type, last_maxspeed)
+            let (layer, track_type, max_speed, railway_type) = if orig_idx == usize::MAX {
+                (last_layer, last_track_type, last_maxspeed, last_railway_type.clone())
             } else {
                 let osm_nid = rd.routes[ri][orig_idx];
                 let l = osm.node_layer.get(&osm_nid).copied().unwrap_or(0);
                 let tt = osm.node_track_type.get(&osm_nid).copied().unwrap_or(TRACK_TYPE_MEDIUM);
                 let ms = osm.node_maxspeed.get(&osm_nid).copied();
+                let rt = osm.node_railway_type.get(&osm_nid).cloned().unwrap_or_default();
                 last_layer = l;
                 last_track_type = tt;
                 last_maxspeed = ms;
-                (l, tt, ms)
+                last_railway_type.clone_from(&rt);
+                (l, tt, ms, rt)
+            };
+
+            // Speed priority: specific override (rail:yard) > base override (rail) > OSM > none
+            let base_type = railway_type.split(':').next().unwrap_or(&railway_type);
+            let override_kmh = type_speed_overrides.get(&railway_type)
+                .or_else(|| type_speed_overrides.get(base_type));
+            let speed = if let Some(&kmh) = override_kmh {
+                Some((f64::from(kmh) / 3.6) as f32)
+            } else if apply_speed_limits {
+                max_speed.or(Some(0.0))
+            } else {
+                Some(0.0)
             };
 
             track_nodes.push(Track {
                 node_id: gid, x, y, layer, track_type,
-                user_max_speed: if apply_speed_limits { max_speed.or(Some(0.0)) } else { Some(0.0) },
+                user_max_speed: speed,
                 prev_node: prev,
                 tangential: Some(u8::from(tangent_mode)),
                 ..Track::default()

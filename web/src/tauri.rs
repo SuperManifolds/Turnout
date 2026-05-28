@@ -58,7 +58,7 @@ pub async fn fetch_overpass(query: &str) -> Result<String, String> {
 pub async fn import_orm(
     json: &str, name: &str, railway_types: &[String],
     apply_speed_limits: bool, clip_bbox: Option<(f64, f64, f64, f64)>,
-    tangent_mode: bool,
+    tangent_mode: bool, type_speed_overrides: &std::collections::HashMap<String, u32>,
 ) -> Result<(Vec<u8>, usize), String> {
     let args = js_sys::Object::new();
     js_set(&args, "json", &json.into())?;
@@ -67,6 +67,11 @@ pub async fn import_orm(
     js_set(&args, "applySpeedLimits", &JsValue::from_bool(apply_speed_limits))?;
     js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
     js_set(&args, "tangentMode", &JsValue::from_bool(tangent_mode))?;
+    let overrides_obj = js_sys::Object::new();
+    for (k, v) in type_speed_overrides {
+        js_set(&overrides_obj, k, &JsValue::from_f64(f64::from(*v)))?;
+    }
+    js_set(&args, "typeSpeedOverrides", &overrides_obj.into())?;
     let result = invoke("import_orm", &args).await?;
     let tuple = js_sys::Array::from(&result);
     let bytes = js_sys::Uint8Array::new(&tuple.get(0)).to_vec();
