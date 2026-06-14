@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use crate::geo::{latlon_to_mercator, merc_y_to_lat_rad, inverse_geodesic};
 use crate::hobby;
 use crate::nrc1::NrclipFile;
-use crate::types::{Collection, Clip, Track, TrackKind, ModMeta};
+use crate::types::{Collection, Clip, Track, TrackKind, TrackKindHorizon, TrackTexture, ModMeta, ModRelFile};
 
 const MODEL_VERSION: u32 = 226;
 const MAX_SPACING: f64 = 200.0;
@@ -133,6 +133,68 @@ pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<VanillaTrac
     }
 
     anyhow::bail!("vanilla track kinds (1,2,3) not found in collections.nrclip")
+}
+
+/// Hardcoded vanilla track kind definitions (keys 1–3). These reference the game's
+/// built-in textures (`workshop_id=0, path="tracks"`) so they render correctly
+/// without needing to read the user's `collections.nrclip`.
+#[must_use]
+pub fn default_track_kinds() -> Vec<(i32, TrackKind)> {
+    let vanilla_tex = || -> ModRelFile {
+        ModRelFile { workshop_id: 0, path: "tracks".to_string(), name: String::new() }
+    };
+    let empty_file = || -> ModRelFile {
+        ModRelFile { workshop_id: 0, path: String::new(), name: String::new() }
+    };
+    let textures = || -> Vec<TrackTexture> {
+        (0..6).map(|sc| TrackTexture {
+            speed_class: sc,
+            files: if sc <= 3 {
+                [vanilla_tex(), vanilla_tex(), vanilla_tex(), vanilla_tex()]
+            } else {
+                [empty_file(), vanilla_tex(), empty_file(), empty_file()]
+            },
+        }).collect()
+    };
+
+    let make_kind = |key: i32, display: &str, internal: &str, max_speeds: [f64; 3]| -> (i32, TrackKind) {
+        (key, TrackKind {
+            display_name: display.to_string(),
+            speed_class_flag: 1,
+            speed_class: key,
+            internal_name: internal.to_string(),
+            secondary_name: format!("{internal}_name"),
+            horizons: [
+                TrackKindHorizon {
+                    speed_class: 0, gauge: 97.222_222_222_222_21, height: 5.21,
+                    max_speed: max_speeds[0], width_a: 10.0, width_b: 25.0,
+                    spacing: 15.0, offset_a: 2.5, offset_b: 2.0,
+                    visual_distance: 125_000, flags: [0, 0, 0, 1, 0],
+                    textures: textures(),
+                },
+                TrackKindHorizon {
+                    speed_class: 0, gauge: 97.222_222_222_222_21, height: 5.21,
+                    max_speed: max_speeds[1], width_a: 10.0, width_b: 25.0,
+                    spacing: 25.0, offset_a: 2.5, offset_b: 2.0,
+                    visual_distance: 125_000, flags: [1, 1, 1, 1, 0],
+                    textures: textures(),
+                },
+                TrackKindHorizon {
+                    speed_class: 0, gauge: 97.222_222_222_222_21, height: 5.21,
+                    max_speed: max_speeds[2], width_a: 10.0, width_b: 25.0,
+                    spacing: 15.0, offset_a: 2.5, offset_b: 2.0,
+                    visual_distance: 125_000, flags: [0, 0, 0, 0, 0],
+                    textures: textures(),
+                },
+            ],
+        })
+    };
+
+    vec![
+        make_kind(1, "waw_track_hs_1", "High speed", [3300.0, 500.0, 4000.0]),
+        make_kind(2, "waw_track_tram_1", "Tram", [500.0, 200.0, 700.0]),
+        make_kind(3, "waw_track_med_1", "Medium", [1600.0, 500.0, 2200.0]),
+    ]
 }
 
 /// Shared import pipeline: parse → clip → merge → simplify → subdivide → build nodes.

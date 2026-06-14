@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use tauri::Emitter;
 
-use crate::blueprint;
-
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn import_orm(
@@ -15,15 +13,8 @@ pub fn import_orm(
     tangent_mode: bool,
     type_speed_overrides: HashMap<String, u32>,
 ) -> Result<(Vec<u8>, usize), String> {
-    let (track_kinds, mod_metas) = blueprint::resolve_mods_dir(&app)
-        .and_then(|mods| {
-            let collections = mods.parent()?.join("collections.nrclip");
-            if collections.exists() { Some(collections) } else { None }
-        })
-        .and_then(|path| {
-            turnout_core::import::extract_vanilla_track_kinds(&path.to_string_lossy()).ok()
-        })
-        .unwrap_or_default();
+    let track_kinds = turnout_core::import::default_track_kinds();
+    let mod_metas = Vec::new();
 
     let on_progress = |stage: &str| {
         let _ = app.emit("import-progress", stage);
