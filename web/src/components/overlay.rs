@@ -42,7 +42,7 @@ fn is_remote(kind: &str) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ServiceForm { None, Wms, ArcGis, Xyz }
+enum ServiceForm { None, Wms, Wmts, ArcGis, Xyz }
 
 #[derive(Clone)]
 struct ServiceEntry {
@@ -231,6 +231,8 @@ pub fn OverlayDrawer(
             let result = match form {
                 ServiceForm::Wms => tauri::fetch_wms_layers(&url).await.map(|layers|
                     layers.into_iter().map(|l| ServiceEntry { name: l.name, display: l.title }).collect()),
+                ServiceForm::Wmts => tauri::fetch_wmts_layers(&url).await.map(|layers|
+                    layers.into_iter().map(|l| ServiceEntry { name: l.tile_url, display: l.title }).collect()),
                 ServiceForm::ArcGis => tauri::fetch_arcgis_services(&url).await.map(|services|
                     services.into_iter().map(|s| ServiceEntry { name: s.name.clone(), display: s.name }).collect()),
                 _ => return,
@@ -251,6 +253,7 @@ pub fn OverlayDrawer(
         spawn_local(async move {
             let result = match form {
                 ServiceForm::Wms => tauri::add_wms_layer(&url, &name, &display, gid).await,
+                ServiceForm::Wmts => tauri::add_xyz_layer(&name, &display, gid).await,
                 ServiceForm::ArcGis => tauri::add_arcgis_layer(&url, &name, &display, gid).await,
                 ServiceForm::None | ServiceForm::Xyz => return,
             };
@@ -295,6 +298,9 @@ pub fn OverlayDrawer(
                                 <li on:click=move |_| open_service_form(ServiceForm::Wms, None)>
                                     <i class="fa-solid fa-globe"></i>" WMS server"
                                 </li>
+                                <li on:click=move |_| open_service_form(ServiceForm::Wmts, None)>
+                                    <i class="fa-solid fa-map"></i>" WMTS server"
+                                </li>
                                 <li on:click=move |_| open_service_form(ServiceForm::ArcGis, None)>
                                     <i class="fa-solid fa-server"></i>" ArcGIS MapServer"
                                 </li>
@@ -315,6 +321,7 @@ pub fn OverlayDrawer(
                             type="text"
                             placeholder=move || match active_form.get() {
                                 ServiceForm::Wms => "WMS server URL",
+                                ServiceForm::Wmts => "WMTS server URL",
                                 ServiceForm::ArcGis => "ArcGIS services URL",
                                 ServiceForm::Xyz => "https://example.com/{z}/{x}/{y}.png",
                                 ServiceForm::None => "",

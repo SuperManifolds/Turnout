@@ -8,6 +8,7 @@ mod overpass;
 mod settings;
 mod tile_server;
 mod wms;
+mod wmts;
 
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -121,6 +122,7 @@ fn main() {
             overlay::fetch_arcgis_services,
             overlay::add_arcgis_layer,
             overlay::add_xyz_layer,
+            overlay::fetch_wmts_layers,
             overlay::move_layer,
             overlay::remove_overlay,
             overlay::reorder_layer,

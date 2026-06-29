@@ -7,6 +7,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::arcgis;
 use crate::tile_server::{self, LayerSource};
 use crate::wms;
+use crate::wmts;
 
 const STORE_KEY: &str = "overlay_groups";
 
@@ -252,6 +253,11 @@ pub async fn add_arcgis_layer(
     drop(groups);
     save_groups(&app);
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn fetch_wmts_layers(url: String) -> Result<Vec<wmts::WmtsLayerInfo>, String> {
+    wmts::get_capabilities(&url).await
 }
 
 #[tauri::command]

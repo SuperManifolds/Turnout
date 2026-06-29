@@ -411,6 +411,28 @@ pub async fn add_arcgis_layer(url: &str, service_name: &str, display_name: &str,
     parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
 }
 
+#[derive(Clone, Debug)]
+pub struct WmtsLayerInfo {
+    pub identifier: String,
+    pub title: String,
+    pub tile_url: String,
+}
+
+pub async fn fetch_wmts_layers(url: &str) -> Result<Vec<WmtsLayerInfo>, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    let result = invoke("fetch_wmts_layers", &args).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| {
+        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
+        Some(WmtsLayerInfo {
+            identifier: get_str("identifier")?,
+            title: get_str("title")?,
+            tile_url: get_str("tileUrl")?,
+        })
+    }).collect())
+}
+
 pub async fn add_xyz_layer(url_template: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
     js_set(&args, "urlTemplate", &url_template.into())?;
