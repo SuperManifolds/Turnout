@@ -82,11 +82,19 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> Option<OverlayStatus> {
                                 if data.name.is_none() {
                                     data.name = Some(layer.name.clone());
                                 }
-                                server.add_kmz_layer(data, Some(path.clone()));
+                                server.add_kmz_layer(data, Some(path.clone()), "kmz");
                             }
                             Err(e) => eprintln!("Failed to parse {path}: {e}"),
                         },
                         Err(e) => eprintln!("Failed to read {path}: {e}"),
+                    }
+                }
+            }
+            "shp" => {
+                if let Some(ref path) = layer.path {
+                    match turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) {
+                        Ok(data) => { server.add_kmz_layer(data, Some(path.clone()), "shp"); }
+                        Err(e) => eprintln!("Failed to parse shapefile {path}: {e}"),
                     }
                 }
             }
@@ -120,18 +128,24 @@ pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
     let path = app
         .dialog()
         .file()
-        .add_filter("KMZ / KML", &["kmz", "kml"])
+        .add_filter("KMZ / KML / Shapefile", &["kmz", "kml", "shp"])
         .blocking_pick_file()?;
     Some(path.to_string())
 }
 
 #[tauri::command]
 pub async fn add_overlay(app: tauri::AppHandle, path: String) -> Result<OverlayStatus, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-    let mut data = turnout_core::kml::parse_kmz(&bytes).map_err(|e| format!("Parse error: {e}"))?;
+    let is_shp = path.to_lowercase().ends_with(".shp");
+    let mut data = if is_shp {
+        turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(&path))
+            .map_err(|e| format!("Parse error: {e}"))?
+    } else {
+        let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+        turnout_core::kml::parse_kmz(&bytes).map_err(|e| format!("Parse error: {e}"))?
+    };
 
     if data.bbox().is_none() {
-        return Err("KMZ contains no geometry or overlays".into());
+        return Err("File contains no geometry or overlays".into());
     }
 
     if data.name.is_none() {
@@ -145,8 +159,9 @@ pub async fn add_overlay(app: tauri::AppHandle, path: String) -> Result<OverlayS
 
     let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = guard.as_ref().expect("just started");
-    if !server.add_kmz_layer(data, Some(path)) {
-        return Err("KMZ contains no geometry or overlays".into());
+    let kind = if is_shp { "shp" } else { "kmz" };
+    if !server.add_kmz_layer(data, Some(path), kind) {
+        return Err("File contains no geometry or overlays".into());
     }
 
     let status = build_status(server);

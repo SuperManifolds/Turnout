@@ -64,7 +64,7 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    pub fn add_kmz_layer(&self, data: KmzData, path: Option<String>) -> bool {
+    pub fn add_kmz_layer(&self, data: KmzData, path: Option<String>, kind: &'static str) -> bool {
         let Some(bbox) = data.bbox() else { return false };
         let name = data.name.clone().unwrap_or_else(|| "Overlay".to_string());
         let images = decode_images(&data);
@@ -72,7 +72,7 @@ impl ServerHandle {
 
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.push(Layer {
-            id, name, bbox, kind: "kmz", visible: true, opacity: 1.0,
+            id, name, bbox, kind, visible: true, opacity: 1.0,
             source: LayerSource::Kmz { data, images, path },
         });
         drop(layers);

@@ -7,3 +7,4 @@ pub mod import;
 pub mod geojson;
 pub mod geo;
 pub mod kml;
+pub mod shapefile_reader;

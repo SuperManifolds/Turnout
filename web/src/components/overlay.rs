@@ -209,6 +209,9 @@ pub fn OverlayDrawer(
                                 <li on:click=move |_| { set_menu_open.set(false); on_add_kmz_action(); }>
                                     <i class="fa-solid fa-file"></i>" KMZ / KML file"
                                 </li>
+                                <li on:click=move |_| { set_menu_open.set(false); on_add_kmz_action(); }>
+                                    <i class="fa-solid fa-shapes"></i>" Shapefile"
+                                </li>
                                 <li on:click=move |_| { set_menu_open.set(false); toggle_form(ServiceForm::Wms); }>
                                     <i class="fa-solid fa-globe"></i>" WMS server"
                                 </li>
@@ -271,6 +274,7 @@ pub fn OverlayDrawer(
                         let icon = match l.kind.as_str() {
                             "wms" => "fa-solid fa-globe",
                             "arcgis" => "fa-solid fa-server",
+                            "shp" => "fa-solid fa-shapes",
                             _ => "fa-solid fa-layer-group",
                         };
                         view! {
