@@ -286,6 +286,24 @@ pub fn remove_overlay(app: tauri::AppHandle, group_id: u32, layer_id: u32) -> Ov
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub fn reorder_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, direction: String) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter().find(|g| g.id == group_id) {
+        match direction.as_str() {
+            "up" => { group.handle.move_layer_up(layer_id); }
+            "down" => { group.handle.move_layer_down(layer_id); }
+            _ => {}
+        }
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn set_layer_visible(app: tauri::AppHandle, group_id: u32, layer_id: u32, visible: bool) -> OverlayStatus {
     let state = app.state::<OverlayState>();
     let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

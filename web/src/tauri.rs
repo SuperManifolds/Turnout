@@ -418,6 +418,17 @@ pub async fn move_layer(layer_id: u32, from_group_id: u32, to_group_id: u32) -> 
     parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
 }
 
+pub async fn reorder_layer(group_id: u32, layer_id: u32, direction: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    let _ = js_set(&args, "direction", &direction.into());
+    invoke("reorder_layer", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or(OverlayStatus { groups: Vec::new() })
+}
+
 pub async fn remove_overlay(group_id: u32, layer_id: u32) -> OverlayStatus {
     let args = js_sys::Object::new();
     let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));

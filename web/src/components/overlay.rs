@@ -4,6 +4,8 @@ use wasm_bindgen::JsCast;
 
 use crate::tauri;
 
+const TOAST_DURATION_MS: i32 = 4000;
+
 #[wasm_bindgen]
 extern "C" {
     fn map_add_overlay_layer(id: &str, url: &str, opacity: f64);
@@ -24,6 +26,19 @@ fn sync_map_layers(status: &tauri::OverlayStatus, prev_group_ids: &[u32]) {
     }
 }
 
+fn layer_icon(kind: &str) -> &'static str {
+    match kind {
+        "wms" => "fa-solid fa-globe",
+        "arcgis" => "fa-solid fa-server",
+        "shp" => "fa-solid fa-shapes",
+        _ => "fa-solid fa-layer-group",
+    }
+}
+
+fn is_remote(kind: &str) -> bool {
+    matches!(kind, "wms" | "arcgis")
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum ServiceForm { None, Wms, ArcGis }
 
@@ -40,7 +55,7 @@ pub fn OverlayDrawer(
 ) -> impl IntoView {
     let (status, set_status) = create_signal(tauri::OverlayStatus { groups: Vec::new() });
     let (loading, set_loading) = create_signal(false);
-    let (error, set_error) = create_signal::<Option<String>>(None);
+    let (toast, set_toast) = create_signal::<Option<String>>(None);
     let (copied_group, set_copied_group) = create_signal::<Option<u32>>(None);
 
     let (active_form, set_active_form) = create_signal(ServiceForm::None);
@@ -53,6 +68,20 @@ pub fn OverlayDrawer(
     let (move_menu_layer, set_move_menu_layer) = create_signal::<Option<(u32, u32)>>(None);
 
     let group_ids = move || status.get().groups.iter().map(|g| g.id).collect::<Vec<_>>();
+
+    let show_toast = move |msg: String| {
+        set_toast.set(Some(msg));
+        spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(
+                js_sys::Promise::new(&mut |resolve, _| {
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, TOAST_DURATION_MS);
+                    }
+                }),
+            ).await;
+            set_toast.set(None);
+        });
+    };
 
     let apply_status = move |new_status: tauri::OverlayStatus| {
         let prev = group_ids();
@@ -68,7 +97,6 @@ pub fn OverlayDrawer(
     });
 
     let on_add_file = move |group_id: Option<u32>| {
-        set_error.set(None);
         set_menu_open.set(false);
         spawn_local(async move {
             let Some(path) = tauri::pick_kmz_file().await else { return };
@@ -83,7 +111,7 @@ pub fn OverlayDrawer(
                     }
                     apply_status(s);
                 }
-                Err(e) => set_error.set(Some(e)),
+                Err(e) => show_toast(e),
             }
             set_loading.set(false);
         });
@@ -94,43 +122,44 @@ pub fn OverlayDrawer(
         spawn_local(async move {
             match tauri::create_group("New group").await {
                 Ok(s) => apply_status(s),
-                Err(e) => set_error.set(Some(e)),
+                Err(e) => show_toast(e),
             }
         });
     };
 
     let on_remove_group = move |gid: u32| {
         spawn_local(async move {
-            let s = tauri::remove_group(gid).await;
-            apply_status(s);
+            apply_status(tauri::remove_group(gid).await);
         });
     };
 
     let on_rename_group = move |gid: u32, name: String| {
         spawn_local(async move {
-            let s = tauri::rename_group(gid, &name).await;
-            apply_status(s);
+            apply_status(tauri::rename_group(gid, &name).await);
         });
     };
 
     let on_remove_layer = move |gid: u32, lid: u32| {
         spawn_local(async move {
-            let s = tauri::remove_overlay(gid, lid).await;
-            apply_status(s);
+            apply_status(tauri::remove_overlay(gid, lid).await);
         });
     };
 
     let on_toggle_visible = move |gid: u32, lid: u32, visible: bool| {
         spawn_local(async move {
-            let s = tauri::set_layer_visible(gid, lid, visible).await;
-            apply_status(s);
+            apply_status(tauri::set_layer_visible(gid, lid, visible).await);
         });
     };
 
     let on_layer_opacity = move |gid: u32, lid: u32, val: f32| {
         spawn_local(async move {
-            let s = tauri::set_layer_opacity(gid, lid, val).await;
-            apply_status(s);
+            apply_status(tauri::set_layer_opacity(gid, lid, val).await);
+        });
+    };
+
+    let on_reorder = move |gid: u32, lid: u32, dir: &'static str| {
+        spawn_local(async move {
+            apply_status(tauri::reorder_layer(gid, lid, dir).await);
         });
     };
 
@@ -139,7 +168,7 @@ pub fn OverlayDrawer(
         spawn_local(async move {
             match tauri::move_layer(lid, from_gid, to_gid).await {
                 Ok(s) => apply_status(s),
-                Err(e) => set_error.set(Some(e)),
+                Err(e) => show_toast(e),
             }
         });
     };
@@ -175,7 +204,6 @@ pub fn OverlayDrawer(
         let url = service_url.get();
         if url.trim().is_empty() { return; }
         let form = active_form.get();
-        set_error.set(None);
         set_service_loading.set(true);
         set_service_entries.set(Vec::new());
         spawn_local(async move {
@@ -188,7 +216,7 @@ pub fn OverlayDrawer(
             };
             match result {
                 Ok(entries) => set_service_entries.set(entries),
-                Err(e) => set_error.set(Some(e)),
+                Err(e) => show_toast(e),
             }
             set_service_loading.set(false);
         });
@@ -212,7 +240,7 @@ pub fn OverlayDrawer(
                     set_service_url.set(String::new());
                     set_service_entries.set(Vec::new());
                 }
-                Err(e) => set_error.set(Some(e)),
+                Err(e) => show_toast(e),
             }
             set_service_loading.set(false);
         });
@@ -290,8 +318,6 @@ pub fn OverlayDrawer(
                     </Show>
                 </Show>
 
-                {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
-
                 <Show when=move || status.get().groups.is_empty() && !loading.get() && active_form.get() == ServiceForm::None>
                     <p class="empty">"No overlay groups"</p>
                 </Show>
@@ -300,9 +326,9 @@ pub fn OverlayDrawer(
                     {move || status.get().groups.iter().map(|g| {
                         let gid = g.id;
                         let gname = g.name.clone();
-                        let tile_url = g.tile_url.clone();
-                        let tile_url_copy = tile_url.clone();
+                        let tile_url_copy = g.tile_url.clone();
                         let layers = g.layers.clone();
+                        let layer_count = layers.len();
                         let all_group_ids: Vec<(u32, String)> = status.get().groups.iter()
                             .filter(|og| og.id != gid)
                             .map(|og| (og.id, og.name.clone()))
@@ -311,6 +337,7 @@ pub fn OverlayDrawer(
                         view! {
                             <section class="group-section">
                                 <header class="group-header">
+                                    <i class="fa-solid fa-pencil group-rename-hint"></i>
                                     <input
                                         class="group-name"
                                         type="text"
@@ -331,17 +358,15 @@ pub fn OverlayDrawer(
                                     </button>
                                 </header>
                                 <ul class="group-layers">
-                                    {layers.iter().map(|l| {
+                                    {layers.iter().enumerate().map(|(idx, l)| {
                                         let lid = l.id;
                                         let name = l.name.clone();
                                         let visible = l.visible;
                                         let layer_opacity = l.opacity;
-                                        let icon = match l.kind.as_str() {
-                                            "wms" => "fa-solid fa-globe",
-                                            "arcgis" => "fa-solid fa-server",
-                                            "shp" => "fa-solid fa-shapes",
-                                            _ => "fa-solid fa-layer-group",
-                                        };
+                                        let icon = layer_icon(&l.kind);
+                                        let remote = is_remote(&l.kind);
+                                        let is_first = idx == 0;
+                                        let is_last = idx + 1 == layer_count;
                                         let has_other_groups = !all_group_ids.is_empty();
                                         let move_targets: Vec<(u32, String)> = all_group_ids.clone();
                                         view! {
@@ -352,42 +377,56 @@ pub fn OverlayDrawer(
                                                 >
                                                     <i class=if visible { "fa-solid fa-eye" } else { "fa-solid fa-eye-slash" }></i>
                                                 </button>
-                                                <i class=format!("{icon} overlay-icon")></i>
+                                                <i class=format!("{icon} overlay-icon{}", if remote { " remote-icon" } else { "" })></i>
                                                 <span class="overlay-name">{name}</span>
-                                                {if has_other_groups {
-                                                    Some(view! {
-                                                        <div class="move-menu">
-                                                            <button class="icon-btn" title="Move to..."
-                                                                on:click=move |_| {
-                                                                    let cur = move_menu_layer.get();
-                                                                    if cur == Some((gid, lid)) {
-                                                                        set_move_menu_layer.set(None);
-                                                                    } else {
-                                                                        set_move_menu_layer.set(Some((gid, lid)));
-                                                                    }
-                                                                }
-                                                            >
-                                                                <i class="fa-solid fa-arrow-right-arrow-left"></i>
-                                                            </button>
-                                                            <Show when=move || move_menu_layer.get() == Some((gid, lid))>
-                                                                <ul class="move-menu-list">
-                                                                    {move_targets.iter().map(|(to_gid, to_name)| {
-                                                                        let to_gid = *to_gid;
-                                                                        let label = to_name.clone();
-                                                                        view! {
-                                                                            <li on:click=move |_| on_move_layer(lid, gid, to_gid)>{label}</li>
+                                                <nav class="layer-buttons">
+                                                    <button class="icon-btn reorder-btn" title="Move up"
+                                                        disabled=is_first
+                                                        on:click=move |_| on_reorder(gid, lid, "up")
+                                                    >
+                                                        <i class="fa-solid fa-chevron-up"></i>
+                                                    </button>
+                                                    <button class="icon-btn reorder-btn" title="Move down"
+                                                        disabled=is_last
+                                                        on:click=move |_| on_reorder(gid, lid, "down")
+                                                    >
+                                                        <i class="fa-solid fa-chevron-down"></i>
+                                                    </button>
+                                                    {if has_other_groups {
+                                                        Some(view! {
+                                                            <div class="move-menu">
+                                                                <button class="icon-btn" title="Move to..."
+                                                                    on:click=move |_| {
+                                                                        let cur = move_menu_layer.get();
+                                                                        if cur == Some((gid, lid)) {
+                                                                            set_move_menu_layer.set(None);
+                                                                        } else {
+                                                                            set_move_menu_layer.set(Some((gid, lid)));
                                                                         }
-                                                                    }).collect_view()}
-                                                                </ul>
-                                                            </Show>
-                                                        </div>
-                                                    })
-                                                } else {
-                                                    None
-                                                }}
-                                                <button class="icon-btn danger" title="Remove" on:click=move |_| on_remove_layer(gid, lid)>
-                                                    <i class="fa-solid fa-trash"></i>
-                                                </button>
+                                                                    }
+                                                                >
+                                                                    <i class="fa-solid fa-arrow-right-arrow-left"></i>
+                                                                </button>
+                                                                <Show when=move || move_menu_layer.get() == Some((gid, lid))>
+                                                                    <ul class="move-menu-list">
+                                                                        {move_targets.iter().map(|(to_gid, to_name)| {
+                                                                            let to_gid = *to_gid;
+                                                                            let label = to_name.clone();
+                                                                            view! {
+                                                                                <li on:click=move |_| on_move_layer(lid, gid, to_gid)>{label}</li>
+                                                                            }
+                                                                        }).collect_view()}
+                                                                    </ul>
+                                                                </Show>
+                                                            </div>
+                                                        })
+                                                    } else {
+                                                        None
+                                                    }}
+                                                    <button class="icon-btn danger" title="Remove" on:click=move |_| on_remove_layer(gid, lid)>
+                                                        <i class="fa-solid fa-trash"></i>
+                                                    </button>
+                                                </nav>
                                                 <input
                                                     type="range"
                                                     class="layer-opacity"
@@ -410,6 +449,13 @@ pub fn OverlayDrawer(
                     }).collect_view()}
                 </div>
             </aside>
+        </Show>
+
+        <Show when=move || toast.get().is_some()>
+            <div class="overlay-toast">
+                <i class="fa-solid fa-circle-exclamation"></i>
+                {move || toast.get().unwrap_or_default()}
+            </div>
         </Show>
     }
 }

@@ -527,6 +527,27 @@ button.link {
         min-width: 0;
     }
 
+    .remote-icon {
+        animation: pulse-opacity 2s ease-in-out 3;
+    }
+
+    .layer-buttons {
+        display: flex;
+        align-items: center;
+        gap: 1px;
+        margin-left: auto;
+        flex-shrink: 0;
+    }
+
+    .reorder-btn {
+        font-size: 10px !important;
+        padding: 1px 3px !important;
+        opacity: 0.4;
+
+        &:hover:not(:disabled) { opacity: 1; }
+        &:disabled { opacity: 0.15; cursor: default; }
+    }
+
     .layer-opacity {
         width: 100%;
         accent-color: var(--color-accent);
@@ -550,20 +571,34 @@ button.link {
         background: var(--color-bg-tertiary);
     }
 
+    .group-rename-hint {
+        font-size: 9px;
+        color: var(--color-text-muted);
+        opacity: 0;
+        transition: opacity var(--transition-fast);
+    }
+
+    .group-header:hover .group-rename-hint { opacity: 0.5; }
+    .group-header:focus-within .group-rename-hint { opacity: 1; }
+
     .group-name {
         flex: 1;
-        border: none;
+        border: 1px solid transparent;
         background: transparent;
         color: var(--color-text-primary);
         font-size: var(--font-size-sm);
         font-weight: 600;
         padding: 2px var(--spacing-xs);
         min-width: 0;
+        border-radius: var(--radius-sm);
+        transition: border-color var(--transition-fast), background var(--transition-fast);
+
+        &:hover { border-color: var(--color-border); }
 
         &:focus {
             outline: none;
             background: var(--color-bg-primary);
-            border-radius: var(--radius-sm);
+            border-color: var(--color-accent);
         }
     }
 
@@ -973,4 +1008,31 @@ button {
             color: var(--color-danger);
         }
     }
+}
+
+.overlay-toast {
+    position: fixed;
+    bottom: var(--spacing-lg);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--color-danger);
+    color: #fff;
+    padding: var(--spacing-sm) var(--spacing-lg);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    font-size: var(--font-size-sm);
+    z-index: 1000;
+    animation: toast-in 0.2s ease-out;
+
+    i { margin-right: var(--spacing-sm); }
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes pulse-opacity {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }

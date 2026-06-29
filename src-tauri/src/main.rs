@@ -122,6 +122,7 @@ fn main() {
             overlay::add_arcgis_layer,
             overlay::move_layer,
             overlay::remove_overlay,
+            overlay::reorder_layer,
             overlay::set_layer_visible,
             overlay::set_layer_opacity,
             overlay::get_overlay_status,

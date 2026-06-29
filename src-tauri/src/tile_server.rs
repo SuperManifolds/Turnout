@@ -132,6 +132,26 @@ impl ServerHandle {
         Some(layer)
     }
 
+    pub fn move_layer_up(&self, id: u32) -> bool {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(idx) = layers.iter().position(|l| l.id == id) else { return false };
+        if idx == 0 { return false; }
+        layers.swap(idx, idx - 1);
+        drop(layers);
+        self.clear_cache();
+        true
+    }
+
+    pub fn move_layer_down(&self, id: u32) -> bool {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(idx) = layers.iter().position(|l| l.id == id) else { return false };
+        if idx + 1 >= layers.len() { return false; }
+        layers.swap(idx, idx + 1);
+        drop(layers);
+        self.clear_cache();
+        true
+    }
+
     pub fn insert_layer(&self, layer: Layer) {
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.push(layer);
