@@ -88,7 +88,6 @@ fn main() {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
-            overlay::restore_layers(app.handle());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -111,6 +110,7 @@ fn main() {
             settings::get_settings,
             settings::set_settings,
             settings::pick_folder,
+            overlay::restore_overlays,
             overlay::pick_kmz_file,
             overlay::add_overlay,
             overlay::fetch_wms_layers,

@@ -38,6 +38,7 @@ pub fn OverlayDrawer(
     let (error, set_error) = create_signal::<Option<String>>(None);
     let (copied, set_copied) = create_signal(false);
 
+    let (menu_open, set_menu_open) = create_signal(false);
     let (active_form, set_active_form) = create_signal(ServiceForm::None);
     let (service_url, set_service_url) = create_signal(String::new());
     let (service_loading, set_service_loading) = create_signal(false);
@@ -50,12 +51,12 @@ pub fn OverlayDrawer(
     };
 
     spawn_local(async move {
-        if let Some(status) = tauri::get_overlay_status().await {
+        if let Some(status) = tauri::restore_overlays().await {
             apply_status(&status);
         }
     });
 
-    let on_add_kmz = move |_| {
+    let on_add_kmz_action = move || {
         set_error.set(None);
         spawn_local(async move {
             let Some(path) = tauri::pick_kmz_file().await else { return };
@@ -198,22 +199,25 @@ pub fn OverlayDrawer(
                 </header>
 
                 <section class="overlay-actions">
-                    <button on:click=on_add_kmz disabled=move || loading.get()>
-                        <i class="fa-solid fa-file"></i>
-                        {move || if loading.get() { " Loading\u{2026}" } else { " KMZ" }}
-                    </button>
-                    <button on:click=move |_| toggle_form(ServiceForm::Wms)
-                        class:active=move || active_form.get() == ServiceForm::Wms
-                    >
-                        <i class="fa-solid fa-globe"></i>
-                        " WMS"
-                    </button>
-                    <button on:click=move |_| toggle_form(ServiceForm::ArcGis)
-                        class:active=move || active_form.get() == ServiceForm::ArcGis
-                    >
-                        <i class="fa-solid fa-server"></i>
-                        " ArcGIS"
-                    </button>
+                    <div class="add-menu">
+                        <button on:click=move |_| set_menu_open.set(!menu_open.get()) disabled=move || loading.get()>
+                            <i class="fa-solid fa-plus"></i>
+                            {move || if loading.get() { " Loading\u{2026}" } else { " Add layer" }}
+                        </button>
+                        <Show when=move || menu_open.get()>
+                            <ul class="add-menu-list">
+                                <li on:click=move |_| { set_menu_open.set(false); on_add_kmz_action(); }>
+                                    <i class="fa-solid fa-file"></i>" KMZ / KML file"
+                                </li>
+                                <li on:click=move |_| { set_menu_open.set(false); toggle_form(ServiceForm::Wms); }>
+                                    <i class="fa-solid fa-globe"></i>" WMS server"
+                                </li>
+                                <li on:click=move |_| { set_menu_open.set(false); toggle_form(ServiceForm::ArcGis); }>
+                                    <i class="fa-solid fa-server"></i>" ArcGIS MapServer"
+                                </li>
+                            </ul>
+                        </Show>
+                    </div>
                 </section>
 
                 <Show when=move || active_form.get() != ServiceForm::None>

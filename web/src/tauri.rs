@@ -270,7 +270,8 @@ fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
     })
 }
 
-fn parse_status(val: &JsValue) -> Option<OverlayStatus> {
+#[must_use]
+pub fn parse_overlay_status(val: &JsValue) -> Option<OverlayStatus> {
     let tile_url = js_sys::Reflect::get(val, &"tileUrl".into()).ok()?.as_string()?;
     let layers_val = js_sys::Reflect::get(val, &"layers".into()).ok()?;
     let layers_arr = js_sys::Array::from(&layers_val);
@@ -287,7 +288,7 @@ pub async fn add_overlay(path: &str) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
     js_set(&args, "path", &path.into())?;
     let result = invoke("add_overlay", &args).await?;
-    parse_status(&result).ok_or_else(|| "unexpected response".into())
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn remove_overlay(id: u32) -> Option<OverlayStatus> {
@@ -297,7 +298,15 @@ pub async fn remove_overlay(id: u32) -> Option<OverlayStatus> {
     if result.is_null() || result.is_undefined() {
         return None;
     }
-    parse_status(&result)
+    parse_overlay_status(&result)
+}
+
+pub async fn restore_overlays() -> Option<OverlayStatus> {
+    let result = invoke("restore_overlays", &JsValue::NULL).await.ok()?;
+    if result.is_null() || result.is_undefined() {
+        return None;
+    }
+    parse_overlay_status(&result)
 }
 
 pub async fn get_overlay_status() -> Option<OverlayStatus> {
@@ -305,7 +314,7 @@ pub async fn get_overlay_status() -> Option<OverlayStatus> {
     if result.is_null() || result.is_undefined() {
         return None;
     }
-    parse_status(&result)
+    parse_overlay_status(&result)
 }
 
 pub async fn fetch_wms_layers(url: &str) -> Result<Vec<WmsLayerInfo>, String> {
@@ -328,7 +337,7 @@ pub async fn add_wms_layer(url: &str, layer_name: &str, display_name: &str) -> R
     js_set(&args, "layerName", &layer_name.into())?;
     js_set(&args, "displayName", &display_name.into())?;
     let result = invoke("add_wms_layer", &args).await?;
-    parse_status(&result).ok_or_else(|| "unexpected response".into())
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn set_layer_visible(id: u32, visible: bool) -> Option<OverlayStatus> {
@@ -337,7 +346,7 @@ pub async fn set_layer_visible(id: u32, visible: bool) -> Option<OverlayStatus> 
     js_set(&args, "visible", &JsValue::from_bool(visible)).ok()?;
     let result = invoke("set_layer_visible", &args).await.ok()?;
     if result.is_null() || result.is_undefined() { return None; }
-    parse_status(&result)
+    parse_overlay_status(&result)
 }
 
 #[derive(Clone, Debug)]
@@ -366,7 +375,7 @@ pub async fn add_arcgis_layer(url: &str, service_name: &str, display_name: &str)
     js_set(&args, "serviceName", &service_name.into())?;
     js_set(&args, "displayName", &display_name.into())?;
     let result = invoke("add_arcgis_layer", &args).await?;
-    parse_status(&result).ok_or_else(|| "unexpected response".into())
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn set_layer_opacity(id: u32, opacity: f32) -> Option<OverlayStatus> {
@@ -375,5 +384,5 @@ pub async fn set_layer_opacity(id: u32, opacity: f32) -> Option<OverlayStatus> {
     js_set(&args, "opacity", &JsValue::from_f64(f64::from(opacity))).ok()?;
     let result = invoke("set_layer_opacity", &args).await.ok()?;
     if result.is_null() || result.is_undefined() { return None; }
-    parse_status(&result)
+    parse_overlay_status(&result)
 }

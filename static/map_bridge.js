@@ -1,6 +1,7 @@
 // Thin wrappers around MapLibre GL JS API — all logic lives in Rust.
 
 let _map = null;
+let _map_loaded = false;
 let _theme_override = "system"; // "system", "light", "dark"
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -55,6 +56,7 @@ window.map_init = function(container) {
     });
 
     // Flush deferred on-load callbacks
+    _map.on("load", function() { _map_loaded = true; });
     _on_load_callbacks.forEach(function(cb) { _map.on("load", cb); });
     _on_load_callbacks = [];
 
@@ -288,7 +290,10 @@ window.map_query_features = function(lng, lat, layer_id) {
 };
 
 window.map_add_overlay_layer = function(id, url, opacity) {
-    if (!_map) return;
+    if (!_map_loaded) {
+        map_on_load(function() { map_add_overlay_layer(id, url, opacity); });
+        return;
+    }
     if (_map.getSource(id)) return;
     _map.addSource(id, {
         type: "raster",

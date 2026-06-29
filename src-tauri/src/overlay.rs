@@ -59,67 +59,60 @@ impl OverlayState {
     }
 }
 
-pub fn restore_layers(app: &tauri::AppHandle) {
-    let saved = load_saved(app);
+#[tauri::command]
+pub async fn restore_overlays(app: tauri::AppHandle) -> Option<OverlayStatus> {
+    let saved = load_saved(&app);
     if saved.is_empty() {
-        return;
+        return None;
     }
 
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let state = app.state::<OverlayState>();
+    let state = app.state::<OverlayState>();
+    start_if_needed(state.inner()).await.ok()?;
 
-        let handle = match tile_server::start().await {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("Failed to start tile server for restore: {e}");
-                return;
-            }
-        };
+    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = guard.as_ref()?;
 
-        for layer in &saved {
-            match layer.kind.as_str() {
-                "kmz" => {
-                    if let Some(ref path) = layer.path {
-                        match std::fs::read(path) {
-                            Ok(bytes) => match turnout_core::kml::parse_kmz(&bytes) {
-                                Ok(mut data) => {
-                                    if data.name.is_none() {
-                                        data.name = Some(layer.name.clone());
-                                    }
-                                    handle.add_kmz_layer(data, Some(path.clone()));
+    for layer in &saved {
+        match layer.kind.as_str() {
+            "kmz" => {
+                if let Some(ref path) = layer.path {
+                    match std::fs::read(path) {
+                        Ok(bytes) => match turnout_core::kml::parse_kmz(&bytes) {
+                            Ok(mut data) => {
+                                if data.name.is_none() {
+                                    data.name = Some(layer.name.clone());
                                 }
-                                Err(e) => eprintln!("Failed to parse {path}: {e}"),
-                            },
-                            Err(e) => eprintln!("Failed to read {path}: {e}"),
-                        }
+                                server.add_kmz_layer(data, Some(path.clone()));
+                            }
+                            Err(e) => eprintln!("Failed to parse {path}: {e}"),
+                        },
+                        Err(e) => eprintln!("Failed to read {path}: {e}"),
                     }
                 }
-                "wms" => {
-                    if let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) {
-                        handle.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
-                    }
-                }
-                "arcgis" => {
-                    if let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) {
-                        handle.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
-                    }
-                }
-                _ => {}
             }
-
-            let layers = handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(last) = layers.last() {
-                let id = last.id;
-                drop(layers);
-                handle.set_layer_visible(id, layer.visible);
-                handle.set_layer_opacity(id, layer.opacity);
+            "wms" => {
+                if let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) {
+                    server.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
+                }
             }
+            "arcgis" => {
+                if let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) {
+                    server.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
+                }
+            }
+            _ => {}
         }
 
-        let mut guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(handle);
-    });
+        let layers = server.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(last) = layers.last() {
+            let id = last.id;
+            drop(layers);
+            server.set_layer_visible(id, layer.visible);
+            server.set_layer_opacity(id, layer.opacity);
+        }
+    }
+
+    Some(build_status(server))
 }
 
 #[tauri::command]
