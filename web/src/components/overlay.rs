@@ -1,5 +1,6 @@
 use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, create_signal, SignalGet, SignalSet, spawn_local, Show, CollectView};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::tauri;
 
@@ -26,6 +27,11 @@ pub fn OverlayDrawer(
     let (opacity, set_opacity) = create_signal(DEFAULT_OPACITY);
     let (copied, set_copied) = create_signal(false);
 
+    let (wms_open, set_wms_open) = create_signal(false);
+    let (wms_url, set_wms_url) = create_signal(String::new());
+    let (wms_loading, set_wms_loading) = create_signal(false);
+    let (wms_layers, set_wms_layers) = create_signal::<Vec<tauri::WmsLayerInfo>>(Vec::new());
+
     let apply_status = move |status: &tauri::OverlayStatus| {
         set_layers.set(status.layers.clone());
         map_remove_overlay_layer(SOURCE_ID);
@@ -33,7 +39,7 @@ pub fn OverlayDrawer(
         set_tile_url.set(Some(status.tile_url.clone()));
     };
 
-    let on_add = move |_| {
+    let on_add_kmz = move |_| {
         set_error.set(None);
         spawn_local(async move {
             let Some(path) = tauri::pick_kmz_file().await else { return };
@@ -93,6 +99,46 @@ pub fn OverlayDrawer(
         }
     };
 
+    let do_wms_fetch = move || {
+        let url = wms_url.get();
+        if url.trim().is_empty() {
+            return;
+        }
+        set_error.set(None);
+        set_wms_loading.set(true);
+        set_wms_layers.set(Vec::new());
+        spawn_local(async move {
+            match tauri::fetch_wms_layers(&url).await {
+                Ok(layers) => set_wms_layers.set(layers),
+                Err(e) => set_error.set(Some(e)),
+            }
+            set_wms_loading.set(false);
+        });
+    };
+
+    let on_wms_select = move |name: String, title: String| {
+        let url = wms_url.get();
+        set_wms_loading.set(true);
+        spawn_local(async move {
+            match tauri::add_wms_layer(&url, &name, &title).await {
+                Ok(status) => {
+                    apply_status(&status);
+                    set_wms_open.set(false);
+                    set_wms_url.set(String::new());
+                    set_wms_layers.set(Vec::new());
+                }
+                Err(e) => set_error.set(Some(e)),
+            }
+            set_wms_loading.set(false);
+        });
+    };
+
+    let on_wms_url_keydown = move |ev: web_sys::KeyboardEvent| {
+        if ev.key() == "Enter" {
+            do_wms_fetch();
+        }
+    };
+
     view! {
         <Show when=move || open.get()>
             <aside id="overlay-drawer">
@@ -104,23 +150,58 @@ pub fn OverlayDrawer(
                 </header>
 
                 <section class="overlay-actions">
-                    <button on:click=on_add disabled=move || loading.get()>
-                        <i class="fa-solid fa-plus"></i>
-                        {move || if loading.get() { " Loading\u{2026}" } else { " Add KMZ" }}
+                    <button on:click=on_add_kmz disabled=move || loading.get()>
+                        <i class="fa-solid fa-file"></i>
+                        {move || if loading.get() { " Loading\u{2026}" } else { " KMZ" }}
+                    </button>
+                    <button on:click=move |_| set_wms_open.set(!wms_open.get())
+                        class:active=move || wms_open.get()
+                    >
+                        <i class="fa-solid fa-globe"></i>
+                        " WMS"
                     </button>
                     <Show when=move || tile_url.get().is_some()>
                         <button on:click=on_copy title="Copy tile URL for Nimby Rails">
                             <i class=move || if copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
-                            {move || if copied.get() { " Copied" } else { " Copy URL" }}
                         </button>
                     </Show>
                 </section>
+
+                <Show when=move || wms_open.get()>
+                    <section class="wms-form">
+                        <input
+                            type="text"
+                            placeholder="WMS server URL"
+                            prop:value=move || wms_url.get()
+                            on:input=move |ev| set_wms_url.set(leptos::event_target_value(&ev))
+                            on:keydown=on_wms_url_keydown
+                        />
+                        <button on:click=move |_| do_wms_fetch() disabled=move || wms_loading.get() || wms_url.get().trim().is_empty()>
+                            {move || if wms_loading.get() { "Loading\u{2026}" } else { "Fetch" }}
+                        </button>
+                    </section>
+
+                    <Show when=move || !wms_layers.get().is_empty()>
+                        <ul class="wms-layer-list">
+                            {move || wms_layers.get().iter().map(|l| {
+                                let name = l.name.clone();
+                                let title = l.title.clone();
+                                let display = title.clone();
+                                view! {
+                                    <li on:click=move |_| on_wms_select(name.clone(), title.clone())>
+                                        {display}
+                                    </li>
+                                }
+                            }).collect_view()}
+                        </ul>
+                    </Show>
+                </Show>
 
                 {move || error.get().map(|e| view! {
                     <p class="error">{e}</p>
                 })}
 
-                <Show when=move || layers.get().is_empty() && !loading.get()>
+                <Show when=move || layers.get().is_empty() && !loading.get() && !wms_open.get()>
                     <p class="empty">"No overlays loaded"</p>
                 </Show>
 
@@ -128,9 +209,10 @@ pub fn OverlayDrawer(
                     {move || layers.get().iter().map(|l| {
                         let id = l.id;
                         let name = l.name.clone();
+                        let icon = if l.kind == "wms" { "fa-solid fa-globe" } else { "fa-solid fa-layer-group" };
                         view! {
                             <li class="overlay-item">
-                                <i class="fa-solid fa-layer-group overlay-icon"></i>
+                                <i class=format!("{icon} overlay-icon")></i>
                                 <span class="overlay-name">{name}</span>
                                 <button class="icon-btn danger" title="Remove" on:click=move |_| on_remove(id)>
                                     <i class="fa-solid fa-trash"></i>

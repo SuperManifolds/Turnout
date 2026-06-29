@@ -6,6 +6,7 @@ mod overlay;
 mod overpass;
 mod settings;
 mod tile_server;
+mod wms;
 
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -110,6 +111,8 @@ fn main() {
             settings::pick_folder,
             overlay::pick_kmz_file,
             overlay::add_overlay,
+            overlay::fetch_wms_layers,
+            overlay::add_wms_layer,
             overlay::remove_overlay,
             overlay::get_overlay_status,
         ])

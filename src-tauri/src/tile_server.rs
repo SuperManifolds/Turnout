@@ -11,7 +11,7 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
-use turnout_core::geo::{latlon_to_tile_pixel, tile_bounds};
+use turnout_core::geo::{latlon_to_mercator, latlon_to_tile_pixel, tile_bounds};
 use turnout_core::kml::{Geometry, KmzData, Style};
 
 const TILE_SIZE: u32 = 256;
@@ -22,8 +22,9 @@ const DEFAULT_LINE_WIDTH: f32 = 2.0;
 const DEFAULT_FILL_COLOR: [u8; 4] = [255, 100, 0, 80];
 const POINT_RADIUS: f32 = 5.0;
 const POINT_COLOR: [u8; 4] = [255, 60, 0, 220];
+const WMS_BBOX: (f64, f64, f64, f64) = (-180.0, -85.051_129, 180.0, 85.051_129);
 
-struct DecodedImage {
+pub(crate) struct DecodedImage {
     pixmap: Pixmap,
     north: f64,
     south: f64,
@@ -32,18 +33,24 @@ struct DecodedImage {
     rotation: f64,
 }
 
+pub enum LayerSource {
+    Kmz { data: KmzData, images: Vec<DecodedImage> },
+    Wms { base_url: String, layer_name: String },
+}
+
 pub struct Layer {
     pub id: u32,
     pub name: String,
     pub bbox: (f64, f64, f64, f64),
-    data: KmzData,
-    images: Vec<DecodedImage>,
+    pub kind: &'static str,
+    source: LayerSource,
 }
 
 pub struct TileState {
     pub(crate) layers: RwLock<Vec<Layer>>,
     cache: Mutex<LruCache<(u8, u32, u32), Vec<u8>>>,
     next_id: Mutex<u32>,
+    http: reqwest::Client,
 }
 
 pub struct ServerHandle {
@@ -53,25 +60,36 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    pub fn add_layer(&self, data: KmzData) -> bool {
+    pub fn add_kmz_layer(&self, data: KmzData) -> bool {
         let Some(bbox) = data.bbox() else { return false };
         let name = data.name.clone().unwrap_or_else(|| "Overlay".to_string());
         let images = decode_images(&data);
+        let id = self.next_id();
 
-        let id = {
-            let mut next = self.state.next_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let id = *next;
-            *next += 1;
-            id
-        };
-
-        {
-            let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-            layers.push(Layer { id, name, bbox, data, images });
-        }
-
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers.push(Layer {
+            id, name, bbox, kind: "kmz",
+            source: LayerSource::Kmz { data, images },
+        });
+        drop(layers);
         self.clear_cache();
         true
+    }
+
+    pub fn add_wms_layer(&self, base_url: String, layer_name: String, display_name: String) -> u32 {
+        let id = self.next_id();
+
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers.push(Layer {
+            id,
+            name: display_name,
+            bbox: WMS_BBOX,
+            kind: "wms",
+            source: LayerSource::Wms { base_url, layer_name },
+        });
+        drop(layers);
+        self.clear_cache();
+        id
     }
 
     pub fn remove_layer(&self, id: u32) -> bool {
@@ -90,6 +108,13 @@ impl ServerHandle {
         self.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
 
+    fn next_id(&self) -> u32 {
+        let mut next = self.state.next_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let id = *next;
+        *next += 1;
+        id
+    }
+
     fn clear_cache(&self) {
         let mut cache = self.state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.clear();
@@ -103,6 +128,7 @@ pub async fn start() -> Result<ServerHandle, Box<dyn std::error::Error + Send + 
             NonZeroUsize::new(CACHE_CAPACITY).expect("nonzero"),
         )),
         next_id: Mutex::new(0),
+        http: reqwest::Client::new(),
     });
 
     let app = Router::new()
@@ -156,6 +182,66 @@ fn decode_images(data: &KmzData) -> Vec<DecodedImage> {
         .collect()
 }
 
+async fn fetch_wms_tile(
+    client: &reqwest::Client,
+    base_url: &str,
+    layer_name: &str,
+    z: u32, x: u32, y: u32,
+) -> Option<Pixmap> {
+    let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
+    let (minx, miny) = latlon_to_mercator(tile_s, tile_w);
+    let (maxx, maxy) = latlon_to_mercator(tile_n, tile_e);
+
+    let bbox_str = format!("{minx},{miny},{maxx},{maxy}");
+
+    let req = client
+        .get(base_url)
+        .query(&[
+            ("service", "WMS"),
+            ("version", "1.1.1"),
+            ("request", "GetMap"),
+            ("layers", layer_name),
+            ("styles", ""),
+            ("srs", "EPSG:3857"),
+            ("bbox", &bbox_str),
+            ("width", "256"),
+            ("height", "256"),
+            ("format", "image/png"),
+            ("transparent", "true"),
+        ]);
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| eprintln!("WMS fetch error: {e}"))
+        .ok()?;
+
+    if !resp.status().is_success() {
+        eprintln!("WMS returned HTTP {}", resp.status());
+        return None;
+    }
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if content_type.contains("xml") || content_type.contains("text") {
+        let body = resp.text().await.ok().unwrap_or_default();
+        eprintln!("WMS error for layer={layer_name}: {}", &body[..body.len().min(500)]);
+        return None;
+    }
+
+    let bytes = resp.bytes().await.ok()?;
+    let dyn_img = image::load_from_memory(&bytes)
+        .map_err(|e| eprintln!("WMS image decode error: {e}"))
+        .ok()?;
+    let rgba = dyn_img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+}
+
 async fn serve_tile(
     Path((z, x, y)): Path<(u8, u32, u32)>,
     State(state): State<Arc<TileState>>,
@@ -167,7 +253,25 @@ async fn serve_tile(
         }
     }
 
-    let png = render_tile(&state, z.into(), x, y);
+    let wms_requests: Vec<(usize, String, String)> = {
+        let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers.iter().enumerate().filter_map(|(i, l)| {
+            if let LayerSource::Wms { base_url, layer_name } = &l.source {
+                Some((i, base_url.clone(), layer_name.clone()))
+            } else {
+                None
+            }
+        }).collect()
+    };
+
+    let mut wms_tiles: Vec<(usize, Pixmap)> = Vec::new();
+    for (idx, base_url, layer_name) in &wms_requests {
+        if let Some(pixmap) = fetch_wms_tile(&state.http, base_url, layer_name, z.into(), x, y).await {
+            wms_tiles.push((*idx, pixmap));
+        }
+    }
+
+    let png = render_tile(&state, &wms_tiles, z.into(), x, y);
 
     {
         let mut cache = state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -177,14 +281,29 @@ async fn serve_tile(
     (StatusCode::OK, [("content-type", "image/png")], png)
 }
 
-fn render_tile(state: &TileState, z: u32, x: u32, y: u32) -> Vec<u8> {
+fn render_tile(state: &TileState, wms_tiles: &[(usize, Pixmap)], z: u32, x: u32, y: u32) -> Vec<u8> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).expect("256x256 pixmap");
     let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
 
     let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    for layer in layers.iter() {
-        render_ground_overlays(&mut pixmap, &layer.images, z, x, y, tile_w, tile_s, tile_e, tile_n);
-        render_geometry(&mut pixmap, &layer.data, z, x, y, tile_w, tile_s, tile_e, tile_n);
+    for (i, layer) in layers.iter().enumerate() {
+        match &layer.source {
+            LayerSource::Kmz { data, images } => {
+                render_ground_overlays(&mut pixmap, images, z, x, y, tile_w, tile_s, tile_e, tile_n);
+                render_geometry(&mut pixmap, data, z, x, y, tile_w, tile_s, tile_e, tile_n);
+            }
+            LayerSource::Wms { .. } => {
+                if let Some((_, wms_pixmap)) = wms_tiles.iter().find(|(idx, _)| *idx == i) {
+                    pixmap.draw_pixmap(
+                        0, 0,
+                        wms_pixmap.as_ref(),
+                        &PixmapPaint::default(),
+                        Transform::identity(),
+                        None,
+                    );
+                }
+            }
+        }
     }
 
     pixmap.encode_png().unwrap_or_default()

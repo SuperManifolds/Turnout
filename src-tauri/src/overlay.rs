@@ -5,6 +5,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::tile_server;
+use crate::wms;
 
 pub struct OverlayState {
     server: Mutex<Option<tile_server::ServerHandle>>,
@@ -15,6 +16,7 @@ pub struct OverlayState {
 pub struct LayerInfo {
     pub id: u32,
     pub name: String,
+    pub kind: &'static str,
     pub bbox: [f64; 4],
 }
 
@@ -30,6 +32,11 @@ impl OverlayState {
         Self {
             server: Mutex::new(None),
         }
+    }
+
+    fn ensure_started(&self) -> bool {
+        let guard = self.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.is_some()
     }
 }
 
@@ -59,27 +66,39 @@ pub async fn add_overlay(app: tauri::AppHandle, path: String) -> Result<OverlayS
     }
 
     let state = app.state::<OverlayState>();
-
-    {
-        let needs_start = {
-            let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.is_none()
-        };
-
-        if needs_start {
-            let handle = tile_server::start()
-                .await
-                .map_err(|e| format!("Failed to start tile server: {e}"))?;
-            let mut guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = Some(handle);
-        }
-    }
+    start_if_needed(&state, &app).await?;
 
     let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = guard.as_ref().expect("just started");
-    if !server.add_layer(data) {
+    if !server.add_kmz_layer(data) {
         return Err("KMZ contains no geometry or overlays".into());
     }
+
+    Ok(build_status(server))
+}
+
+#[tauri::command]
+pub async fn fetch_wms_layers(url: String) -> Result<Vec<wms::WmsLayerInfo>, String> {
+    let layers = wms::get_capabilities(&url).await?;
+    for l in &layers {
+        eprintln!("WMS layer: name={:?} title={:?}", l.name, l.title);
+    }
+    Ok(layers)
+}
+
+#[tauri::command]
+pub async fn add_wms_layer(
+    app: tauri::AppHandle,
+    url: String,
+    layer_name: String,
+    display_name: String,
+) -> Result<OverlayStatus, String> {
+    let state = app.state::<OverlayState>();
+    start_if_needed(&state, &app).await?;
+
+    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = guard.as_ref().expect("just started");
+    server.add_wms_layer(url, layer_name, display_name);
 
     Ok(build_status(server))
 }
@@ -111,6 +130,22 @@ pub fn get_overlay_status(app: tauri::AppHandle) -> Option<OverlayStatus> {
     guard.as_ref().map(build_status)
 }
 
+async fn start_if_needed(
+    state: &OverlayState,
+    _app: &tauri::AppHandle,
+) -> Result<(), String> {
+    if state.ensure_started() {
+        return Ok(());
+    }
+
+    let handle = tile_server::start()
+        .await
+        .map_err(|e| format!("Failed to start tile server: {e}"))?;
+    let mut guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = Some(handle);
+    Ok(())
+}
+
 fn build_status(server: &tile_server::ServerHandle) -> OverlayStatus {
     let layers = server.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     OverlayStatus {
@@ -120,6 +155,7 @@ fn build_status(server: &tile_server::ServerHandle) -> OverlayStatus {
             .map(|l| LayerInfo {
                 id: l.id,
                 name: l.name.clone(),
+                kind: l.kind,
                 bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
             })
             .collect(),

@@ -233,7 +233,14 @@ pub async fn open_blueprint_folder(folder_name: &str) -> Result<(), String> {
 pub struct LayerInfo {
     pub id: u32,
     pub name: String,
+    pub kind: String,
     pub bbox: [f64; 4],
+}
+
+#[derive(Clone, Debug)]
+pub struct WmsLayerInfo {
+    pub name: String,
+    pub title: String,
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +261,7 @@ fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
     Some(LayerInfo {
         id: get_f64("id")? as u32,
         name: get_str("name")?,
+        kind: get_str("kind").unwrap_or_else(|| "kmz".into()),
         bbox: parse_bbox(&bbox_val)?,
     })
 }
@@ -294,4 +302,27 @@ pub async fn get_overlay_status() -> Option<OverlayStatus> {
         return None;
     }
     parse_status(&result)
+}
+
+pub async fn fetch_wms_layers(url: &str) -> Result<Vec<WmsLayerInfo>, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    let result = invoke("fetch_wms_layers", &args).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| {
+        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
+        Some(WmsLayerInfo {
+            name: get_str("name")?,
+            title: get_str("title")?,
+        })
+    }).collect())
+}
+
+pub async fn add_wms_layer(url: &str, layer_name: &str, display_name: &str) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    js_set(&args, "layerName", &layer_name.into())?;
+    js_set(&args, "displayName", &display_name.into())?;
+    let result = invoke("add_wms_layer", &args).await?;
+    parse_status(&result).ok_or_else(|| "unexpected response".into())
 }
