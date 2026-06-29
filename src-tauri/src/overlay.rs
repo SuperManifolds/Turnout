@@ -95,7 +95,7 @@ pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
     let path = app
         .dialog()
         .file()
-        .add_filter("KMZ / KML / Shapefile", &["kmz", "kml", "shp"])
+        .add_filter("Overlay files", &["kmz", "kml", "shp", "geojson", "json"])
         .blocking_pick_file()?;
     Some(path.to_string())
 }
@@ -156,13 +156,28 @@ pub async fn add_overlay(
     path: String,
     group_id: Option<u32>,
 ) -> Result<OverlayStatus, String> {
-    let is_shp = path.to_lowercase().ends_with(".shp");
-    let mut data = if is_shp {
-        turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(&path))
-            .map_err(|e| format!("Parse error: {e}"))?
-    } else {
-        let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-        turnout_core::kml::parse_kmz(&bytes).map_err(|e| format!("Parse error: {e}"))?
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let (mut data, kind) = match ext.as_str() {
+        "shp" => {
+            let d = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(&path))
+                .map_err(|e| format!("Parse error: {e}"))?;
+            (d, "shp")
+        }
+        "geojson" | "json" => {
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+            let d = turnout_core::geojson_reader::parse_geojson(&text)
+                .map_err(|e| format!("Parse error: {e}"))?;
+            (d, "geojson")
+        }
+        _ => {
+            let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+            let d = turnout_core::kml::parse_kmz(&bytes).map_err(|e| format!("Parse error: {e}"))?;
+            (d, "kmz")
+        }
     };
 
     if data.bbox().is_none() {
@@ -174,8 +189,6 @@ pub async fn add_overlay(
             .file_stem()
             .map(|s| s.to_string_lossy().to_string());
     }
-
-    let kind = if is_shp { "shp" } else { "kmz" };
 
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
@@ -421,6 +434,12 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
             let Some(ref path) = layer.path else { return };
             let Ok(data) = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) else { return };
             handle.add_kmz_layer(data, Some(path.clone()), "shp");
+        }
+        "geojson" => {
+            let Some(ref path) = layer.path else { return };
+            let Ok(text) = std::fs::read_to_string(path) else { return };
+            let Ok(data) = turnout_core::geojson_reader::parse_geojson(&text) else { return };
+            handle.add_kmz_layer(data, Some(path.clone()), "geojson");
         }
         "wms" => {
             let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) else { return };

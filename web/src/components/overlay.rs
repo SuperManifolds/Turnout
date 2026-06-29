@@ -31,6 +31,7 @@ fn layer_icon(kind: &str) -> &'static str {
         "wms" => "fa-solid fa-globe",
         "arcgis" => "fa-solid fa-server",
         "shp" => "fa-solid fa-shapes",
+        "geojson" => "fa-solid fa-code",
         _ => "fa-solid fa-layer-group",
     }
 }
@@ -269,7 +270,7 @@ pub fn OverlayDrawer(
                         <Show when=move || menu_open.get()>
                             <ul class="add-menu-list">
                                 <li on:click=move |_| on_add_file(None)>
-                                    <i class="fa-solid fa-file"></i>" File (KMZ, KML, SHP)"
+                                    <i class="fa-solid fa-file"></i>" File overlay"
                                 </li>
                                 <li on:click=move |_| open_service_form(ServiceForm::Wms, None)>
                                     <i class="fa-solid fa-globe"></i>" WMS server"
