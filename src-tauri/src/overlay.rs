@@ -40,6 +40,7 @@ struct SavedLayer {
     wms_layer: Option<String>,
     arcgis_url: Option<String>,
     arcgis_service: Option<String>,
+    xyz_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -253,6 +254,25 @@ pub async fn add_arcgis_layer(
 }
 
 #[tauri::command]
+pub async fn add_xyz_layer(
+    app: tauri::AppHandle,
+    url_template: String,
+    display_name: String,
+    group_id: Option<u32>,
+) -> Result<OverlayStatus, String> {
+    let state = app.state::<OverlayState>();
+    ensure_group_exists(&state, &app, group_id).await?;
+
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let group = find_group(&groups, group_id)?;
+    group.handle.add_xyz_layer(url_template, display_name);
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    Ok(status)
+}
+
+#[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn move_layer(
     app: tauri::AppHandle,
@@ -449,6 +469,10 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
             let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) else { return };
             handle.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
         }
+        "xyz" => {
+            let Some(url) = &layer.xyz_url else { return };
+            handle.add_xyz_layer(url.clone(), layer.name.clone());
+        }
         _ => return,
     }
 
@@ -501,12 +525,14 @@ fn save_groups(app: &tauri::AppHandle) {
         SavedGroup {
             name: g.name.clone(),
             layers: layers.iter().map(|l| {
-                let (path, wms_url, wms_layer, arcgis_url, arcgis_service) = match &l.source {
-                    LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None),
+                let (path, wms_url, wms_layer, arcgis_url, arcgis_service, xyz_url) = match &l.source {
+                    LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None, None),
                     LayerSource::Wms { base_url, layer_name } =>
-                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None),
+                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None, None),
                     LayerSource::ArcGis { base_url, service_name } =>
-                        (None, None, None, Some(base_url.clone()), Some(service_name.clone())),
+                        (None, None, None, Some(base_url.clone()), Some(service_name.clone()), None),
+                    LayerSource::Xyz { url_template } =>
+                        (None, None, None, None, None, Some(url_template.clone())),
                 };
                 SavedLayer {
                     kind: l.kind.to_string(),
@@ -518,6 +544,7 @@ fn save_groups(app: &tauri::AppHandle) {
                     wms_layer,
                     arcgis_url,
                     arcgis_service,
+                    xyz_url,
                 }
             }).collect(),
         }

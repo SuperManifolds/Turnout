@@ -32,16 +32,17 @@ fn layer_icon(kind: &str) -> &'static str {
         "arcgis" => "fa-solid fa-server",
         "shp" => "fa-solid fa-shapes",
         "geojson" => "fa-solid fa-code",
+        "xyz" => "fa-solid fa-link",
         _ => "fa-solid fa-layer-group",
     }
 }
 
 fn is_remote(kind: &str) -> bool {
-    matches!(kind, "wms" | "arcgis")
+    matches!(kind, "wms" | "arcgis" | "xyz")
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ServiceForm { None, Wms, ArcGis }
+enum ServiceForm { None, Wms, ArcGis, Xyz }
 
 #[derive(Clone)]
 struct ServiceEntry {
@@ -205,6 +206,25 @@ pub fn OverlayDrawer(
         let url = service_url.get();
         if url.trim().is_empty() { return; }
         let form = active_form.get();
+        let gid = target_group.get();
+
+        if form == ServiceForm::Xyz {
+            let name = url.split('/').find(|s| s.contains('.')).unwrap_or(&url).to_string();
+            set_service_loading.set(true);
+            spawn_local(async move {
+                match tauri::add_xyz_layer(&url, &name, gid).await {
+                    Ok(s) => {
+                        apply_status(s);
+                        set_active_form.set(ServiceForm::None);
+                        set_service_url.set(String::new());
+                    }
+                    Err(e) => show_toast(e),
+                }
+                set_service_loading.set(false);
+            });
+            return;
+        }
+
         set_service_loading.set(true);
         set_service_entries.set(Vec::new());
         spawn_local(async move {
@@ -213,7 +233,7 @@ pub fn OverlayDrawer(
                     layers.into_iter().map(|l| ServiceEntry { name: l.name, display: l.title }).collect()),
                 ServiceForm::ArcGis => tauri::fetch_arcgis_services(&url).await.map(|services|
                     services.into_iter().map(|s| ServiceEntry { name: s.name.clone(), display: s.name }).collect()),
-                ServiceForm::None => return,
+                _ => return,
             };
             match result {
                 Ok(entries) => set_service_entries.set(entries),
@@ -232,7 +252,7 @@ pub fn OverlayDrawer(
             let result = match form {
                 ServiceForm::Wms => tauri::add_wms_layer(&url, &name, &display, gid).await,
                 ServiceForm::ArcGis => tauri::add_arcgis_layer(&url, &name, &display, gid).await,
-                ServiceForm::None => return,
+                ServiceForm::None | ServiceForm::Xyz => return,
             };
             match result {
                 Ok(s) => {
@@ -278,6 +298,9 @@ pub fn OverlayDrawer(
                                 <li on:click=move |_| open_service_form(ServiceForm::ArcGis, None)>
                                     <i class="fa-solid fa-server"></i>" ArcGIS MapServer"
                                 </li>
+                                <li on:click=move |_| open_service_form(ServiceForm::Xyz, None)>
+                                    <i class="fa-solid fa-link"></i>" XYZ tile URL"
+                                </li>
                             </ul>
                         </Show>
                     </div>
@@ -293,6 +316,7 @@ pub fn OverlayDrawer(
                             placeholder=move || match active_form.get() {
                                 ServiceForm::Wms => "WMS server URL",
                                 ServiceForm::ArcGis => "ArcGIS services URL",
+                                ServiceForm::Xyz => "https://example.com/{z}/{x}/{y}.png",
                                 ServiceForm::None => "",
                             }
                             prop:value=move || service_url.get()
@@ -300,7 +324,7 @@ pub fn OverlayDrawer(
                             on:keydown=on_url_keydown
                         />
                         <button on:click=move |_| do_fetch() disabled=move || service_loading.get() || service_url.get().trim().is_empty()>
-                            {move || if service_loading.get() { "Loading\u{2026}" } else { "Fetch" }}
+                            {move || if service_loading.get() { "Loading\u{2026}" } else if active_form.get() == ServiceForm::Xyz { "Add" } else { "Fetch" }}
                         </button>
                     </section>
                     <Show when=move || !service_entries.get().is_empty()>

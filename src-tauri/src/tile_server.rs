@@ -44,6 +44,7 @@ pub enum LayerSource {
     Kmz { data: KmzData, images: Vec<DecodedImage>, path: Option<String> },
     Wms { base_url: String, layer_name: String },
     ArcGis { base_url: String, service_name: String },
+    Xyz { url_template: String },
 }
 
 pub struct Layer {
@@ -97,6 +98,19 @@ impl ServerHandle {
         layers.push(Layer {
             id, name: display_name, bbox: WMS_BBOX, kind: "wms", visible: true, opacity: 1.0,
             source: LayerSource::Wms { base_url, layer_name },
+        });
+        drop(layers);
+        self.clear_cache();
+        id
+    }
+
+    pub fn add_xyz_layer(&self, url_template: String, display_name: String) -> u32 {
+        let id = self.next_id();
+
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers.push(Layer {
+            id, name: display_name, bbox: WMS_BBOX, kind: "xyz", visible: true, opacity: 1.0,
+            source: LayerSource::Xyz { url_template },
         });
         drop(layers);
         self.clear_cache();
@@ -363,6 +377,30 @@ async fn fetch_wms_tile(
     Some(resp.bytes().await.ok()?.to_vec())
 }
 
+async fn fetch_xyz_tile(
+    client: &reqwest::Client,
+    url_template: &str,
+    z: u32, x: u32, y: u32,
+) -> Option<Vec<u8>> {
+    let url = url_template
+        .replace("{z}", &z.to_string())
+        .replace("{x}", &x.to_string())
+        .replace("{y}", &y.to_string());
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| eprintln!("XYZ fetch error: {e}"))
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    Some(resp.bytes().await.ok()?.to_vec())
+}
+
 async fn fetch_arcgis_tile(
     client: &reqwest::Client,
     base_url: &str,
@@ -388,6 +426,7 @@ async fn fetch_arcgis_tile(
 enum RemoteReq {
     Wms(String, String),
     ArcGis(String, String),
+    Xyz(String),
 }
 
 async fn serve_tile(
@@ -414,6 +453,8 @@ async fn serve_tile(
                     Some((l.id, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
                 LayerSource::ArcGis { base_url, service_name } =>
                     Some((l.id, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
+                LayerSource::Xyz { url_template } =>
+                    Some((l.id, RemoteReq::Xyz(url_template.clone()))),
                 LayerSource::Kmz { .. } => None,
             }
         }).collect()
@@ -430,6 +471,7 @@ async fn serve_tile(
             let bytes = match req {
                 RemoteReq::Wms(url, layer) => fetch_wms_tile(client, url, layer, z.into(), x, y).await,
                 RemoteReq::ArcGis(url, svc) => fetch_arcgis_tile(client, url, svc, z.into(), x, y).await,
+                RemoteReq::Xyz(tpl) => fetch_xyz_tile(client, tpl, z.into(), x, y).await,
             }?;
             put_remote_cached(state_ref, id, z, x, y, bytes.clone());
             decode_remote_bytes(&bytes).map(|pm| (id, pm))
@@ -466,7 +508,7 @@ fn render_tile(state: &TileState, remote_tiles: &[(u32, Pixmap)], z: u32, x: u32
                 render_ground_overlays(&mut pixmap, images, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
                 render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
             }
-            LayerSource::Wms { .. } | LayerSource::ArcGis { .. } => {
+            LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } => {
                 if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(id, _)| *id == layer.id) {
                     let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
                     pixmap.draw_pixmap(

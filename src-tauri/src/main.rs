@@ -120,6 +120,7 @@ fn main() {
             overlay::add_wms_layer,
             overlay::fetch_arcgis_services,
             overlay::add_arcgis_layer,
+            overlay::add_xyz_layer,
             overlay::move_layer,
             overlay::remove_overlay,
             overlay::reorder_layer,

@@ -409,6 +409,17 @@ pub async fn add_arcgis_layer(url: &str, service_name: &str, display_name: &str,
     parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
 }
 
+pub async fn add_xyz_layer(url_template: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "urlTemplate", &url_template.into())?;
+    js_set(&args, "displayName", &display_name.into())?;
+    if let Some(gid) = group_id {
+        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    let result = invoke("add_xyz_layer", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
 pub async fn move_layer(layer_id: u32, from_group_id: u32, to_group_id: u32) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
     js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)))?;
