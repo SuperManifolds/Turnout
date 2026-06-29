@@ -234,6 +234,8 @@ pub struct LayerInfo {
     pub id: u32,
     pub name: String,
     pub kind: String,
+    pub visible: bool,
+    pub opacity: f32,
     pub bbox: [f64; 4],
 }
 
@@ -262,6 +264,8 @@ fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
         id: get_f64("id")? as u32,
         name: get_str("name")?,
         kind: get_str("kind").unwrap_or_else(|| "kmz".into()),
+        visible: js_sys::Reflect::get(val, &"visible".into()).ok()?.as_bool().unwrap_or(true),
+        opacity: get_f64("opacity").unwrap_or(1.0) as f32,
         bbox: parse_bbox(&bbox_val)?,
     })
 }
@@ -325,4 +329,22 @@ pub async fn add_wms_layer(url: &str, layer_name: &str, display_name: &str) -> R
     js_set(&args, "displayName", &display_name.into())?;
     let result = invoke("add_wms_layer", &args).await?;
     parse_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn set_layer_visible(id: u32, visible: bool) -> Option<OverlayStatus> {
+    let args = js_sys::Object::new();
+    js_set(&args, "id", &JsValue::from_f64(f64::from(id))).ok()?;
+    js_set(&args, "visible", &JsValue::from_bool(visible)).ok()?;
+    let result = invoke("set_layer_visible", &args).await.ok()?;
+    if result.is_null() || result.is_undefined() { return None; }
+    parse_status(&result)
+}
+
+pub async fn set_layer_opacity(id: u32, opacity: f32) -> Option<OverlayStatus> {
+    let args = js_sys::Object::new();
+    js_set(&args, "id", &JsValue::from_f64(f64::from(id))).ok()?;
+    js_set(&args, "opacity", &JsValue::from_f64(f64::from(opacity))).ok()?;
+    let result = invoke("set_layer_opacity", &args).await.ok()?;
+    if result.is_null() || result.is_undefined() { return None; }
+    parse_status(&result)
 }

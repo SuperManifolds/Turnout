@@ -87,6 +87,7 @@ fn main() {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
+            overlay::restore_layers(app.handle());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -114,6 +115,8 @@ fn main() {
             overlay::fetch_wms_layers,
             overlay::add_wms_layer,
             overlay::remove_overlay,
+            overlay::set_layer_visible,
+            overlay::set_layer_opacity,
             overlay::get_overlay_status,
         ])
         .run(tauri::generate_context!())

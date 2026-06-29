@@ -16,6 +16,7 @@ use turnout_core::kml::{Geometry, KmzData, Style};
 
 const TILE_SIZE: u32 = 256;
 const CACHE_CAPACITY: usize = 512;
+const PREFERRED_PORT: u16 = 17853;
 
 const DEFAULT_LINE_COLOR: [u8; 4] = [255, 100, 0, 200];
 const DEFAULT_LINE_WIDTH: f32 = 2.0;
@@ -34,7 +35,7 @@ pub(crate) struct DecodedImage {
 }
 
 pub enum LayerSource {
-    Kmz { data: KmzData, images: Vec<DecodedImage> },
+    Kmz { data: KmzData, images: Vec<DecodedImage>, path: Option<String> },
     Wms { base_url: String, layer_name: String },
 }
 
@@ -43,7 +44,9 @@ pub struct Layer {
     pub name: String,
     pub bbox: (f64, f64, f64, f64),
     pub kind: &'static str,
-    source: LayerSource,
+    pub visible: bool,
+    pub opacity: f32,
+    pub source: LayerSource,
 }
 
 pub struct TileState {
@@ -60,7 +63,7 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    pub fn add_kmz_layer(&self, data: KmzData) -> bool {
+    pub fn add_kmz_layer(&self, data: KmzData, path: Option<String>) -> bool {
         let Some(bbox) = data.bbox() else { return false };
         let name = data.name.clone().unwrap_or_else(|| "Overlay".to_string());
         let images = decode_images(&data);
@@ -68,8 +71,8 @@ impl ServerHandle {
 
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.push(Layer {
-            id, name, bbox, kind: "kmz",
-            source: LayerSource::Kmz { data, images },
+            id, name, bbox, kind: "kmz", visible: true, opacity: 1.0,
+            source: LayerSource::Kmz { data, images, path },
         });
         drop(layers);
         self.clear_cache();
@@ -81,10 +84,7 @@ impl ServerHandle {
 
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.push(Layer {
-            id,
-            name: display_name,
-            bbox: WMS_BBOX,
-            kind: "wms",
+            id, name: display_name, bbox: WMS_BBOX, kind: "wms", visible: true, opacity: 1.0,
             source: LayerSource::Wms { base_url, layer_name },
         });
         drop(layers);
@@ -104,6 +104,30 @@ impl ServerHandle {
         removed
     }
 
+    pub fn set_layer_visible(&self, id: u32, visible: bool) -> bool {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
+            layer.visible = visible;
+            drop(layers);
+            self.clear_cache();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_layer_opacity(&self, id: u32, opacity: f32) -> bool {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
+            layer.opacity = opacity.clamp(0.0, 1.0);
+            drop(layers);
+            self.clear_cache();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn layer_count(&self) -> usize {
         self.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
@@ -115,7 +139,7 @@ impl ServerHandle {
         id
     }
 
-    fn clear_cache(&self) {
+    pub fn clear_cache(&self) {
         let mut cache = self.state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.clear();
     }
@@ -136,7 +160,10 @@ pub async fn start() -> Result<ServerHandle, Box<dyn std::error::Error + Send + 
         .layer(CorsLayer::permissive())
         .with_state(Arc::clone(&state));
 
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let listener = match TcpListener::bind(format!("127.0.0.1:{PREFERRED_PORT}")).await {
+        Ok(l) => l,
+        Err(_) => TcpListener::bind("127.0.0.1:0").await?,
+    };
     let port = listener.local_addr()?.port();
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -256,6 +283,7 @@ async fn serve_tile(
     let wms_requests: Vec<(usize, String, String)> = {
         let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.iter().enumerate().filter_map(|(i, l)| {
+            if !l.visible { return None; }
             if let LayerSource::Wms { base_url, layer_name } = &l.source {
                 Some((i, base_url.clone(), layer_name.clone()))
             } else {
@@ -287,17 +315,22 @@ fn render_tile(state: &TileState, wms_tiles: &[(usize, Pixmap)], z: u32, x: u32,
 
     let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     for (i, layer) in layers.iter().enumerate() {
+        if !layer.visible {
+            continue;
+        }
+        let opacity = layer.opacity;
         match &layer.source {
-            LayerSource::Kmz { data, images } => {
-                render_ground_overlays(&mut pixmap, images, z, x, y, tile_w, tile_s, tile_e, tile_n);
-                render_geometry(&mut pixmap, data, z, x, y, tile_w, tile_s, tile_e, tile_n);
+            LayerSource::Kmz { data, images, .. } => {
+                render_ground_overlays(&mut pixmap, images, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
+                render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
             }
             LayerSource::Wms { .. } => {
                 if let Some((_, wms_pixmap)) = wms_tiles.iter().find(|(idx, _)| *idx == i) {
+                    let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
                     pixmap.draw_pixmap(
                         0, 0,
                         wms_pixmap.as_ref(),
-                        &PixmapPaint::default(),
+                        &paint,
                         Transform::identity(),
                         None,
                     );
@@ -312,9 +345,12 @@ fn render_tile(state: &TileState, wms_tiles: &[(usize, Pixmap)], z: u32, x: u32,
 fn render_ground_overlays(
     pixmap: &mut Pixmap,
     images: &[DecodedImage],
+    opacity: f32,
     z: u32, x: u32, y: u32,
     tile_w: f64, tile_s: f64, tile_e: f64, tile_n: f64,
 ) {
+    let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
+
     for ov in images {
         if ov.east < tile_w || ov.west > tile_e || ov.north < tile_s || ov.south > tile_n {
             continue;
@@ -344,19 +380,18 @@ fn render_ground_overlays(
             Transform::from_translate(px_left, py_top).pre_concat(Transform::from_scale(sx, sy))
         };
 
-        pixmap.draw_pixmap(
-            0, 0,
-            ov.pixmap.as_ref(),
-            &PixmapPaint::default(),
-            transform,
-            None,
-        );
+        pixmap.draw_pixmap(0, 0, ov.pixmap.as_ref(), &paint, transform, None);
     }
+}
+
+fn apply_opacity(rgba: [u8; 4], opacity: f32) -> [u8; 4] {
+    [rgba[0], rgba[1], rgba[2], (f32::from(rgba[3]) * opacity) as u8]
 }
 
 fn render_geometry(
     pixmap: &mut Pixmap,
     data: &KmzData,
+    opacity: f32,
     z: u32, x: u32, y: u32,
     tile_w: f64, tile_s: f64, tile_e: f64, tile_n: f64,
 ) {
@@ -368,13 +403,14 @@ fn render_geometry(
 
     for pm in &data.placemarks {
         let style = data.resolve_style(pm);
-        render_single_geometry(pixmap, &pm.geometry, z, x, y, ew, es, ee, en, &style);
+        render_single_geometry(pixmap, &pm.geometry, opacity, z, x, y, ew, es, ee, en, &style);
     }
 }
 
 fn render_single_geometry(
     pixmap: &mut Pixmap,
     geom: &Geometry,
+    opacity: f32,
     z: u32, x: u32, y: u32,
     ew: f64, es: f64, ee: f64, en: f64,
     style: &Style,
@@ -382,22 +418,22 @@ fn render_single_geometry(
     match geom {
         Geometry::Point { lon, lat } => {
             if *lon >= ew && *lon <= ee && *lat >= es && *lat <= en {
-                render_point(pixmap, *lat, *lon, z, x, y, style);
+                render_point(pixmap, *lat, *lon, opacity, z, x, y, style);
             }
         }
         Geometry::LineString { coords } => {
             if coords_intersect(coords, ew, es, ee, en) {
-                render_linestring(pixmap, coords, z, x, y, style);
+                render_linestring(pixmap, coords, opacity, z, x, y, style);
             }
         }
         Geometry::Polygon { outer, inner } => {
             if coords_intersect(outer, ew, es, ee, en) {
-                render_polygon(pixmap, outer, inner, z, x, y, style);
+                render_polygon(pixmap, outer, inner, opacity, z, x, y, style);
             }
         }
         Geometry::Multi(geoms) => {
             for g in geoms {
-                render_single_geometry(pixmap, g, z, x, y, ew, es, ee, en, style);
+                render_single_geometry(pixmap, g, opacity, z, x, y, ew, es, ee, en, style);
             }
         }
     }
@@ -407,10 +443,10 @@ fn coords_intersect(coords: &[(f64, f64)], w: f64, s: f64, e: f64, n: f64) -> bo
     coords.iter().any(|(lon, lat)| *lon >= w && *lon <= e && *lat >= s && *lat <= n)
 }
 
-fn render_point(pixmap: &mut Pixmap, lat: f64, lon: f64, z: u32, x: u32, y: u32, style: &Style) {
+fn render_point(pixmap: &mut Pixmap, lat: f64, lon: f64, opacity: f32, z: u32, x: u32, y: u32, style: &Style) {
     let (px, py) = latlon_to_tile_pixel(lat, lon, z, x, y);
 
-    let rgba = style.line_color.unwrap_or(POINT_COLOR);
+    let rgba = apply_opacity(style.line_color.unwrap_or(POINT_COLOR), opacity);
     let mut paint = Paint::default();
     paint.set_color(Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]));
     paint.anti_alias = true;
@@ -425,6 +461,7 @@ fn render_point(pixmap: &mut Pixmap, lat: f64, lon: f64, z: u32, x: u32, y: u32,
 fn render_linestring(
     pixmap: &mut Pixmap,
     coords: &[(f64, f64)],
+    opacity: f32,
     z: u32, x: u32, y: u32,
     style: &Style,
 ) {
@@ -442,7 +479,7 @@ fn render_linestring(
 
     let Some(path) = pb.finish() else { return };
 
-    let rgba = style.line_color.unwrap_or(DEFAULT_LINE_COLOR);
+    let rgba = apply_opacity(style.line_color.unwrap_or(DEFAULT_LINE_COLOR), opacity);
     let mut paint = Paint::default();
     paint.set_color(Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]));
     paint.anti_alias = true;
@@ -459,6 +496,7 @@ fn render_polygon(
     pixmap: &mut Pixmap,
     outer: &[(f64, f64)],
     inner: &[Vec<(f64, f64)>],
+    opacity: f32,
     z: u32, x: u32, y: u32,
     style: &Style,
 ) {
@@ -494,7 +532,7 @@ fn render_polygon(
     let should_outline = style.poly_outline.unwrap_or(true);
 
     if should_fill {
-        let rgba = style.fill_color.unwrap_or(DEFAULT_FILL_COLOR);
+        let rgba = apply_opacity(style.fill_color.unwrap_or(DEFAULT_FILL_COLOR), opacity);
         let mut paint = Paint::default();
         paint.set_color(Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]));
         paint.anti_alias = true;
@@ -502,7 +540,7 @@ fn render_polygon(
     }
 
     if should_outline {
-        let rgba = style.line_color.unwrap_or(DEFAULT_LINE_COLOR);
+        let rgba = apply_opacity(style.line_color.unwrap_or(DEFAULT_LINE_COLOR), opacity);
         let mut paint = Paint::default();
         paint.set_color(Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]));
         paint.anti_alias = true;

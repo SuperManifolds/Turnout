@@ -4,7 +4,6 @@ use wasm_bindgen::JsCast;
 
 use crate::tauri;
 
-const DEFAULT_OPACITY: f64 = 0.7;
 const SOURCE_ID: &str = "kmz-overlay";
 
 #[wasm_bindgen]
@@ -13,6 +12,11 @@ extern "C" {
     fn map_remove_overlay_layer(id: &str);
     fn map_set_overlay_opacity(id: &str, opacity: f64);
     fn map_fit_bounds(west: f64, south: f64, east: f64, north: f64);
+}
+
+fn refresh_map_layer(status: &tauri::OverlayStatus) {
+    map_remove_overlay_layer(SOURCE_ID);
+    map_add_overlay_layer(SOURCE_ID, &status.tile_url, 1.0);
 }
 
 #[component]
@@ -24,7 +28,6 @@ pub fn OverlayDrawer(
     let (tile_url, set_tile_url) = create_signal::<Option<String>>(None);
     let (loading, set_loading) = create_signal(false);
     let (error, set_error) = create_signal::<Option<String>>(None);
-    let (opacity, set_opacity) = create_signal(DEFAULT_OPACITY);
     let (copied, set_copied) = create_signal(false);
 
     let (wms_open, set_wms_open) = create_signal(false);
@@ -34,10 +37,15 @@ pub fn OverlayDrawer(
 
     let apply_status = move |status: &tauri::OverlayStatus| {
         set_layers.set(status.layers.clone());
-        map_remove_overlay_layer(SOURCE_ID);
-        map_add_overlay_layer(SOURCE_ID, &status.tile_url, opacity.get());
+        refresh_map_layer(status);
         set_tile_url.set(Some(status.tile_url.clone()));
     };
+
+    spawn_local(async move {
+        if let Some(status) = tauri::get_overlay_status().await {
+            apply_status(&status);
+        }
+    });
 
     let on_add_kmz = move |_| {
         set_error.set(None);
@@ -70,12 +78,20 @@ pub fn OverlayDrawer(
         });
     };
 
-    let on_opacity = move |ev: web_sys::Event| {
-        let Some(target) = ev.target() else { return };
-        let input: web_sys::HtmlInputElement = target.unchecked_into();
-        let val: f64 = input.value().parse().unwrap_or(DEFAULT_OPACITY);
-        set_opacity.set(val);
-        map_set_overlay_opacity(SOURCE_ID, val);
+    let on_toggle_visible = move |id: u32, visible: bool| {
+        spawn_local(async move {
+            if let Some(status) = tauri::set_layer_visible(id, visible).await {
+                apply_status(&status);
+            }
+        });
+    };
+
+    let on_layer_opacity = move |id: u32, val: f32| {
+        spawn_local(async move {
+            if let Some(status) = tauri::set_layer_opacity(id, val).await {
+                apply_status(&status);
+            }
+        });
     };
 
     let on_copy = move |_| {
@@ -209,30 +225,39 @@ pub fn OverlayDrawer(
                     {move || layers.get().iter().map(|l| {
                         let id = l.id;
                         let name = l.name.clone();
+                        let visible = l.visible;
+                        let layer_opacity = l.opacity;
                         let icon = if l.kind == "wms" { "fa-solid fa-globe" } else { "fa-solid fa-layer-group" };
                         view! {
                             <li class="overlay-item">
+                                <button class="icon-btn visibility-toggle"
+                                    on:click=move |_| on_toggle_visible(id, !visible)
+                                    title=move || if visible { "Hide" } else { "Show" }
+                                >
+                                    <i class=if visible { "fa-solid fa-eye" } else { "fa-solid fa-eye-slash" }></i>
+                                </button>
                                 <i class=format!("{icon} overlay-icon")></i>
                                 <span class="overlay-name">{name}</span>
                                 <button class="icon-btn danger" title="Remove" on:click=move |_| on_remove(id)>
                                     <i class="fa-solid fa-trash"></i>
                                 </button>
+                                <input
+                                    type="range"
+                                    class="layer-opacity"
+                                    min="0" max="1" step="0.05"
+                                    prop:value=layer_opacity.to_string()
+                                    on:change=move |ev: web_sys::Event| {
+                                        let Some(target) = ev.target() else { return };
+                                        let input: web_sys::HtmlInputElement = target.unchecked_into();
+                                        let val: f32 = input.value().parse().unwrap_or(1.0);
+                                        on_layer_opacity(id, val);
+                                    }
+                                    title="Layer opacity"
+                                />
                             </li>
                         }
                     }).collect_view()}
                 </ul>
-
-                <Show when=move || !layers.get().is_empty()>
-                    <section class="overlay-opacity">
-                        <label>"Opacity"</label>
-                        <input
-                            type="range"
-                            min="0" max="1" step="0.05"
-                            prop:value=move || opacity.get().to_string()
-                            on:input=on_opacity
-                        />
-                    </section>
-                </Show>
             </aside>
         </Show>
     }
