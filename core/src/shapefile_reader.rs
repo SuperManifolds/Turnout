@@ -11,6 +11,7 @@ const DEFAULT_LINE_COLOR: [u8; 4] = [255, 140, 0, 200];
 const DEFAULT_FILL_COLOR: [u8; 4] = [70, 130, 180, 100];
 const DEFAULT_POINT_COLOR: [u8; 4] = [220, 50, 50, 220];
 const DEFAULT_LINE_WIDTH: f32 = 2.0;
+const DEFAULT_POLYGON_OUTLINE_WIDTH: f32 = 1.0;
 
 struct StyleRule {
     filter: Option<(String, String)>,
@@ -205,8 +206,12 @@ fn generic_rings_to_polygon<P: HasXY>(rings: &[shapefile::PolygonRing<P>], crs: 
     if outers.len() == 1 {
         return Some(Geometry::Polygon { outer: outers.remove(0), inner: inners });
     }
+    let mut first = true;
     Some(Geometry::Multi(
-        outers.into_iter().map(|outer| Geometry::Polygon { outer, inner: Vec::new() }).collect(),
+        outers.into_iter().map(|outer| {
+            let inner = if first { first = false; std::mem::take(&mut inners) } else { Vec::new() };
+            Geometry::Polygon { outer, inner }
+        }).collect(),
     ))
 }
 
@@ -258,7 +263,7 @@ fn default_style_for(geom: &Geometry) -> Style {
         Geometry::Polygon { .. } => Style {
             fill_color: Some(DEFAULT_FILL_COLOR),
             line_color: Some(DEFAULT_LINE_COLOR),
-            line_width: Some(1.0),
+            line_width: Some(DEFAULT_POLYGON_OUTLINE_WIDTH),
             poly_fill: Some(true),
             poly_outline: Some(true),
         },
@@ -411,12 +416,12 @@ fn apply_css_param(style: &mut Style, name: &str, value: &str, in_stroke: bool, 
         }
         "fill-opacity" if in_fill => {
             if let (Some(c), Ok(opacity)) = (&mut style.fill_color, value.parse::<f32>()) {
-                c[3] = (opacity * 255.0) as u8;
+                c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
             }
         }
         "stroke-opacity" if in_stroke => {
             if let (Some(c), Ok(opacity)) = (&mut style.line_color, value.parse::<f32>()) {
-                c[3] = (opacity * 255.0) as u8;
+                c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
             }
         }
         _ => {}

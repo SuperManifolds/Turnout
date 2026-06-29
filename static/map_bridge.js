@@ -315,13 +315,6 @@ window.map_remove_overlay_layer = function(id) {
     if (_map.getSource(id)) _map.removeSource(id);
 };
 
-window.map_set_overlay_opacity = function(id, opacity) {
-    if (!_map) return;
-    if (_map.getLayer(id + "-layer")) {
-        _map.setPaintProperty(id + "-layer", "raster-opacity", opacity);
-    }
-};
-
 window.map_fit_bounds = function(west, south, east, north) {
     if (!_map) return;
     _map.fitBounds([[west, south], [east, north]], { padding: 50 });

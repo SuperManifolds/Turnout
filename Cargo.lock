@@ -6040,6 +6040,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "dirs-next",
+ "futures",
  "image",
  "lru",
  "notify",

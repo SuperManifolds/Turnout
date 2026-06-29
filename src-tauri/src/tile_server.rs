@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -16,13 +17,17 @@ use turnout_core::kml::{Geometry, KmzData, Style};
 
 const TILE_SIZE: u32 = 256;
 const CACHE_CAPACITY: usize = 512;
-const PREFERRED_PORT: u16 = 17853;
+pub const PREFERRED_PORT: u16 = 17853;
+const MAX_ZOOM: u8 = 22;
+const HTTP_TIMEOUT_SECS: u64 = 15;
 
 const DEFAULT_LINE_COLOR: [u8; 4] = [255, 100, 0, 200];
 const DEFAULT_LINE_WIDTH: f32 = 2.0;
 const DEFAULT_FILL_COLOR: [u8; 4] = [255, 100, 0, 80];
 const POINT_RADIUS: f32 = 5.0;
 const POINT_COLOR: [u8; 4] = [255, 60, 0, 220];
+const MIN_OVERLAY_PIXEL_SIZE: f32 = 0.01;
+const ROTATION_EPSILON: f64 = 0.001;
 const WMS_BBOX: (f64, f64, f64, f64) = (-180.0, -85.051_129, 180.0, 85.051_129);
 
 pub(crate) struct DecodedImage {
@@ -118,6 +123,22 @@ impl ServerHandle {
         removed
     }
 
+    pub fn take_layer(&self, id: u32) -> Option<Layer> {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let idx = layers.iter().position(|l| l.id == id)?;
+        let layer = layers.remove(idx);
+        drop(layers);
+        self.clear_cache();
+        Some(layer)
+    }
+
+    pub fn insert_layer(&self, layer: Layer) {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers.push(layer);
+        drop(layers);
+        self.clear_cache();
+    }
+
     pub fn set_layer_visible(&self, id: u32, visible: bool) -> bool {
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
@@ -159,14 +180,18 @@ impl ServerHandle {
     }
 }
 
-pub async fn start() -> Result<ServerHandle, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::Error + Send + Sync>> {
     let state = Arc::new(TileState {
         layers: RwLock::new(Vec::new()),
         cache: Mutex::new(LruCache::new(
             NonZeroUsize::new(CACHE_CAPACITY).expect("nonzero"),
         )),
         next_id: Mutex::new(0),
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_default(),
     });
 
     let app = Router::new()
@@ -174,9 +199,13 @@ pub async fn start() -> Result<ServerHandle, Box<dyn std::error::Error + Send + 
         .layer(CorsLayer::permissive())
         .with_state(Arc::clone(&state));
 
-    let listener = match TcpListener::bind(format!("127.0.0.1:{PREFERRED_PORT}")).await {
-        Ok(l) => l,
-        Err(_) => TcpListener::bind("127.0.0.1:0").await?,
+    let listener = if port_hint > 0 {
+        match TcpListener::bind(format!("127.0.0.1:{port_hint}")).await {
+            Ok(l) => l,
+            Err(_) => TcpListener::bind("127.0.0.1:0").await?,
+        }
+    } else {
+        TcpListener::bind("127.0.0.1:0").await?
     };
     let port = listener.local_addr()?.port();
 
@@ -320,6 +349,10 @@ async fn serve_tile(
     Path((z, x, y)): Path<(u8, u32, u32)>,
     State(state): State<Arc<TileState>>,
 ) -> impl IntoResponse {
+    if z > MAX_ZOOM {
+        return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], b"zoom level too high".to_vec());
+    }
+
     {
         let mut cache = state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(png) = cache.get(&(z, x, y)) {
@@ -327,30 +360,36 @@ async fn serve_tile(
         }
     }
 
-    let remote_requests: Vec<(usize, RemoteReq)> = {
+    let remote_requests: Vec<(u32, RemoteReq)> = {
         let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        layers.iter().enumerate().filter_map(|(i, l)| {
+        layers.iter().filter_map(|l| {
             if !l.visible { return None; }
             match &l.source {
                 LayerSource::Wms { base_url, layer_name } =>
-                    Some((i, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
+                    Some((l.id, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
                 LayerSource::ArcGis { base_url, service_name } =>
-                    Some((i, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
+                    Some((l.id, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
                 LayerSource::Kmz { .. } => None,
             }
         }).collect()
     };
 
-    let mut remote_tiles: Vec<(usize, Pixmap)> = Vec::new();
-    for (idx, req) in &remote_requests {
-        let result = match req {
-            RemoteReq::Wms(url, layer) => fetch_wms_tile(&state.http, url, layer, z.into(), x, y).await,
-            RemoteReq::ArcGis(url, svc) => fetch_arcgis_tile(&state.http, url, svc, z.into(), x, y).await,
-        };
-        if let Some(pixmap) = result {
-            remote_tiles.push((*idx, pixmap));
+    let fetches = remote_requests.iter().map(|(id, req)| {
+        let client = &state.http;
+        let id = *id;
+        async move {
+            let result = match req {
+                RemoteReq::Wms(url, layer) => fetch_wms_tile(client, url, layer, z.into(), x, y).await,
+                RemoteReq::ArcGis(url, svc) => fetch_arcgis_tile(client, url, svc, z.into(), x, y).await,
+            };
+            result.map(|pixmap| (id, pixmap))
         }
-    }
+    });
+    let remote_tiles: Vec<(u32, Pixmap)> = futures::future::join_all(fetches)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
 
     let png = render_tile(&state, &remote_tiles, z.into(), x, y);
 
@@ -362,12 +401,12 @@ async fn serve_tile(
     (StatusCode::OK, [("content-type", "image/png")], png)
 }
 
-fn render_tile(state: &TileState, remote_tiles: &[(usize, Pixmap)], z: u32, x: u32, y: u32) -> Vec<u8> {
+fn render_tile(state: &TileState, remote_tiles: &[(u32, Pixmap)], z: u32, x: u32, y: u32) -> Vec<u8> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).expect("256x256 pixmap");
     let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
 
     let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    for (i, layer) in layers.iter().enumerate() {
+    for layer in layers.iter() {
         if !layer.visible {
             continue;
         }
@@ -378,7 +417,7 @@ fn render_tile(state: &TileState, remote_tiles: &[(usize, Pixmap)], z: u32, x: u
                 render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
             }
             LayerSource::Wms { .. } | LayerSource::ArcGis { .. } => {
-                if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(idx, _)| *idx == i) {
+                if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(id, _)| *id == layer.id) {
                     let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
                     pixmap.draw_pixmap(
                         0, 0,
@@ -414,14 +453,14 @@ fn render_ground_overlays(
 
         let dest_w = px_right - px_left;
         let dest_h = py_bottom - py_top;
-        if dest_w.abs() < 0.01 || dest_h.abs() < 0.01 {
+        if dest_w.abs() < MIN_OVERLAY_PIXEL_SIZE || dest_h.abs() < MIN_OVERLAY_PIXEL_SIZE {
             continue;
         }
 
         let sx = dest_w / ov.pixmap.width() as f32;
         let sy = dest_h / ov.pixmap.height() as f32;
 
-        let transform = if ov.rotation.abs() > 0.001 {
+        let transform = if ov.rotation.abs() > ROTATION_EPSILON {
             let cx = (px_left + px_right) / 2.0;
             let cy = (py_top + py_bottom) / 2.0;
             Transform::from_translate(cx, cy)
@@ -438,7 +477,7 @@ fn render_ground_overlays(
 }
 
 fn apply_opacity(rgba: [u8; 4], opacity: f32) -> [u8; 4] {
-    [rgba[0], rgba[1], rgba[2], (f32::from(rgba[3]) * opacity) as u8]
+    [rgba[0], rgba[1], rgba[2], (f32::from(rgba[3]) * opacity).clamp(0.0, 255.0) as u8]
 }
 
 fn render_geometry(
@@ -493,7 +532,14 @@ fn render_single_geometry(
 }
 
 fn coords_intersect(coords: &[(f64, f64)], w: f64, s: f64, e: f64, n: f64) -> bool {
-    coords.iter().any(|(lon, lat)| *lon >= w && *lon <= e && *lat >= s && *lat <= n)
+    if coords.iter().any(|(lon, lat)| *lon >= w && *lon <= e && *lat >= s && *lat <= n) {
+        return true;
+    }
+    coords.windows(2).any(|seg| {
+        turnout_core::geo::segment_rect_intersect(
+            seg[0].0, seg[0].1, seg[1].0, seg[1].1, w, s, e, n,
+        ).is_some()
+    })
 }
 
 fn render_point(pixmap: &mut Pixmap, lat: f64, lon: f64, opacity: f32, z: u32, x: u32, y: u32, style: &Style) {

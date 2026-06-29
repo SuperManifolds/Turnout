@@ -8,10 +8,24 @@ use crate::arcgis;
 use crate::tile_server::{self, LayerSource};
 use crate::wms;
 
-const STORE_KEY: &str = "overlay_layers";
+const STORE_KEY: &str = "overlay_groups";
 
 pub struct OverlayState {
-    server: Mutex<Option<tile_server::ServerHandle>>,
+    groups: Mutex<Vec<TileGroup>>,
+    next_group_id: Mutex<u32>,
+}
+
+struct TileGroup {
+    id: u32,
+    name: String,
+    handle: tile_server::ServerHandle,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SavedGroup {
+    name: String,
+    layers: Vec<SavedLayer>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -41,87 +55,40 @@ pub struct LayerInfo {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct OverlayStatus {
+pub struct GroupInfo {
+    pub id: u32,
+    pub name: String,
     pub tile_url: String,
     pub layers: Vec<LayerInfo>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayStatus {
+    pub groups: Vec<GroupInfo>,
 }
 
 impl OverlayState {
     pub fn new() -> Self {
         Self {
-            server: Mutex::new(None),
+            groups: Mutex::new(Vec::new()),
+            next_group_id: Mutex::new(0),
         }
     }
 
-    fn is_started(&self) -> bool {
-        let guard = self.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.is_some()
+    fn next_group_id(&self) -> u32 {
+        let mut id = self.next_group_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let val = *id;
+        *id += 1;
+        val
     }
 }
 
-#[tauri::command]
-pub async fn restore_overlays(app: tauri::AppHandle) -> Option<OverlayStatus> {
-    let saved = load_saved(&app);
-    if saved.is_empty() {
-        return None;
-    }
-
-    let state = app.state::<OverlayState>();
-    start_if_needed(state.inner()).await.ok()?;
-
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let server = guard.as_ref()?;
-
-    for layer in &saved {
-        match layer.kind.as_str() {
-            "kmz" => {
-                if let Some(ref path) = layer.path {
-                    match std::fs::read(path) {
-                        Ok(bytes) => match turnout_core::kml::parse_kmz(&bytes) {
-                            Ok(mut data) => {
-                                if data.name.is_none() {
-                                    data.name = Some(layer.name.clone());
-                                }
-                                server.add_kmz_layer(data, Some(path.clone()), "kmz");
-                            }
-                            Err(e) => eprintln!("Failed to parse {path}: {e}"),
-                        },
-                        Err(e) => eprintln!("Failed to read {path}: {e}"),
-                    }
-                }
-            }
-            "shp" => {
-                if let Some(ref path) = layer.path {
-                    match turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) {
-                        Ok(data) => { server.add_kmz_layer(data, Some(path.clone()), "shp"); }
-                        Err(e) => eprintln!("Failed to parse shapefile {path}: {e}"),
-                    }
-                }
-            }
-            "wms" => {
-                if let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) {
-                    server.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
-                }
-            }
-            "arcgis" => {
-                if let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) {
-                    server.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
-                }
-            }
-            _ => {}
-        }
-
-        let layers = server.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(last) = layers.last() {
-            let id = last.id;
-            drop(layers);
-            server.set_layer_visible(id, layer.visible);
-            server.set_layer_opacity(id, layer.opacity);
-        }
-    }
-
-    Some(build_status(server))
+fn port_for_index(index: usize) -> u16 {
+    tile_server::PREFERRED_PORT.saturating_add(index as u16)
 }
+
+// --- Tauri commands ---
 
 #[tauri::command]
 pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
@@ -134,7 +101,61 @@ pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn add_overlay(app: tauri::AppHandle, path: String) -> Result<OverlayStatus, String> {
+pub async fn create_group(app: tauri::AppHandle, name: String) -> Result<OverlayStatus, String> {
+    let state = app.state::<OverlayState>();
+    let group_id = state.next_group_id();
+    let port = {
+        let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        port_for_index(groups.len())
+    };
+
+    let handle = tile_server::start(port)
+        .await
+        .map_err(|e| format!("Failed to start tile server: {e}"))?;
+
+    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    groups.push(TileGroup { id: group_id, name, handle });
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn remove_group(app: tauri::AppHandle, group_id: u32) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(idx) = groups.iter().position(|g| g.id == group_id) {
+        let group = groups.remove(idx);
+        let _ = group.handle.shutdown_tx.send(true);
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn rename_group(app: tauri::AppHandle, group_id: u32, name: String) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter_mut().find(|g| g.id == group_id) {
+        group.name = name;
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+pub async fn add_overlay(
+    app: tauri::AppHandle,
+    path: String,
+    group_id: Option<u32>,
+) -> Result<OverlayStatus, String> {
     let is_shp = path.to_lowercase().ends_with(".shp");
     let mut data = if is_shp {
         turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(&path))
@@ -154,29 +175,23 @@ pub async fn add_overlay(app: tauri::AppHandle, path: String) -> Result<OverlayS
             .map(|s| s.to_string_lossy().to_string());
     }
 
-    let state = app.state::<OverlayState>();
-    start_if_needed(state.inner()).await?;
-
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let server = guard.as_ref().expect("just started");
     let kind = if is_shp { "shp" } else { "kmz" };
-    if !server.add_kmz_layer(data, Some(path), kind) {
-        return Err("File contains no geometry or overlays".into());
-    }
 
-    let status = build_status(server);
-    drop(guard);
-    save_layers(&app);
+    let state = app.state::<OverlayState>();
+    ensure_group_exists(&state, &app, group_id).await?;
+
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let group = find_group(&groups, group_id)?;
+    group.handle.add_kmz_layer(data, Some(path), kind);
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
     Ok(status)
 }
 
 #[tauri::command]
 pub async fn fetch_wms_layers(url: String) -> Result<Vec<wms::WmsLayerInfo>, String> {
-    let layers = wms::get_capabilities(&url).await?;
-    for l in &layers {
-        eprintln!("WMS layer: name={:?} title={:?}", l.name, l.title);
-    }
-    Ok(layers)
+    wms::get_capabilities(&url).await
 }
 
 #[tauri::command]
@@ -185,17 +200,17 @@ pub async fn add_wms_layer(
     url: String,
     layer_name: String,
     display_name: String,
+    group_id: Option<u32>,
 ) -> Result<OverlayStatus, String> {
     let state = app.state::<OverlayState>();
-    start_if_needed(state.inner()).await?;
+    ensure_group_exists(&state, &app, group_id).await?;
 
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let server = guard.as_ref().expect("just started");
-    server.add_wms_layer(url, layer_name, display_name);
-
-    let status = build_status(server);
-    drop(guard);
-    save_layers(&app);
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let group = find_group(&groups, group_id)?;
+    group.handle.add_wms_layer(url, layer_name, display_name);
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
     Ok(status)
 }
 
@@ -210,127 +225,251 @@ pub async fn add_arcgis_layer(
     url: String,
     service_name: String,
     display_name: String,
+    group_id: Option<u32>,
 ) -> Result<OverlayStatus, String> {
     let state = app.state::<OverlayState>();
-    start_if_needed(state.inner()).await?;
+    ensure_group_exists(&state, &app, group_id).await?;
 
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let server = guard.as_ref().expect("just started");
-    server.add_arcgis_layer(url, service_name, display_name);
-
-    let status = build_status(server);
-    drop(guard);
-    save_layers(&app);
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let group = find_group(&groups, group_id)?;
+    group.handle.add_arcgis_layer(url, service_name, display_name);
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
     Ok(status)
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn remove_overlay(app: tauri::AppHandle, id: u32) -> Option<OverlayStatus> {
+pub fn move_layer(
+    app: tauri::AppHandle,
+    layer_id: u32,
+    from_group_id: u32,
+    to_group_id: u32,
+) -> Result<OverlayStatus, String> {
     let state = app.state::<OverlayState>();
-    let mut guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    let server = guard.as_ref()?;
-    server.remove_layer(id);
+    let from = groups.iter().find(|g| g.id == from_group_id)
+        .ok_or("Source group not found")?;
+    let to = groups.iter().find(|g| g.id == to_group_id)
+        .ok_or("Destination group not found")?;
 
-    if server.layer_count() == 0 {
-        if let Some(s) = guard.take() {
-            let _ = s.shutdown_tx.send(true);
+    let layer = from.handle.take_layer(layer_id)
+        .ok_or("Layer not found in source group")?;
+    to.handle.insert_layer(layer);
+
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn remove_overlay(app: tauri::AppHandle, group_id: u32, layer_id: u32) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter().find(|g| g.id == group_id) {
+        group.handle.remove_layer(layer_id);
+        if group.handle.layer_count() == 0 {
+            let idx = groups.iter().position(|g| g.id == group_id).expect("just found");
+            let removed = groups.remove(idx);
+            let _ = removed.handle.shutdown_tx.send(true);
         }
-        drop(guard);
-        save_layers(&app);
-        return None;
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn set_layer_visible(app: tauri::AppHandle, group_id: u32, layer_id: u32, visible: bool) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter().find(|g| g.id == group_id) {
+        group.handle.set_layer_visible(layer_id, visible);
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn set_layer_opacity(app: tauri::AppHandle, group_id: u32, layer_id: u32, opacity: f32) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter().find(|g| g.id == group_id) {
+        group.handle.set_layer_opacity(layer_id, opacity);
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_overlay_status(app: tauri::AppHandle) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    build_status(&groups)
+}
+
+#[tauri::command]
+pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
+    let saved = load_saved(&app);
+    if saved.is_empty() {
+        return OverlayStatus { groups: Vec::new() };
     }
 
-    let status = build_status(server);
-    drop(guard);
-    save_layers(&app);
-    Some(status)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn set_layer_visible(app: tauri::AppHandle, id: u32, visible: bool) -> Option<OverlayStatus> {
     let state = app.state::<OverlayState>();
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let server = guard.as_ref()?;
-    server.set_layer_visible(id, visible);
-    let status = build_status(server);
-    drop(guard);
-    save_layers(&app);
-    Some(status)
+
+    for (i, saved_group) in saved.iter().enumerate() {
+        let port = port_for_index(i);
+        let Ok(handle) = tile_server::start(port).await else { continue };
+
+        for layer in &saved_group.layers {
+            restore_layer(&handle, layer);
+        }
+
+        let group_id = state.next_group_id();
+        let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        groups.push(TileGroup {
+            id: group_id,
+            name: saved_group.name.clone(),
+            handle,
+        });
+    }
+
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    build_status(&groups)
 }
 
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn set_layer_opacity(app: tauri::AppHandle, id: u32, opacity: f32) -> Option<OverlayStatus> {
-    let state = app.state::<OverlayState>();
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let server = guard.as_ref()?;
-    server.set_layer_opacity(id, opacity);
-    let status = build_status(server);
-    drop(guard);
-    save_layers(&app);
-    Some(status)
-}
+// --- Helpers ---
 
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_overlay_status(app: tauri::AppHandle) -> Option<OverlayStatus> {
-    let state = app.state::<OverlayState>();
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.as_ref().map(build_status)
-}
+async fn ensure_group_exists(
+    state: &OverlayState,
+    _app: &tauri::AppHandle,
+    group_id: Option<u32>,
+) -> Result<(), String> {
+    let has_target = {
+        let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match group_id {
+            Some(id) => groups.iter().any(|g| g.id == id),
+            None => !groups.is_empty(),
+        }
+    };
 
-async fn start_if_needed(state: &OverlayState) -> Result<(), String> {
-    if state.is_started() {
+    if has_target {
         return Ok(());
     }
 
-    let handle = tile_server::start()
+    let port = {
+        let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        port_for_index(groups.len())
+    };
+
+    let handle = tile_server::start(port)
         .await
         .map_err(|e| format!("Failed to start tile server: {e}"))?;
-    let mut guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = Some(handle);
+
+    let gid = state.next_group_id();
+    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if group_id.is_none() && groups.is_empty() || group_id.is_some() && !groups.iter().any(|g| g.id == group_id.expect("checked")) {
+        groups.push(TileGroup { id: gid, name: "Default".to_string(), handle });
+    } else {
+        let _ = handle.shutdown_tx.send(true);
+    }
     Ok(())
 }
 
-fn build_status(server: &tile_server::ServerHandle) -> OverlayStatus {
-    let layers = server.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    OverlayStatus {
-        tile_url: format!("http://127.0.0.1:{}/{{z}}/{{x}}/{{y}}", server.port),
-        layers: layers
-            .iter()
-            .map(|l| LayerInfo {
-                id: l.id,
-                name: l.name.clone(),
-                kind: l.kind,
-                visible: l.visible,
-                opacity: l.opacity,
-                bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
-            })
-            .collect(),
+fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
+    match layer.kind.as_str() {
+        "kmz" => {
+            let Some(ref path) = layer.path else { return };
+            let Ok(bytes) = std::fs::read(path) else { return };
+            let Ok(mut data) = turnout_core::kml::parse_kmz(&bytes) else { return };
+            if data.name.is_none() {
+                data.name = Some(layer.name.clone());
+            }
+            handle.add_kmz_layer(data, Some(path.clone()), "kmz");
+        }
+        "shp" => {
+            let Some(ref path) = layer.path else { return };
+            let Ok(data) = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) else { return };
+            handle.add_kmz_layer(data, Some(path.clone()), "shp");
+        }
+        "wms" => {
+            let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) else { return };
+            handle.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
+        }
+        "arcgis" => {
+            let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) else { return };
+            handle.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
+        }
+        _ => return,
+    }
+
+    let layers = handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(last) = layers.last() {
+        let id = last.id;
+        drop(layers);
+        handle.set_layer_visible(id, layer.visible);
+        handle.set_layer_opacity(id, layer.opacity);
     }
 }
 
-fn save_layers(app: &tauri::AppHandle) {
+fn find_group(groups: &[TileGroup], group_id: Option<u32>) -> Result<&TileGroup, String> {
+    match group_id {
+        Some(id) => groups.iter().find(|g| g.id == id).ok_or("Group not found".into()),
+        None => groups.first().ok_or("No groups exist".into()),
+    }
+}
+
+fn build_status(groups: &[TileGroup]) -> OverlayStatus {
+    OverlayStatus {
+        groups: groups.iter().map(|g| {
+            let layers = g.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            GroupInfo {
+                id: g.id,
+                name: g.name.clone(),
+                tile_url: format!("http://127.0.0.1:{}/{{z}}/{{x}}/{{y}}", g.handle.port),
+                layers: layers.iter().map(|l| LayerInfo {
+                    id: l.id,
+                    name: l.name.clone(),
+                    kind: l.kind,
+                    visible: l.visible,
+                    opacity: l.opacity,
+                    bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
+                }).collect(),
+            }
+        }).collect(),
+    }
+}
+
+// --- Persistence ---
+
+fn save_groups(app: &tauri::AppHandle) {
     use tauri_plugin_store::StoreExt;
 
     let state = app.state::<OverlayState>();
-    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let saved: Vec<SavedLayer> = guard.as_ref().map_or_else(Vec::new, |server| {
-        let layers = server.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        layers
-            .iter()
-            .map(|l| {
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let saved: Vec<SavedGroup> = groups.iter().map(|g| {
+        let layers = g.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        SavedGroup {
+            name: g.name.clone(),
+            layers: layers.iter().map(|l| {
                 let (path, wms_url, wms_layer, arcgis_url, arcgis_service) = match &l.source {
                     LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None),
-                    LayerSource::Wms { base_url, layer_name } => {
-                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None)
-                    }
-                    LayerSource::ArcGis { base_url, service_name } => {
-                        (None, None, None, Some(base_url.clone()), Some(service_name.clone()))
-                    }
+                    LayerSource::Wms { base_url, layer_name } =>
+                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None),
+                    LayerSource::ArcGis { base_url, service_name } =>
+                        (None, None, None, Some(base_url.clone()), Some(service_name.clone())),
                 };
                 SavedLayer {
                     kind: l.kind.to_string(),
@@ -343,10 +482,10 @@ fn save_layers(app: &tauri::AppHandle) {
                     arcgis_url,
                     arcgis_service,
                 }
-            })
-            .collect()
-    });
-    drop(guard);
+            }).collect(),
+        }
+    }).collect();
+    drop(groups);
 
     if let Ok(store) = app.store("settings.json") {
         store.set(STORE_KEY, serde_json::json!(saved));
@@ -354,7 +493,7 @@ fn save_layers(app: &tauri::AppHandle) {
     }
 }
 
-fn load_saved(app: &tauri::AppHandle) -> Vec<SavedLayer> {
+fn load_saved(app: &tauri::AppHandle) -> Vec<SavedGroup> {
     use tauri_plugin_store::StoreExt;
 
     let Ok(store) = app.store("settings.json") else {

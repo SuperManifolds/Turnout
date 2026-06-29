@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, bail};
+
+const KML_COLOR_HEX_LENGTH: usize = 8;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
@@ -415,7 +417,7 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
 }
 
 fn parse_kml_color(s: &str) -> Option<[u8; 4]> {
-    if s.len() != 8 {
+    if s.len() != KML_COLOR_HEX_LENGTH {
         return None;
     }
     let bytes: Vec<u8> = (0..4)
