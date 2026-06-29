@@ -340,6 +340,35 @@ pub async fn set_layer_visible(id: u32, visible: bool) -> Option<OverlayStatus> 
     parse_status(&result)
 }
 
+#[derive(Clone, Debug)]
+pub struct ArcGisServiceInfo {
+    pub name: String,
+    pub service_type: String,
+}
+
+pub async fn fetch_arcgis_services(url: &str) -> Result<Vec<ArcGisServiceInfo>, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    let result = invoke("fetch_arcgis_services", &args).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| {
+        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
+        Some(ArcGisServiceInfo {
+            name: get_str("name")?,
+            service_type: get_str("type")?,
+        })
+    }).collect())
+}
+
+pub async fn add_arcgis_layer(url: &str, service_name: &str, display_name: &str) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    js_set(&args, "serviceName", &service_name.into())?;
+    js_set(&args, "displayName", &display_name.into())?;
+    let result = invoke("add_arcgis_layer", &args).await?;
+    parse_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
 pub async fn set_layer_opacity(id: u32, opacity: f32) -> Option<OverlayStatus> {
     let args = js_sys::Object::new();
     js_set(&args, "id", &JsValue::from_f64(f64::from(id))).ok()?;

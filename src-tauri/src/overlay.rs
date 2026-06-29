@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::arcgis;
 use crate::tile_server::{self, LayerSource};
 use crate::wms;
 
@@ -23,6 +24,8 @@ struct SavedLayer {
     path: Option<String>,
     wms_url: Option<String>,
     wms_layer: Option<String>,
+    arcgis_url: Option<String>,
+    arcgis_service: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -95,6 +98,11 @@ pub fn restore_layers(app: &tauri::AppHandle) {
                 "wms" => {
                     if let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) {
                         handle.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
+                    }
+                }
+                "arcgis" => {
+                    if let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) {
+                        handle.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
                     }
                 }
                 _ => {}
@@ -176,6 +184,31 @@ pub async fn add_wms_layer(
     let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = guard.as_ref().expect("just started");
     server.add_wms_layer(url, layer_name, display_name);
+
+    let status = build_status(server);
+    drop(guard);
+    save_layers(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn fetch_arcgis_services(url: String) -> Result<Vec<arcgis::ArcGisServiceInfo>, String> {
+    arcgis::list_services(&url).await
+}
+
+#[tauri::command]
+pub async fn add_arcgis_layer(
+    app: tauri::AppHandle,
+    url: String,
+    service_name: String,
+    display_name: String,
+) -> Result<OverlayStatus, String> {
+    let state = app.state::<OverlayState>();
+    start_if_needed(state.inner()).await?;
+
+    let guard = state.server.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = guard.as_ref().expect("just started");
+    server.add_arcgis_layer(url, service_name, display_name);
 
     let status = build_status(server);
     drop(guard);
@@ -282,10 +315,13 @@ fn save_layers(app: &tauri::AppHandle) {
         layers
             .iter()
             .map(|l| {
-                let (path, wms_url, wms_layer) = match &l.source {
-                    LayerSource::Kmz { path, .. } => (path.clone(), None, None),
+                let (path, wms_url, wms_layer, arcgis_url, arcgis_service) = match &l.source {
+                    LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None),
                     LayerSource::Wms { base_url, layer_name } => {
-                        (None, Some(base_url.clone()), Some(layer_name.clone()))
+                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None)
+                    }
+                    LayerSource::ArcGis { base_url, service_name } => {
+                        (None, None, None, Some(base_url.clone()), Some(service_name.clone()))
                     }
                 };
                 SavedLayer {
@@ -296,6 +332,8 @@ fn save_layers(app: &tauri::AppHandle) {
                     path,
                     wms_url,
                     wms_layer,
+                    arcgis_url,
+                    arcgis_service,
                 }
             })
             .collect()

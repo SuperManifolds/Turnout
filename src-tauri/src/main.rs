@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod arcgis;
 mod blueprint;
 mod import;
 mod overlay;
@@ -114,6 +115,8 @@ fn main() {
             overlay::add_overlay,
             overlay::fetch_wms_layers,
             overlay::add_wms_layer,
+            overlay::fetch_arcgis_services,
+            overlay::add_arcgis_layer,
             overlay::remove_overlay,
             overlay::set_layer_visible,
             overlay::set_layer_opacity,

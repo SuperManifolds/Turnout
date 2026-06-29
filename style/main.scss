@@ -411,6 +411,12 @@ button.link {
             margin: 0;
         }
 
+        .copy-url-btn {
+            margin-left: auto;
+            font-size: var(--font-size-xs);
+            padding: 2px var(--spacing-sm);
+        }
+
         .close-btn {
             border: none;
             background: none;
@@ -498,7 +504,7 @@ button.link {
         margin: 0 var(--spacing-xs);
     }
 
-    .wms-form {
+    .service-form {
         display: flex;
         gap: var(--spacing-xs);
         padding: var(--spacing-sm) var(--spacing-md);
@@ -521,7 +527,7 @@ button.link {
         button { flex-shrink: 0; }
     }
 
-    .wms-layer-list {
+    .service-list {
         list-style: none;
         padding: 0;
         margin: 0;

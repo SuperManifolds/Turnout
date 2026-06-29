@@ -37,6 +37,7 @@ pub(crate) struct DecodedImage {
 pub enum LayerSource {
     Kmz { data: KmzData, images: Vec<DecodedImage>, path: Option<String> },
     Wms { base_url: String, layer_name: String },
+    ArcGis { base_url: String, service_name: String },
 }
 
 pub struct Layer {
@@ -86,6 +87,19 @@ impl ServerHandle {
         layers.push(Layer {
             id, name: display_name, bbox: WMS_BBOX, kind: "wms", visible: true, opacity: 1.0,
             source: LayerSource::Wms { base_url, layer_name },
+        });
+        drop(layers);
+        self.clear_cache();
+        id
+    }
+
+    pub fn add_arcgis_layer(&self, base_url: String, service_name: String, display_name: String) -> u32 {
+        let id = self.next_id();
+
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers.push(Layer {
+            id, name: display_name, bbox: WMS_BBOX, kind: "arcgis", visible: true, opacity: 1.0,
+            source: LayerSource::ArcGis { base_url, service_name },
         });
         drop(layers);
         self.clear_cache();
@@ -269,6 +283,39 @@ async fn fetch_wms_tile(
     Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
 }
 
+async fn fetch_arcgis_tile(
+    client: &reqwest::Client,
+    base_url: &str,
+    service_name: &str,
+    z: u32, x: u32, y: u32,
+) -> Option<Pixmap> {
+    let url = format!("{base_url}/{service_name}/MapServer/tile/{z}/{y}/{x}");
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| eprintln!("ArcGIS fetch error: {e}"))
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let bytes = resp.bytes().await.ok()?;
+    let dyn_img = image::load_from_memory(&bytes)
+        .map_err(|e| eprintln!("ArcGIS image decode error: {e}"))
+        .ok()?;
+    let rgba = dyn_img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+}
+
+enum RemoteReq {
+    Wms(String, String),
+    ArcGis(String, String),
+}
+
 async fn serve_tile(
     Path((z, x, y)): Path<(u8, u32, u32)>,
     State(state): State<Arc<TileState>>,
@@ -280,26 +327,32 @@ async fn serve_tile(
         }
     }
 
-    let wms_requests: Vec<(usize, String, String)> = {
+    let remote_requests: Vec<(usize, RemoteReq)> = {
         let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.iter().enumerate().filter_map(|(i, l)| {
             if !l.visible { return None; }
-            if let LayerSource::Wms { base_url, layer_name } = &l.source {
-                Some((i, base_url.clone(), layer_name.clone()))
-            } else {
-                None
+            match &l.source {
+                LayerSource::Wms { base_url, layer_name } =>
+                    Some((i, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
+                LayerSource::ArcGis { base_url, service_name } =>
+                    Some((i, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
+                LayerSource::Kmz { .. } => None,
             }
         }).collect()
     };
 
-    let mut wms_tiles: Vec<(usize, Pixmap)> = Vec::new();
-    for (idx, base_url, layer_name) in &wms_requests {
-        if let Some(pixmap) = fetch_wms_tile(&state.http, base_url, layer_name, z.into(), x, y).await {
-            wms_tiles.push((*idx, pixmap));
+    let mut remote_tiles: Vec<(usize, Pixmap)> = Vec::new();
+    for (idx, req) in &remote_requests {
+        let result = match req {
+            RemoteReq::Wms(url, layer) => fetch_wms_tile(&state.http, url, layer, z.into(), x, y).await,
+            RemoteReq::ArcGis(url, svc) => fetch_arcgis_tile(&state.http, url, svc, z.into(), x, y).await,
+        };
+        if let Some(pixmap) = result {
+            remote_tiles.push((*idx, pixmap));
         }
     }
 
-    let png = render_tile(&state, &wms_tiles, z.into(), x, y);
+    let png = render_tile(&state, &remote_tiles, z.into(), x, y);
 
     {
         let mut cache = state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -309,7 +362,7 @@ async fn serve_tile(
     (StatusCode::OK, [("content-type", "image/png")], png)
 }
 
-fn render_tile(state: &TileState, wms_tiles: &[(usize, Pixmap)], z: u32, x: u32, y: u32) -> Vec<u8> {
+fn render_tile(state: &TileState, remote_tiles: &[(usize, Pixmap)], z: u32, x: u32, y: u32) -> Vec<u8> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).expect("256x256 pixmap");
     let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
 
@@ -324,12 +377,12 @@ fn render_tile(state: &TileState, wms_tiles: &[(usize, Pixmap)], z: u32, x: u32,
                 render_ground_overlays(&mut pixmap, images, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
                 render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
             }
-            LayerSource::Wms { .. } => {
-                if let Some((_, wms_pixmap)) = wms_tiles.iter().find(|(idx, _)| *idx == i) {
+            LayerSource::Wms { .. } | LayerSource::ArcGis { .. } => {
+                if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(idx, _)| *idx == i) {
                     let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
                     pixmap.draw_pixmap(
                         0, 0,
-                        wms_pixmap.as_ref(),
+                        remote_pixmap.as_ref(),
                         &paint,
                         Transform::identity(),
                         None,
