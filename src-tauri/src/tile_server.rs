@@ -16,7 +16,8 @@ use turnout_core::geo::{latlon_to_mercator, latlon_to_tile_pixel, tile_bounds};
 use turnout_core::kml::{Geometry, KmzData, Style};
 
 const TILE_SIZE: u32 = 256;
-const CACHE_CAPACITY: usize = 512;
+const RENDER_CACHE_CAPACITY: usize = 512;
+const REMOTE_CACHE_CAPACITY: usize = 2048;
 pub const PREFERRED_PORT: u16 = 17853;
 const MAX_ZOOM: u8 = 22;
 const HTTP_TIMEOUT_SECS: u64 = 15;
@@ -55,9 +56,13 @@ pub struct Layer {
     pub source: LayerSource,
 }
 
+type RenderCache = LruCache<(u8, u32, u32), Vec<u8>>;
+type RemoteCache = LruCache<(u32, u8, u32, u32), Vec<u8>>;
+
 pub struct TileState {
     pub(crate) layers: RwLock<Vec<Layer>>,
-    cache: Mutex<LruCache<(u8, u32, u32), Vec<u8>>>,
+    render_cache: Mutex<RenderCache>,
+    remote_cache: Mutex<RemoteCache>,
     next_id: Mutex<u32>,
     http: reqwest::Client,
 }
@@ -118,6 +123,7 @@ impl ServerHandle {
         let removed = layers.len() < before;
         drop(layers);
         if removed {
+            self.evict_remote_cache(id);
             self.clear_cache();
         }
         removed
@@ -195,16 +201,30 @@ impl ServerHandle {
     }
 
     pub fn clear_cache(&self) {
-        let mut cache = self.state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.clear();
+    }
+
+    pub fn evict_remote_cache(&self, layer_id: u32) {
+        let mut cache = self.state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let keys: Vec<_> = cache.iter()
+            .filter(|((lid, ..), _)| *lid == layer_id)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in keys {
+            cache.pop(&key);
+        }
     }
 }
 
 pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::Error + Send + Sync>> {
     let state = Arc::new(TileState {
         layers: RwLock::new(Vec::new()),
-        cache: Mutex::new(LruCache::new(
-            NonZeroUsize::new(CACHE_CAPACITY).expect("nonzero"),
+        render_cache: Mutex::new(LruCache::new(
+            NonZeroUsize::new(RENDER_CACHE_CAPACITY).expect("nonzero"),
+        )),
+        remote_cache: Mutex::new(LruCache::new(
+            NonZeroUsize::new(REMOTE_CACHE_CAPACITY).expect("nonzero"),
         )),
         next_id: Mutex::new(0),
         http: reqwest::Client::builder()
@@ -272,12 +292,29 @@ fn decode_images(data: &KmzData) -> Vec<DecodedImage> {
         .collect()
 }
 
+fn decode_remote_bytes(bytes: &[u8]) -> Option<Pixmap> {
+    let dyn_img = image::load_from_memory(bytes).ok()?;
+    let rgba = dyn_img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+}
+
+fn get_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
+    let mut cache = state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.get(&(layer_id, z, x, y)).cloned()
+}
+
+fn put_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32, bytes: Vec<u8>) {
+    let mut cache = state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.put((layer_id, z, x, y), bytes);
+}
+
 async fn fetch_wms_tile(
     client: &reqwest::Client,
     base_url: &str,
     layer_name: &str,
     z: u32, x: u32, y: u32,
-) -> Option<Pixmap> {
+) -> Option<Vec<u8>> {
     let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
     let (minx, miny) = latlon_to_mercator(tile_s, tile_w);
     let (maxx, maxy) = latlon_to_mercator(tile_n, tile_e);
@@ -323,13 +360,7 @@ async fn fetch_wms_tile(
         return None;
     }
 
-    let bytes = resp.bytes().await.ok()?;
-    let dyn_img = image::load_from_memory(&bytes)
-        .map_err(|e| eprintln!("WMS image decode error: {e}"))
-        .ok()?;
-    let rgba = dyn_img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+    Some(resp.bytes().await.ok()?.to_vec())
 }
 
 async fn fetch_arcgis_tile(
@@ -337,7 +368,7 @@ async fn fetch_arcgis_tile(
     base_url: &str,
     service_name: &str,
     z: u32, x: u32, y: u32,
-) -> Option<Pixmap> {
+) -> Option<Vec<u8>> {
     let url = format!("{base_url}/{service_name}/MapServer/tile/{z}/{y}/{x}");
 
     let resp = client
@@ -351,13 +382,7 @@ async fn fetch_arcgis_tile(
         return None;
     }
 
-    let bytes = resp.bytes().await.ok()?;
-    let dyn_img = image::load_from_memory(&bytes)
-        .map_err(|e| eprintln!("ArcGIS image decode error: {e}"))
-        .ok()?;
-    let rgba = dyn_img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+    Some(resp.bytes().await.ok()?.to_vec())
 }
 
 enum RemoteReq {
@@ -374,7 +399,7 @@ async fn serve_tile(
     }
 
     {
-        let mut cache = state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(png) = cache.get(&(z, x, y)) {
             return (StatusCode::OK, [("content-type", "image/png")], png.clone());
         }
@@ -397,12 +422,17 @@ async fn serve_tile(
     let fetches = remote_requests.iter().map(|(id, req)| {
         let client = &state.http;
         let id = *id;
+        let state_ref = &state;
         async move {
-            let result = match req {
+            if let Some(cached) = get_remote_cached(state_ref, id, z, x, y) {
+                return decode_remote_bytes(&cached).map(|pm| (id, pm));
+            }
+            let bytes = match req {
                 RemoteReq::Wms(url, layer) => fetch_wms_tile(client, url, layer, z.into(), x, y).await,
                 RemoteReq::ArcGis(url, svc) => fetch_arcgis_tile(client, url, svc, z.into(), x, y).await,
-            };
-            result.map(|pixmap| (id, pixmap))
+            }?;
+            put_remote_cached(state_ref, id, z, x, y, bytes.clone());
+            decode_remote_bytes(&bytes).map(|pm| (id, pm))
         }
     });
     let remote_tiles: Vec<(u32, Pixmap)> = futures::future::join_all(fetches)
@@ -414,7 +444,7 @@ async fn serve_tile(
     let png = render_tile(&state, &remote_tiles, z.into(), x, y);
 
     {
-        let mut cache = state.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.put((z, x, y), png.clone());
     }
 
