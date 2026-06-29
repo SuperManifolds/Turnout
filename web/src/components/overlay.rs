@@ -351,7 +351,7 @@ pub fn OverlayDrawer(
                     {move || status.get().groups.iter().map(|g| {
                         let gid = g.id;
                         let gname = g.name.clone();
-                        let tile_url_copy = g.tile_url.clone();
+                        let tilejson_url_copy = g.tilejson_url.clone();
                         let layers = g.layers.clone();
                         let layer_count = layers.len();
                         let all_group_ids: Vec<(u32, String)> = status.get().groups.iter()
@@ -373,8 +373,8 @@ pub fn OverlayDrawer(
                                             on_rename_group(gid, input.value());
                                         }
                                     />
-                                    <button class="icon-btn" on:click=move |_| on_copy_url(gid, tile_url_copy.clone())
-                                        title="Copy tile URL"
+                                    <button class="icon-btn" on:click=move |_| on_copy_url(gid, tilejson_url_copy.clone())
+                                        title="Copy TileJSON URL"
                                     >
                                         <i class=move || if copied_group.get() == Some(gid) { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
                                     </button>

@@ -60,6 +60,7 @@ pub struct GroupInfo {
     pub id: u32,
     pub name: String,
     pub tile_url: String,
+    pub tilejson_url: String,
     pub layers: Vec<LayerInfo>,
 }
 
@@ -500,6 +501,7 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
                 id: g.id,
                 name: g.name.clone(),
                 tile_url: format!("http://127.0.0.1:{}/{{z}}/{{x}}/{{y}}", g.handle.port),
+                tilejson_url: format!("http://127.0.0.1:{}/tilejson.json", g.handle.port),
                 layers: layers.iter().map(|l| LayerInfo {
                     id: l.id,
                     name: l.name.clone(),

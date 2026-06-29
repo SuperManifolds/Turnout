@@ -244,6 +244,7 @@ pub struct GroupInfo {
     pub id: u32,
     pub name: String,
     pub tile_url: String,
+    pub tilejson_url: String,
     pub layers: Vec<LayerInfo>,
 }
 
@@ -292,6 +293,7 @@ fn parse_group(val: &JsValue) -> Option<GroupInfo> {
         id: get_f64("id")? as u32,
         name: get_str("name")?,
         tile_url: get_str("tileUrl")?,
+        tilejson_url: get_str("tilejsonUrl").unwrap_or_default(),
         layers: layers_arr.iter().filter_map(|v| parse_layer(&v)).collect(),
     })
 }

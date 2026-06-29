@@ -65,6 +65,7 @@ pub struct TileState {
     render_cache: Mutex<RenderCache>,
     remote_cache: Mutex<RemoteCache>,
     next_id: Mutex<u32>,
+    port: u16,
     http: reqwest::Client,
 }
 
@@ -232,27 +233,6 @@ impl ServerHandle {
 }
 
 pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::Error + Send + Sync>> {
-    let state = Arc::new(TileState {
-        layers: RwLock::new(Vec::new()),
-        render_cache: Mutex::new(LruCache::new(
-            NonZeroUsize::new(RENDER_CACHE_CAPACITY).expect("nonzero"),
-        )),
-        remote_cache: Mutex::new(LruCache::new(
-            NonZeroUsize::new(REMOTE_CACHE_CAPACITY).expect("nonzero"),
-        )),
-        next_id: Mutex::new(0),
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default(),
-    });
-
-    let app = Router::new()
-        .route("/{z}/{x}/{y}", get(serve_tile))
-        .layer(CorsLayer::permissive())
-        .with_state(Arc::clone(&state));
-
     let listener = if port_hint > 0 {
         match TcpListener::bind(format!("127.0.0.1:{port_hint}")).await {
             Ok(l) => l,
@@ -262,6 +242,29 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
         TcpListener::bind("127.0.0.1:0").await?
     };
     let port = listener.local_addr()?.port();
+
+    let state = Arc::new(TileState {
+        layers: RwLock::new(Vec::new()),
+        render_cache: Mutex::new(LruCache::new(
+            NonZeroUsize::new(RENDER_CACHE_CAPACITY).expect("nonzero"),
+        )),
+        remote_cache: Mutex::new(LruCache::new(
+            NonZeroUsize::new(REMOTE_CACHE_CAPACITY).expect("nonzero"),
+        )),
+        next_id: Mutex::new(0),
+        port,
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_default(),
+    });
+
+    let app = Router::new()
+        .route("/tilejson.json", get(serve_tilejson))
+        .route("/{z}/{x}/{y}", get(serve_tile))
+        .layer(CorsLayer::permissive())
+        .with_state(Arc::clone(&state));
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
@@ -427,6 +430,54 @@ enum RemoteReq {
     Wms(String, String),
     ArcGis(String, String),
     Xyz(String),
+}
+
+async fn serve_tilejson(
+    State(state): State<Arc<TileState>>,
+) -> impl IntoResponse {
+    let port = state.port;
+    let tile_url = format!("http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}");
+
+    let (min_zoom, max_zoom) = (0, MAX_ZOOM);
+
+    let bounds = {
+        let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if layers.is_empty() {
+            [-180.0, -85.051_129, 180.0, 85.051_129]
+        } else {
+            let mut w = f64::MAX;
+            let mut s = f64::MAX;
+            let mut e = f64::MIN;
+            let mut n = f64::MIN;
+            for l in layers.iter() {
+                w = w.min(l.bbox.0);
+                s = s.min(l.bbox.1);
+                e = e.max(l.bbox.2);
+                n = n.max(l.bbox.3);
+            }
+            [w, s, e, n]
+        }
+    };
+
+    let center_lon = (bounds[0] + bounds[2]) / 2.0;
+    let center_lat = (bounds[1] + bounds[3]) / 2.0;
+
+    let json = serde_json::json!({
+        "tilejson": "3.0.0",
+        "tiles": [tile_url],
+        "minzoom": min_zoom,
+        "maxzoom": max_zoom,
+        "bounds": bounds,
+        "center": [center_lon, center_lat, 10],
+        "format": "png",
+        "scheme": "xyz",
+    });
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        json.to_string().into_bytes(),
+    )
 }
 
 async fn serve_tile(
