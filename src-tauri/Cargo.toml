@@ -17,9 +17,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs-next = "2.0"
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22.1"
 notify = { version = "8.2.0", features = ["macos_fsevent"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+tiny-skia = "0.11"
+lru = "0.12"
+tokio = { version = "1", features = ["net"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

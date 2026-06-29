@@ -228,3 +228,70 @@ pub async fn open_blueprint_folder(folder_name: &str) -> Result<(), String> {
     js_set(&args, "folderName", &folder_name.into())?;
     invoke("open_blueprint_folder", &args).await.map(|_| ())
 }
+
+#[derive(Clone, Debug)]
+pub struct LayerInfo {
+    pub id: u32,
+    pub name: String,
+    pub bbox: [f64; 4],
+}
+
+#[derive(Clone, Debug)]
+pub struct OverlayStatus {
+    pub tile_url: String,
+    pub layers: Vec<LayerInfo>,
+}
+
+fn parse_bbox(val: &JsValue) -> Option<[f64; 4]> {
+    let arr = js_sys::Array::from(val);
+    Some([arr.get(0).as_f64()?, arr.get(1).as_f64()?, arr.get(2).as_f64()?, arr.get(3).as_f64()?])
+}
+
+fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
+    let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
+    let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
+    let bbox_val = js_sys::Reflect::get(val, &"bbox".into()).ok()?;
+    Some(LayerInfo {
+        id: get_f64("id")? as u32,
+        name: get_str("name")?,
+        bbox: parse_bbox(&bbox_val)?,
+    })
+}
+
+fn parse_status(val: &JsValue) -> Option<OverlayStatus> {
+    let tile_url = js_sys::Reflect::get(val, &"tileUrl".into()).ok()?.as_string()?;
+    let layers_val = js_sys::Reflect::get(val, &"layers".into()).ok()?;
+    let layers_arr = js_sys::Array::from(&layers_val);
+    let layers = layers_arr.iter().filter_map(|v| parse_layer(&v)).collect();
+    Some(OverlayStatus { tile_url, layers })
+}
+
+pub async fn pick_kmz_file() -> Option<String> {
+    let result = invoke("pick_kmz_file", &JsValue::NULL).await.ok()?;
+    result.as_string()
+}
+
+pub async fn add_overlay(path: &str) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "path", &path.into())?;
+    let result = invoke("add_overlay", &args).await?;
+    parse_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn remove_overlay(id: u32) -> Option<OverlayStatus> {
+    let args = js_sys::Object::new();
+    js_set(&args, "id", &JsValue::from_f64(f64::from(id))).ok()?;
+    let result = invoke("remove_overlay", &args).await.ok()?;
+    if result.is_null() || result.is_undefined() {
+        return None;
+    }
+    parse_status(&result)
+}
+
+pub async fn get_overlay_status() -> Option<OverlayStatus> {
+    let result = invoke("get_overlay_status", &JsValue::NULL).await.ok()?;
+    if result.is_null() || result.is_undefined() {
+        return None;
+    }
+    parse_status(&result)
+}

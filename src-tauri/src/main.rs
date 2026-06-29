@@ -2,8 +2,10 @@
 
 mod blueprint;
 mod import;
+mod overlay;
 mod overpass;
 mod settings;
+mod tile_server;
 
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -83,6 +85,7 @@ fn main() {
         .setup(|app| {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
+            app.manage(overlay::OverlayState::new());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -105,6 +108,10 @@ fn main() {
             settings::get_settings,
             settings::set_settings,
             settings::pick_folder,
+            overlay::pick_kmz_file,
+            overlay::add_overlay,
+            overlay::remove_overlay,
+            overlay::get_overlay_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

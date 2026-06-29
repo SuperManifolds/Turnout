@@ -5,8 +5,8 @@ let _theme_override = "system"; // "system", "light", "dark"
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-const CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles"];
-const CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer"];
+const CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles", "kmz-overlay"];
+const CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer", "kmz-overlay-layer"];
 const PREVIEW_COLOR = "#0693FF";
 const PREVIEW_LINE_WIDTH = 4;
 const PREVIEW_GLOW_WIDTH = 8;
@@ -285,4 +285,39 @@ window.map_query_features = function(lng, lat, layer_id) {
         return features[0].properties.handle;
     }
     return null;
+};
+
+window.map_add_overlay_layer = function(id, url, opacity) {
+    if (!_map) return;
+    if (_map.getSource(id)) return;
+    _map.addSource(id, {
+        type: "raster",
+        tiles: [url],
+        tileSize: 256,
+    });
+    var beforeLayer = _map.getLayer("orm-layer") ? "orm-layer" : undefined;
+    _map.addLayer({
+        id: id + "-layer",
+        type: "raster",
+        source: id,
+        paint: { "raster-opacity": opacity },
+    }, beforeLayer);
+};
+
+window.map_remove_overlay_layer = function(id) {
+    if (!_map) return;
+    if (_map.getLayer(id + "-layer")) _map.removeLayer(id + "-layer");
+    if (_map.getSource(id)) _map.removeSource(id);
+};
+
+window.map_set_overlay_opacity = function(id, opacity) {
+    if (!_map) return;
+    if (_map.getLayer(id + "-layer")) {
+        _map.setPaintProperty(id + "-layer", "raster-opacity", opacity);
+    }
+};
+
+window.map_fit_bounds = function(west, south, east, north) {
+    if (!_map) return;
+    _map.fitBounds([[west, south], [east, north]], { padding: 50 });
 };

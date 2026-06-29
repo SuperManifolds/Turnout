@@ -6,6 +6,7 @@ pub mod track_filter;
 mod settings;
 pub mod app_settings;
 mod blueprint_drawer;
+mod overlay;
 
 pub use map::Map;
 pub use search::Search;
@@ -15,3 +16,4 @@ pub use track_filter::TrackFilter;
 pub use settings::Settings;
 pub use app_settings::AppSettings;
 pub use blueprint_drawer::BlueprintDrawer;
+pub use overlay::OverlayDrawer;

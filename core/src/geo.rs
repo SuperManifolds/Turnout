@@ -51,6 +51,34 @@ pub fn inverse_geodesic(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> (f64, f64
     (dist * bearing.sin(), dist * bearing.cos())
 }
 
+/// Convert slippy map tile `(z, x, y)` to WGS84 bounds `(west, south, east, north)`.
+#[must_use]
+pub fn tile_bounds(z: u32, x: u32, y: u32) -> (f64, f64, f64, f64) {
+    let n = f64::from(1u32 << z);
+    let west = f64::from(x) / n * 360.0 - 180.0;
+    let east = (f64::from(x) + 1.0) / n * 360.0 - 180.0;
+    let north = (std::f64::consts::PI * (1.0 - 2.0 * f64::from(y) / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let south = (std::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 1.0) / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    (west, south, east, north)
+}
+
+/// Project a lat/lon point to pixel coordinates within a specific tile.
+/// Returns `(px, py)` where `(0,0)` is top-left and `(256,256)` is bottom-right.
+#[must_use]
+pub fn latlon_to_tile_pixel(lat: f64, lon: f64, z: u32, x: u32, y: u32) -> (f32, f32) {
+    let n = f64::from(1u32 << z);
+    let px = ((lon + 180.0) / 360.0 * n - f64::from(x)) * 256.0;
+    let lat_rad = lat.to_radians();
+    let py = ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * n - f64::from(y)) * 256.0;
+    (px as f32, py as f32)
+}
+
 /// Find where a line segment (from `inside` toward `outside`) first crosses a rectangle.
 /// Coordinates are generic (lat/lon, x/y, lon/lat — caller decides).
 /// Returns the intersection point closest to the inside point, or None.
