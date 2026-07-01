@@ -64,6 +64,7 @@ pub struct TileState {
     pub(crate) layers: RwLock<Vec<Layer>>,
     render_cache: Mutex<RenderCache>,
     remote_cache: Mutex<RemoteCache>,
+    pub(crate) error_layers: Mutex<std::collections::HashSet<u32>>,
     next_id: Mutex<u32>,
     port: u16,
     http: reqwest::Client,
@@ -180,6 +181,13 @@ impl ServerHandle {
         self.clear_cache();
     }
 
+    pub fn rename_layer(&self, id: u32, name: String) {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
+            layer.name = name;
+        }
+    }
+
     pub fn set_layer_visible(&self, id: u32, visible: bool) -> bool {
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
@@ -251,6 +259,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
         remote_cache: Mutex::new(LruCache::new(
             NonZeroUsize::new(REMOTE_CACHE_CAPACITY).expect("nonzero"),
         )),
+        error_layers: Mutex::new(std::collections::HashSet::new()),
         next_id: Mutex::new(0),
         port,
         http: reqwest::Client::builder()
@@ -517,21 +526,27 @@ async fn serve_tile(
         let state_ref = &state;
         async move {
             if let Some(cached) = get_remote_cached(state_ref, id, z, x, y) {
-                return decode_remote_bytes(&cached).map(|pm| (id, pm));
+                return (id, decode_remote_bytes(&cached));
             }
             let bytes = match req {
                 RemoteReq::Wms(url, layer) => fetch_wms_tile(client, url, layer, z.into(), x, y).await,
                 RemoteReq::ArcGis(url, svc) => fetch_arcgis_tile(client, url, svc, z.into(), x, y).await,
                 RemoteReq::Xyz(tpl) => fetch_xyz_tile(client, tpl, z.into(), x, y).await,
-            }?;
-            put_remote_cached(state_ref, id, z, x, y, bytes.clone());
-            decode_remote_bytes(&bytes).map(|pm| (id, pm))
+            };
+            if let Some(b) = bytes {
+                put_remote_cached(state_ref, id, z, x, y, b.clone());
+                state_ref.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                (id, decode_remote_bytes(&b))
+            } else {
+                state_ref.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id);
+                (id, None)
+            }
         }
     });
     let remote_tiles: Vec<(u32, Pixmap)> = futures::future::join_all(fetches)
         .await
         .into_iter()
-        .flatten()
+        .filter_map(|(id, pm)| pm.map(|p| (id, p)))
         .collect();
 
     let png = render_tile(&state, &remote_tiles, z.into(), x, y);

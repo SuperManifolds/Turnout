@@ -237,6 +237,7 @@ pub struct LayerInfo {
     pub visible: bool,
     pub opacity: f32,
     pub bbox: [f64; 4],
+    pub has_errors: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -281,6 +282,7 @@ fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
         visible: js_sys::Reflect::get(val, &"visible".into()).ok()?.as_bool().unwrap_or(true),
         opacity: get_f64("opacity").unwrap_or(1.0) as f32,
         bbox: parse_bbox(&bbox_val)?,
+        has_errors: js_sys::Reflect::get(val, &"hasErrors".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false),
     })
 }
 
@@ -340,6 +342,16 @@ pub async fn remove_group(group_id: u32) -> OverlayStatus {
     let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
     let result = invoke("remove_group", &args).await.ok();
     result
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or(OverlayStatus { groups: Vec::new() })
+}
+
+pub async fn reorder_group(group_id: u32, direction: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "direction", &direction.into());
+    invoke("reorder_group", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
         .unwrap_or(OverlayStatus { groups: Vec::new() })
@@ -451,6 +463,27 @@ pub async fn move_layer(layer_id: u32, from_group_id: u32, to_group_id: u32) -> 
     js_set(&args, "toGroupId", &JsValue::from_f64(f64::from(to_group_id)))?;
     let result = invoke("move_layer", &args).await?;
     parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn rename_layer(group_id: u32, layer_id: u32, name: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    let _ = js_set(&args, "name", &name.into());
+    invoke("rename_layer", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or(OverlayStatus { groups: Vec::new() })
+}
+
+pub async fn set_group_visible(group_id: u32, visible: bool) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "visible", &JsValue::from_bool(visible));
+    invoke("set_group_visible", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or(OverlayStatus { groups: Vec::new() })
 }
 
 pub async fn reorder_layer(group_id: u32, layer_id: u32, direction: &str) -> OverlayStatus {

@@ -527,8 +527,41 @@ button.link {
         min-width: 0;
     }
 
+    .layer-name {
+        flex: 1;
+        border: 1px solid transparent;
+        background: transparent;
+        color: var(--color-text-primary);
+        font-size: var(--font-size-sm);
+        padding: 1px var(--spacing-xs);
+        min-width: 0;
+        border-radius: var(--radius-sm);
+
+        &:hover { border-color: var(--color-border); }
+        &:focus { outline: none; background: var(--color-bg-primary); border-color: var(--color-accent); }
+    }
+
     .remote-icon {
         animation: pulse-opacity 2s ease-in-out 3;
+    }
+
+    .error-icon {
+        color: var(--color-danger) !important;
+        animation: none;
+    }
+
+    .opacity-row {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-xs);
+        width: 100%;
+    }
+
+    .opacity-value {
+        font-size: 10px;
+        color: var(--color-text-muted);
+        min-width: 28px;
+        text-align: right;
     }
 
     .layer-buttons {

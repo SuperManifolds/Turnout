@@ -130,21 +130,32 @@ pub fn OverlayDrawer(
     };
 
     let on_remove_group = move |gid: u32| {
-        spawn_local(async move {
-            apply_status(tauri::remove_group(gid).await);
-        });
+        spawn_local(async move { apply_status(tauri::remove_group(gid).await); });
+    };
+
+    let on_reorder_group = move |gid: u32, dir: &'static str| {
+        spawn_local(async move { apply_status(tauri::reorder_group(gid, dir).await); });
     };
 
     let on_rename_group = move |gid: u32, name: String| {
-        spawn_local(async move {
-            apply_status(tauri::rename_group(gid, &name).await);
-        });
+        spawn_local(async move { apply_status(tauri::rename_group(gid, &name).await); });
+    };
+
+    let on_group_visible = move |gid: u32, visible: bool| {
+        spawn_local(async move { apply_status(tauri::set_group_visible(gid, visible).await); });
     };
 
     let on_remove_layer = move |gid: u32, lid: u32| {
-        spawn_local(async move {
-            apply_status(tauri::remove_overlay(gid, lid).await);
-        });
+        spawn_local(async move { apply_status(tauri::remove_overlay(gid, lid).await); });
+    };
+
+    let on_rename_layer = move |gid: u32, lid: u32, name: String| {
+        spawn_local(async move { apply_status(tauri::rename_layer(gid, lid, &name).await); });
+    };
+
+    let on_zoom_layer = move |bbox: [f64; 4]| {
+        let [south, west, north, east] = bbox;
+        map_fit_bounds(west, south, east, north);
     };
 
     let on_toggle_visible = move |gid: u32, lid: u32, visible: bool| {
@@ -361,6 +372,10 @@ pub fn OverlayDrawer(
                         let tilejson_url_copy = g.tilejson_url.clone();
                         let layers = g.layers.clone();
                         let layer_count = layers.len();
+                        let group_idx = status.get().groups.iter().position(|og| og.id == gid).unwrap_or(0);
+                        let is_first_group = group_idx == 0;
+                        let is_last_group = group_idx + 1 >= status.get().groups.len();
+                        let all_visible = layers.iter().all(|l| l.visible);
                         let all_group_ids: Vec<(u32, String)> = status.get().groups.iter()
                             .filter(|og| og.id != gid)
                             .map(|og| (og.id, og.name.clone()))
@@ -369,6 +384,12 @@ pub fn OverlayDrawer(
                         view! {
                             <section class="group-section">
                                 <header class="group-header">
+                                    <button class="icon-btn visibility-toggle"
+                                        on:click=move |_| on_group_visible(gid, !all_visible)
+                                        title=if all_visible { "Hide all" } else { "Show all" }
+                                    >
+                                        <i class=if all_visible { "fa-solid fa-eye" } else { "fa-solid fa-eye-slash" }></i>
+                                    </button>
                                     <i class="fa-solid fa-pencil group-rename-hint"></i>
                                     <input
                                         class="group-name"
@@ -380,6 +401,12 @@ pub fn OverlayDrawer(
                                             on_rename_group(gid, input.value());
                                         }
                                     />
+                                    <button class="icon-btn reorder-btn" title="Move up" disabled=is_first_group
+                                        on:click=move |_| on_reorder_group(gid, "up")
+                                    ><i class="fa-solid fa-chevron-up"></i></button>
+                                    <button class="icon-btn reorder-btn" title="Move down" disabled=is_last_group
+                                        on:click=move |_| on_reorder_group(gid, "down")
+                                    ><i class="fa-solid fa-chevron-down"></i></button>
                                     <button class="icon-btn" on:click=move |_| on_copy_url(gid, tilejson_url_copy.clone())
                                         title="Copy TileJSON URL"
                                     >
@@ -397,6 +424,9 @@ pub fn OverlayDrawer(
                                         let layer_opacity = l.opacity;
                                         let icon = layer_icon(&l.kind);
                                         let remote = is_remote(&l.kind);
+                                        let has_errors = l.has_errors;
+                                        let bbox = l.bbox;
+                                        let is_remote_bbox = bbox == [-85.051_129_f64, -180.0, 85.051_129, 180.0];
                                         let is_first = idx == 0;
                                         let is_last = idx + 1 == layer_count;
                                         let has_other_groups = !all_group_ids.is_empty();
@@ -409,8 +439,26 @@ pub fn OverlayDrawer(
                                                 >
                                                     <i class=if visible { "fa-solid fa-eye" } else { "fa-solid fa-eye-slash" }></i>
                                                 </button>
-                                                <i class=format!("{icon} overlay-icon{}", if remote { " remote-icon" } else { "" })></i>
-                                                <span class="overlay-name">{name}</span>
+                                                <i class=format!("{icon} overlay-icon{}{}", if remote { " remote-icon" } else { "" }, if has_errors { " error-icon" } else { "" })></i>
+                                                <input
+                                                    class="layer-name"
+                                                    type="text"
+                                                    value=name
+                                                    on:change=move |ev: web_sys::Event| {
+                                                        let Some(target) = ev.target() else { return };
+                                                        let input: web_sys::HtmlInputElement = target.unchecked_into();
+                                                        on_rename_layer(gid, lid, input.value());
+                                                    }
+                                                />
+                                                {if is_remote_bbox {
+                                                    None
+                                                } else {
+                                                    Some(view! {
+                                                        <button class="icon-btn" title="Zoom to" on:click=move |_| on_zoom_layer(bbox)>
+                                                            <i class="fa-solid fa-crosshairs"></i>
+                                                        </button>
+                                                    })
+                                                }}
                                                 <nav class="layer-buttons">
                                                     <button class="icon-btn reorder-btn" title="Move up"
                                                         disabled=is_first
@@ -459,19 +507,22 @@ pub fn OverlayDrawer(
                                                         <i class="fa-solid fa-trash"></i>
                                                     </button>
                                                 </nav>
-                                                <input
-                                                    type="range"
-                                                    class="layer-opacity"
-                                                    min="0" max="1" step="0.05"
-                                                    prop:value=layer_opacity.to_string()
-                                                    on:change=move |ev: web_sys::Event| {
-                                                        let Some(target) = ev.target() else { return };
-                                                        let input: web_sys::HtmlInputElement = target.unchecked_into();
-                                                        let val: f32 = input.value().parse().unwrap_or(1.0);
-                                                        on_layer_opacity(gid, lid, val);
-                                                    }
-                                                    title="Layer opacity"
-                                                />
+                                                <span class="opacity-row">
+                                                    <input
+                                                        type="range"
+                                                        class="layer-opacity"
+                                                        min="0" max="1" step="0.05"
+                                                        prop:value=layer_opacity.to_string()
+                                                        on:change=move |ev: web_sys::Event| {
+                                                            let Some(target) = ev.target() else { return };
+                                                            let input: web_sys::HtmlInputElement = target.unchecked_into();
+                                                            let val: f32 = input.value().parse().unwrap_or(1.0);
+                                                            on_layer_opacity(gid, lid, val);
+                                                        }
+                                                        title="Layer opacity"
+                                                    />
+                                                    <span class="opacity-value">{format!("{}%", (layer_opacity * 100.0) as u32)}</span>
+                                                </span>
                                             </li>
                                         }
                                     }).collect_view()}

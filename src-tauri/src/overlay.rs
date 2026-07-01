@@ -42,6 +42,7 @@ struct SavedLayer {
     arcgis_url: Option<String>,
     arcgis_service: Option<String>,
     xyz_url: Option<String>,
+    wmts_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -53,6 +54,7 @@ pub struct LayerInfo {
     pub visible: bool,
     pub opacity: f32,
     pub bbox: [f64; 4],
+    pub has_errors: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -87,8 +89,8 @@ impl OverlayState {
     }
 }
 
-fn port_for_index(index: usize) -> u16 {
-    tile_server::PREFERRED_PORT.saturating_add(index as u16)
+fn port_for_id(id: u32) -> u16 {
+    tile_server::PREFERRED_PORT.saturating_add(id as u16)
 }
 
 // --- Tauri commands ---
@@ -107,10 +109,7 @@ pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
 pub async fn create_group(app: tauri::AppHandle, name: String) -> Result<OverlayStatus, String> {
     let state = app.state::<OverlayState>();
     let group_id = state.next_group_id();
-    let port = {
-        let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        port_for_index(groups.len())
-    };
+    let port = port_for_id(group_id);
 
     let handle = tile_server::start(port)
         .await
@@ -132,6 +131,24 @@ pub fn remove_group(app: tauri::AppHandle, group_id: u32) -> OverlayStatus {
     if let Some(idx) = groups.iter().position(|g| g.id == group_id) {
         let group = groups.remove(idx);
         let _ = group.handle.shutdown_tx.send(true);
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn reorder_group(app: tauri::AppHandle, group_id: u32, direction: String) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(idx) = groups.iter().position(|g| g.id == group_id) {
+        match direction.as_str() {
+            "up" if idx > 0 => { groups.swap(idx, idx - 1); }
+            "down" if idx + 1 < groups.len() => { groups.swap(idx, idx + 1); }
+            _ => {}
+        }
     }
     let status = build_status(&groups);
     drop(groups);
@@ -326,6 +343,39 @@ pub fn remove_overlay(app: tauri::AppHandle, group_id: u32, layer_id: u32) -> Ov
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub fn rename_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, name: String) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter().find(|g| g.id == group_id) {
+        group.handle.rename_layer(layer_id, name);
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn set_group_visible(app: tauri::AppHandle, group_id: u32, visible: bool) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(group) = groups.iter().find(|g| g.id == group_id) {
+        let layers = group.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ids: Vec<u32> = layers.iter().map(|l| l.id).collect();
+        drop(layers);
+        for id in ids {
+            group.handle.set_layer_visible(id, visible);
+        }
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn reorder_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, direction: String) -> OverlayStatus {
     let state = app.state::<OverlayState>();
     let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -388,7 +438,7 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
     let state = app.state::<OverlayState>();
 
     for (i, saved_group) in saved.iter().enumerate() {
-        let port = port_for_index(i);
+        let port = port_for_id(i as u32);
         let Ok(handle) = tile_server::start(port).await else { continue };
 
         for layer in &saved_group.layers {
@@ -427,16 +477,12 @@ async fn ensure_group_exists(
         return Ok(());
     }
 
-    let port = {
-        let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        port_for_index(groups.len())
-    };
+    let gid = state.next_group_id();
+    let port = port_for_id(gid);
 
     let handle = tile_server::start(port)
         .await
         .map_err(|e| format!("Failed to start tile server: {e}"))?;
-
-    let gid = state.next_group_id();
     let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if group_id.is_none() && groups.is_empty() || group_id.is_some() && !groups.iter().any(|g| g.id == group_id.expect("checked")) {
         groups.push(TileGroup { id: gid, name: "Default".to_string(), handle });
@@ -503,6 +549,7 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
     OverlayStatus {
         groups: groups.iter().map(|g| {
             let layers = g.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let errors = g.handle.state.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             GroupInfo {
                 id: g.id,
                 name: g.name.clone(),
@@ -515,6 +562,7 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
                     visible: l.visible,
                     opacity: l.opacity,
                     bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
+                    has_errors: errors.contains(&l.id),
                 }).collect(),
             }
         }).collect(),
@@ -533,14 +581,14 @@ fn save_groups(app: &tauri::AppHandle) {
         SavedGroup {
             name: g.name.clone(),
             layers: layers.iter().map(|l| {
-                let (path, wms_url, wms_layer, arcgis_url, arcgis_service, xyz_url) = match &l.source {
-                    LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None, None),
+                let (path, wms_url, wms_layer, arcgis_url, arcgis_service, xyz_url, wmts_url) = match &l.source {
+                    LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None, None, None),
                     LayerSource::Wms { base_url, layer_name } =>
-                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None, None),
+                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None, None, None),
                     LayerSource::ArcGis { base_url, service_name } =>
-                        (None, None, None, Some(base_url.clone()), Some(service_name.clone()), None),
+                        (None, None, None, Some(base_url.clone()), Some(service_name.clone()), None, None),
                     LayerSource::Xyz { url_template } =>
-                        (None, None, None, None, None, Some(url_template.clone())),
+                        (None, None, None, None, None, Some(url_template.clone()), None),
                 };
                 SavedLayer {
                     kind: l.kind.to_string(),
@@ -553,6 +601,7 @@ fn save_groups(app: &tauri::AppHandle) {
                     arcgis_url,
                     arcgis_service,
                     xyz_url,
+                    wmts_url,
                 }
             }).collect(),
         }
