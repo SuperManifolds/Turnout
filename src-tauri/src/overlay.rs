@@ -429,12 +429,19 @@ pub fn get_overlay_status(app: tauri::AppHandle) -> OverlayStatus {
 
 #[tauri::command]
 pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+
+    {
+        let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for g in groups.drain(..) {
+            let _ = g.handle.shutdown_tx.send(true);
+        }
+    }
+
     let saved = load_saved(&app);
     if saved.is_empty() {
         return OverlayStatus { groups: Vec::new() };
     }
-
-    let state = app.state::<OverlayState>();
 
     for saved_group in &saved {
         let group_id = state.next_group_id();
