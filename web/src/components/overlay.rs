@@ -337,6 +337,20 @@ pub fn OverlayDrawer(
         });
     };
 
+    let on_add_bing = move |tile_type: &'static str, name: &'static str| {
+        set_menu_open.set(false);
+        let gid = target_group.get();
+        let tile_url = format!(
+            "https://ecn.t0.tiles.virtualearth.net/tiles/{tile_type}{{q}}?g=1&mkt=en"
+        );
+        spawn_local(async move {
+            match tauri::add_xyz_layer(&tile_url, name, gid).await {
+                Ok(s) => apply_status(s),
+                Err(e) => show_toast(e),
+            }
+        });
+    };
+
     let on_url_keydown = move |ev: web_sys::KeyboardEvent| {
         if ev.key() == "Enter" { do_fetch(); }
     };
@@ -373,6 +387,12 @@ pub fn OverlayDrawer(
                                 </li>
                                 <li on:click=move |_| open_service_form(ServiceForm::Xyz, None)>
                                     <i class="fa-solid fa-link"></i>" XYZ tile URL"
+                                </li>
+                                <li on:click=move |_| on_add_bing("a", "Bing Aerial")>
+                                    <i class="fa-solid fa-satellite"></i>" Bing Aerial"
+                                </li>
+                                <li on:click=move |_| on_add_bing("r", "Bing Roads")>
+                                    <i class="fa-solid fa-road"></i>" Bing Roads"
                                 </li>
                                 {move || {
                                     let creds = apple_creds.get();

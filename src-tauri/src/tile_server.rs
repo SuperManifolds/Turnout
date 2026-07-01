@@ -394,6 +394,18 @@ async fn fetch_wms_tile(
     Some(resp.bytes().await.ok()?.to_vec())
 }
 
+fn xyz_to_quadkey(z: u32, x: u32, y: u32) -> String {
+    let mut quadkey = String::with_capacity(z as usize);
+    for i in (1..=z).rev() {
+        let mut digit = 0u8;
+        let mask = 1u32 << (i - 1);
+        if (x & mask) != 0 { digit += 1; }
+        if (y & mask) != 0 { digit += 2; }
+        quadkey.push((b'0' + digit) as char);
+    }
+    quadkey
+}
+
 async fn fetch_xyz_tile(
     client: &reqwest::Client,
     url_template: &str,
@@ -402,7 +414,8 @@ async fn fetch_xyz_tile(
     let url = url_template
         .replace("{z}", &z.to_string())
         .replace("{x}", &x.to_string())
-        .replace("{y}", &y.to_string());
+        .replace("{y}", &y.to_string())
+        .replace("{q}", &xyz_to_quadkey(z, x, y));
 
     let resp = client
         .get(&url)
