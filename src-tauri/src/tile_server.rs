@@ -320,7 +320,12 @@ fn decode_images(data: &KmzData) -> Vec<DecodedImage> {
 
 fn decode_remote_bytes(bytes: &[u8]) -> Option<Pixmap> {
     let dyn_img = image::load_from_memory(bytes).ok()?;
-    let rgba = dyn_img.to_rgba8();
+    let resized = if dyn_img.width() != TILE_SIZE || dyn_img.height() != TILE_SIZE {
+        dyn_img.resize_exact(TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Lanczos3)
+    } else {
+        dyn_img
+    };
+    let rgba = resized.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
 }

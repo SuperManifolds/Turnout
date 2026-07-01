@@ -68,6 +68,37 @@ pub fn OverlayDrawer(
 
     let (menu_open, set_menu_open) = create_signal(false);
     let (move_menu_layer, set_move_menu_layer) = create_signal::<Option<(u32, u32)>>(None);
+    let (apple_creds, set_apple_creds) = create_signal::<Option<(String, Option<String>, Option<String>)>>(None);
+
+    let load_apple_creds = move || {
+        spawn_local(async move {
+            let settings = crate::components::app_settings::load_settings().await;
+            if let Some(key) = settings.apple_access_key
+                && !key.is_empty()
+                && (settings.apple_map_version.is_some() || settings.apple_sat_version.is_some())
+            {
+                set_apple_creds.set(Some((key, settings.apple_map_version, settings.apple_sat_version)));
+            } else {
+                set_apple_creds.set(None);
+            }
+        });
+    };
+
+    load_apple_creds();
+
+    spawn_local(async move {
+        let Ok(tauri_obj) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
+        let Ok(event_mod) = js_sys::Reflect::get(&tauri_obj, &"event".into()) else { return };
+        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
+        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
+
+        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: wasm_bindgen::JsValue| {
+            load_apple_creds();
+        }) as Box<dyn Fn(wasm_bindgen::JsValue)>);
+
+        let _ = listen_fn.call2(&event_mod, &"settings-changed".into(), callback.as_ref().unchecked_ref());
+        callback.forget();
+    });
 
     let group_ids = move || status.get_untracked().groups.iter().map(|g| g.id).collect::<Vec<_>>();
 
@@ -281,6 +312,31 @@ pub fn OverlayDrawer(
         });
     };
 
+    let on_add_apple = move |satellite: bool| {
+        set_menu_open.set(false);
+        let Some((key, map_ver, sat_ver)) = apple_creds.get() else { return };
+        let gid = target_group.get();
+        let (tile_url, name) = if satellite {
+            let Some(ver) = sat_ver else { return };
+            (format!(
+                "https://sat-cdn.apple-mapkit.com/tile?style=7&size=2&scale=1&z={{z}}&x={{x}}&y={{y}}&v={ver}&accessKey={key}"
+            ), "Apple Satellite")
+        } else {
+            let Some(ver) = map_ver else { return };
+            (format!(
+                "https://cdn.apple-mapkit.com/ti/tile?style=0&size=1&scale=1&lang=en&poi=0&labels=0&tint=light&emphasis=standard&z={{z}}&x={{x}}&y={{y}}&v={ver}&accessKey={key}"
+            ), "Apple Maps")
+        };
+        set_service_loading.set(true);
+        spawn_local(async move {
+            match tauri::add_xyz_layer(&tile_url, name, gid).await {
+                Ok(s) => apply_status(s),
+                Err(e) => show_toast(e),
+            }
+            set_service_loading.set(false);
+        });
+    };
+
     let on_url_keydown = move |ev: web_sys::KeyboardEvent| {
         if ev.key() == "Enter" { do_fetch(); }
     };
@@ -318,6 +374,23 @@ pub fn OverlayDrawer(
                                 <li on:click=move |_| open_service_form(ServiceForm::Xyz, None)>
                                     <i class="fa-solid fa-link"></i>" XYZ tile URL"
                                 </li>
+                                {move || {
+                                    let creds = apple_creds.get();
+                                    let has_map = creds.as_ref().is_some_and(|(_, mv, _)| mv.is_some());
+                                    let has_sat = creds.as_ref().is_some_and(|(_, _, sv)| sv.is_some());
+                                    view! {
+                                        {if has_map { Some(view! {
+                                            <li on:click=move |_| on_add_apple(false)>
+                                                <i class="fa-solid fa-map-location-dot"></i>" Apple Maps"
+                                            </li>
+                                        }) } else { None }}
+                                        {if has_sat { Some(view! {
+                                            <li on:click=move |_| on_add_apple(true)>
+                                                <i class="fa-solid fa-satellite"></i>" Apple Satellite"
+                                            </li>
+                                        }) } else { None }}
+                                    }
+                                }}
                             </ul>
                         </Show>
                     </div>

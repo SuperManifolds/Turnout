@@ -11,6 +11,12 @@ pub struct Settings {
     pub overpass_timeout: u32,
     #[serde(default)]
     pub type_speed_overrides: std::collections::HashMap<String, u32>,
+    #[serde(default)]
+    pub apple_access_key: Option<String>,
+    #[serde(default)]
+    pub apple_map_version: Option<String>,
+    #[serde(default)]
+    pub apple_sat_version: Option<String>,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
@@ -23,6 +29,9 @@ impl Default for Settings {
             map_theme: "system".to_string(),
             overpass_timeout: 60,
             type_speed_overrides: std::collections::HashMap::new(),
+            apple_access_key: None,
+            apple_map_version: None,
+            apple_sat_version: None,
         }
     }
 }
@@ -120,6 +129,9 @@ pub fn AppSettings() -> impl IntoView {
     let (theme, set_theme) = create_signal("system".to_string());
     let (timeout, set_timeout) = create_signal(60u32);
     let (speed_overrides, set_speed_overrides) = create_signal(std::collections::HashMap::<String, u32>::new());
+    let (apple_key, set_apple_key) = create_signal::<Option<String>>(None);
+    let (apple_map_ver, set_apple_map_ver) = create_signal::<Option<String>>(None);
+    let (apple_sat_ver, set_apple_sat_ver) = create_signal::<Option<String>>(None);
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
     let (update_status, set_update_status) = create_signal(String::new());
@@ -134,6 +146,9 @@ pub fn AppSettings() -> impl IntoView {
             set_theme.set(settings.map_theme);
             set_timeout.set(settings.overpass_timeout);
             set_speed_overrides.set(settings.type_speed_overrides);
+            set_apple_key.set(settings.apple_access_key);
+            set_apple_map_ver.set(settings.apple_map_version);
+            set_apple_sat_ver.set(settings.apple_sat_version);
             set_loaded.set(true);
             fit_window_to_content();
 
@@ -153,6 +168,9 @@ pub fn AppSettings() -> impl IntoView {
         let t = theme.get();
         let tout = timeout.get();
         let speeds = speed_overrides.get();
+        let ak = apple_key.get();
+        let amv = apple_map_ver.get();
+        let asv = apple_sat_ver.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -165,6 +183,9 @@ pub fn AppSettings() -> impl IntoView {
                 map_theme: t,
                 overpass_timeout: tout,
                 type_speed_overrides: speeds,
+                apple_access_key: ak,
+                apple_map_version: amv,
+                apple_sat_version: asv,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -314,6 +335,46 @@ pub fn AppSettings() -> impl IntoView {
                         </div>
                     }
                 }).collect_view()}
+            </fieldset>
+
+            <fieldset>
+                <legend>"Apple Maps"</legend>
+                <label>
+                    "Access Key"
+                    <input
+                        type="text"
+                        placeholder="Access key"
+                        prop:value=move || apple_key.get().unwrap_or_default()
+                        on:input=move |ev| {
+                            let v = leptos::event_target_value(&ev);
+                            set_apple_key.set(if v.is_empty() { None } else { Some(v) });
+                        }
+                    />
+                </label>
+                <label>
+                    "Map version"
+                    <input
+                        type="text"
+                        placeholder="v= from map tiles"
+                        prop:value=move || apple_map_ver.get().unwrap_or_default()
+                        on:input=move |ev| {
+                            let v = leptos::event_target_value(&ev);
+                            set_apple_map_ver.set(if v.is_empty() { None } else { Some(v) });
+                        }
+                    />
+                </label>
+                <label>
+                    "Satellite version"
+                    <input
+                        type="text"
+                        placeholder="v= from satellite tiles"
+                        prop:value=move || apple_sat_ver.get().unwrap_or_default()
+                        on:input=move |ev| {
+                            let v = leptos::event_target_value(&ev);
+                            set_apple_sat_ver.set(if v.is_empty() { None } else { Some(v) });
+                        }
+                    />
+                </label>
             </fieldset>
 
             <fieldset>

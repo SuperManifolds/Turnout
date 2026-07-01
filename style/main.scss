@@ -774,6 +774,8 @@ button {
     flex-direction: column;
     gap: var(--spacing-md);
     overflow-y: auto;
+    height: 100vh;
+    box-sizing: border-box;
 
     h2 { margin: 0; font-size: var(--font-size-lg); }
 
@@ -811,12 +813,25 @@ button {
 
     label {
         cursor: pointer;
-        font-size: var(--font-size-base);
+        font-size: var(--font-size-sm);
         display: flex;
         align-items: center;
         gap: var(--spacing-sm);
 
         i { color: var(--color-accent); }
+    }
+
+    input[type="text"],
+    input[type="number"] {
+        padding: var(--spacing-xs) var(--spacing-sm);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-bg-primary);
+        color: var(--color-text-primary);
+        font-size: var(--font-size-sm);
+
+        &::placeholder { color: var(--color-text-muted); }
+        &:focus { outline: none; border-color: var(--color-accent); }
     }
 
     .speed-override-row {

@@ -20,7 +20,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
     }
     let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("Settings")
-        .inner_size(480.0, 400.0);
+        .inner_size(480.0, 600.0);
 
     // Inherit system theme so CSS prefers-color-scheme works
     if let Some(theme) = app.get_webview_window("main").and_then(|w| w.theme().ok()) {
