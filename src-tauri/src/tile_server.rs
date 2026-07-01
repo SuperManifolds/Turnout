@@ -401,12 +401,14 @@ async fn fetch_xyz_tile(
 
     let resp = client
         .get(&url)
+        .header("User-Agent", "Mozilla/5.0")
         .send()
         .await
-        .map_err(|e| eprintln!("XYZ fetch error: {e}"))
+        .map_err(|e| eprintln!("XYZ fetch error for {url}: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {
+        eprintln!("XYZ returned HTTP {} for {url}", resp.status());
         return None;
     }
 

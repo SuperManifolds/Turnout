@@ -1,4 +1,4 @@
-use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, create_signal, SignalGet, SignalSet, spawn_local, Show, CollectView};
+use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, create_signal, SignalGet, SignalGetUntracked, SignalSet, spawn_local, Show, CollectView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -69,7 +69,7 @@ pub fn OverlayDrawer(
     let (menu_open, set_menu_open) = create_signal(false);
     let (move_menu_layer, set_move_menu_layer) = create_signal::<Option<(u32, u32)>>(None);
 
-    let group_ids = move || status.get().groups.iter().map(|g| g.id).collect::<Vec<_>>();
+    let group_ids = move || status.get_untracked().groups.iter().map(|g| g.id).collect::<Vec<_>>();
 
     let show_toast = move |msg: String| {
         set_toast.set(Some(msg));
