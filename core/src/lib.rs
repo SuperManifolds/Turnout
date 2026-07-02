@@ -8,4 +8,5 @@ pub mod geojson;
 pub mod geojson_reader;
 pub mod geo;
 pub mod kml;
+pub mod overlay_style;
 pub mod shapefile_reader;

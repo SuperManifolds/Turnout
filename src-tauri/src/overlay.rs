@@ -32,16 +32,25 @@ struct SavedGroup {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SavedLayer {
-    kind: LayerKind,
     name: String,
     visible: bool,
     opacity: f32,
-    path: Option<String>,
-    wms_url: Option<String>,
-    wms_layer: Option<String>,
-    arcgis_url: Option<String>,
-    arcgis_service: Option<String>,
-    xyz_url: Option<String>,
+    #[serde(flatten)]
+    source: SavedSource,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum SavedSource {
+    Kmz { path: String },
+    Shp { path: String },
+    GeoJson { path: String },
+    Wms { wms_url: String, wms_layer: String },
+    ArcGis { arcgis_url: String, arcgis_service: String },
+    Xyz { xyz_url: String },
+    Wmts { xyz_url: String },
+    Apple { xyz_url: String },
+    Bing { xyz_url: String },
 }
 
 #[derive(Serialize, Clone)]
@@ -175,29 +184,8 @@ pub async fn add_overlay(
     path: String,
     group_id: Option<u32>,
 ) -> Result<OverlayStatus, String> {
-    let ext = std::path::Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let (mut data, kind) = match ext.as_str() {
-        "shp" => {
-            let d = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(&path))
-                .map_err(|e| format!("Parse error: {e}"))?;
-            (d, LayerKind::Shp)
-        }
-        "geojson" | "json" => {
-            let text = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            let d = turnout_core::geojson_reader::parse_geojson(&text)
-                .map_err(|e| format!("Parse error: {e}"))?;
-            (d, LayerKind::GeoJson)
-        }
-        _ => {
-            let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            let d = turnout_core::kml::parse_kmz(&bytes).map_err(|e| format!("Parse error: {e}"))?;
-            (d, LayerKind::Kmz)
-        }
-    };
+    let kind = kind_for_extension(&path);
+    let mut data = parse_overlay_file(&path, kind)?;
 
     if data.bbox().is_none() {
         return Err("File contains no geometry or overlays".into());
@@ -531,56 +519,61 @@ async fn ensure_group_exists(
     Ok(())
 }
 
+fn parse_overlay_file(path: &str, kind: LayerKind) -> Result<turnout_core::kml::OverlayData, String> {
+    match kind {
+        LayerKind::Shp => turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path))
+            .map_err(|e| e.to_string()),
+        LayerKind::GeoJson => {
+            let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+            turnout_core::geojson_reader::parse_geojson(&text).map_err(|e| e.to_string())
+        }
+        _ => {
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            turnout_core::kml::parse_kmz(&bytes).map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn kind_for_extension(path: &str) -> LayerKind {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "shp" => LayerKind::Shp,
+        "geojson" | "json" => LayerKind::GeoJson,
+        _ => LayerKind::Kmz,
+    }
+}
+
 fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
-    match layer.kind {
-        LayerKind::Kmz => {
-            let Some(ref path) = layer.path else { return };
-            let Ok(bytes) = std::fs::read(path) else {
-                eprintln!("Restore: failed to read {path}");
-                return;
+    match &layer.source {
+        SavedSource::Kmz { path } | SavedSource::Shp { path } | SavedSource::GeoJson { path } => {
+            let kind = match &layer.source {
+                SavedSource::Shp { .. } => LayerKind::Shp,
+                SavedSource::GeoJson { .. } => LayerKind::GeoJson,
+                _ => LayerKind::Kmz,
             };
-            let Ok(mut data) = turnout_core::kml::parse_kmz(&bytes) else {
+            let Ok(data) = parse_overlay_file(path, kind) else {
                 eprintln!("Restore: failed to parse {path}");
                 return;
             };
-            if data.name.is_none() {
-                data.name = Some(layer.name.clone());
-            }
-            handle.add_kmz_layer(data, Some(path.clone()), LayerKind::Kmz);
+            handle.add_kmz_layer(data, Some(path.clone()), kind);
         }
-        LayerKind::Shp => {
-            let Some(ref path) = layer.path else { return };
-            let Ok(data) = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) else {
-                eprintln!("Restore: failed to parse shapefile {path}");
-                return;
-            };
-            handle.add_kmz_layer(data, Some(path.clone()), LayerKind::Shp);
+        SavedSource::Wms { wms_url, wms_layer } => {
+            handle.add_wms_layer(wms_url.clone(), wms_layer.clone(), layer.name.clone());
         }
-        LayerKind::GeoJson => {
-            let Some(ref path) = layer.path else { return };
-            let Ok(text) = std::fs::read_to_string(path) else {
-                eprintln!("Restore: failed to read {path}");
-                return;
-            };
-            let Ok(data) = turnout_core::geojson_reader::parse_geojson(&text) else {
-                eprintln!("Restore: failed to parse GeoJSON {path}");
-                return;
-            };
-            handle.add_kmz_layer(data, Some(path.clone()), LayerKind::GeoJson);
+        SavedSource::ArcGis { arcgis_url, arcgis_service } => {
+            handle.add_arcgis_layer(arcgis_url.clone(), arcgis_service.clone(), layer.name.clone());
         }
-        LayerKind::Wms => {
-            let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) else { return };
-            handle.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
+        SavedSource::Xyz { xyz_url }
+        | SavedSource::Wmts { xyz_url }
+        | SavedSource::Apple { xyz_url }
+        | SavedSource::Bing { xyz_url } => {
+            handle.add_xyz_layer(xyz_url.clone(), layer.name.clone());
         }
-        LayerKind::ArcGis => {
-            let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) else { return };
-            handle.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
-        }
-        LayerKind::Xyz | LayerKind::Wmts | LayerKind::Apple | LayerKind::Bing => {
-            let Some(url) = &layer.xyz_url else { return };
-            handle.add_xyz_layer(url.clone(), layer.name.clone());
-        }
-        LayerKind::Image => return,
     }
 
     let layers = handle.state.layers.read().unpoison();
@@ -635,28 +628,35 @@ fn save_groups(app: &tauri::AppHandle) {
         let layers = g.handle.state.layers.read().unpoison();
         SavedGroup {
             name: g.name.clone(),
-            layers: layers.iter().map(|l| {
-                let (path, wms_url, wms_layer, arcgis_url, arcgis_service, xyz_url) = match &l.source {
-                    LayerSource::Kmz { path, .. } => (path.clone(), None, None, None, None, None),
-                    LayerSource::Wms { base_url, layer_name } =>
-                        (None, Some(base_url.clone()), Some(layer_name.clone()), None, None, None),
-                    LayerSource::ArcGis { base_url, service_name } =>
-                        (None, None, None, Some(base_url.clone()), Some(service_name.clone()), None),
-                    LayerSource::Xyz { url_template } =>
-                        (None, None, None, None, None, Some(url_template.clone())),
+            layers: layers.iter().filter_map(|l| {
+                let source = match (&l.source, l.kind) {
+                    (LayerSource::Kmz { path: Some(p), .. }, LayerKind::Kmz) =>
+                        SavedSource::Kmz { path: p.clone() },
+                    (LayerSource::Kmz { path: Some(p), .. }, LayerKind::Shp) =>
+                        SavedSource::Shp { path: p.clone() },
+                    (LayerSource::Kmz { path: Some(p), .. }, LayerKind::GeoJson) =>
+                        SavedSource::GeoJson { path: p.clone() },
+                    (LayerSource::Wms { base_url, layer_name }, _) =>
+                        SavedSource::Wms { wms_url: base_url.clone(), wms_layer: layer_name.clone() },
+                    (LayerSource::ArcGis { base_url, service_name }, _) =>
+                        SavedSource::ArcGis { arcgis_url: base_url.clone(), arcgis_service: service_name.clone() },
+                    (LayerSource::Xyz { url_template }, kind) => {
+                        let url = url_template.clone();
+                        match kind {
+                            LayerKind::Wmts => SavedSource::Wmts { xyz_url: url },
+                            LayerKind::Apple => SavedSource::Apple { xyz_url: url },
+                            LayerKind::Bing => SavedSource::Bing { xyz_url: url },
+                            _ => SavedSource::Xyz { xyz_url: url },
+                        }
+                    }
+                    _ => return None,
                 };
-                SavedLayer {
-                    kind: l.kind,
+                Some(SavedLayer {
                     name: l.name.clone(),
                     visible: l.visible,
                     opacity: l.opacity,
-                    path,
-                    wms_url,
-                    wms_layer,
-                    arcgis_url,
-                    arcgis_service,
-                    xyz_url,
-                }
+                    source,
+                })
             }).collect(),
         }
     }).collect();

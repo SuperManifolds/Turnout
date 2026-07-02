@@ -2,11 +2,15 @@ use anyhow::{Result, bail};
 use std::collections::HashMap;
 
 use crate::kml::{Geometry, OverlayData, Placemark, Style};
+use crate::overlay_style::{self, DefaultColors};
 
-const DEFAULT_LINE_COLOR: [u8; 4] = [51, 136, 255, 200];
-const DEFAULT_FILL_COLOR: [u8; 4] = [51, 136, 255, 80];
-const DEFAULT_POINT_COLOR: [u8; 4] = [255, 85, 0, 220];
-const DEFAULT_LINE_WIDTH: f32 = 2.0;
+const COLORS: DefaultColors = DefaultColors {
+    line: [51, 136, 255, 200],
+    fill: [51, 136, 255, 80],
+    point: [255, 85, 0, 220],
+    line_width: 2.0,
+    polygon_outline_width: 1.0,
+};
 
 pub fn parse_geojson(json: &str) -> Result<OverlayData> {
     let root: serde_json::Value = serde_json::from_str(json)?;
@@ -32,9 +36,9 @@ pub fn parse_geojson(json: &str) -> Result<OverlayData> {
             styles.insert(id.clone(), style);
             id
         } else {
-            let default_id = default_style_id(&geometry);
+            let default_id = overlay_style::default_style_id("_geojson", &geometry);
             if !styles.contains_key(&default_id) {
-                styles.insert(default_id.clone(), default_style_for(&geometry));
+                styles.insert(default_id.clone(), overlay_style::default_style_for(&geometry, &COLORS));
             }
             default_id
         };
@@ -178,10 +182,10 @@ fn extract_style(feature: &serde_json::Value) -> Style {
     let props = &feature["properties"];
     let mut style = Style::default();
 
-    if let Some(color) = props["stroke"].as_str().and_then(parse_css_color) {
+    if let Some(color) = props["stroke"].as_str().and_then(overlay_style::parse_css_color) {
         style.line_color = Some(color);
     }
-    if let Some(color) = props["marker-color"].as_str().and_then(parse_css_color) {
+    if let Some(color) = props["marker-color"].as_str().and_then(overlay_style::parse_css_color) {
         style.line_color = Some(color);
     }
     if let Some(w) = props["stroke-width"].as_f64() {
@@ -192,7 +196,7 @@ fn extract_style(feature: &serde_json::Value) -> Style {
     {
         c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
     }
-    if let Some(color) = props["fill"].as_str().and_then(parse_css_color) {
+    if let Some(color) = props["fill"].as_str().and_then(overlay_style::parse_css_color) {
         style.fill_color = Some(color);
         style.poly_fill = Some(true);
     }
@@ -203,57 +207,6 @@ fn extract_style(feature: &serde_json::Value) -> Style {
     }
 
     style
-}
-
-fn parse_css_color(s: &str) -> Option<[u8; 4]> {
-    let s = s.strip_prefix('#')?;
-    match s.len() {
-        6 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            Some([r, g, b, 255])
-        }
-        3 => {
-            let r = u8::from_str_radix(&s[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&s[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&s[2..3], 16).ok()? * 17;
-            Some([r, g, b, 255])
-        }
-        _ => None,
-    }
-}
-
-fn default_style_id(geom: &Geometry) -> String {
-    match geom {
-        Geometry::Point { .. } => "_geojson_default_point".to_string(),
-        Geometry::LineString { .. } => "_geojson_default_line".to_string(),
-        Geometry::Polygon { .. } => "_geojson_default_polygon".to_string(),
-        Geometry::Multi(gs) => gs.first().map_or("_geojson_default_line".to_string(), default_style_id),
-    }
-}
-
-fn default_style_for(geom: &Geometry) -> Style {
-    match geom {
-        Geometry::Point { .. } => Style {
-            line_color: Some(DEFAULT_POINT_COLOR),
-            line_width: Some(DEFAULT_LINE_WIDTH),
-            ..Style::default()
-        },
-        Geometry::LineString { .. } => Style {
-            line_color: Some(DEFAULT_LINE_COLOR),
-            line_width: Some(DEFAULT_LINE_WIDTH),
-            ..Style::default()
-        },
-        Geometry::Polygon { .. } => Style {
-            fill_color: Some(DEFAULT_FILL_COLOR),
-            line_color: Some(DEFAULT_LINE_COLOR),
-            line_width: Some(1.0),
-            poly_fill: Some(true),
-            poly_outline: Some(true),
-        },
-        Geometry::Multi(gs) => gs.first().map_or(Style::default(), default_style_for),
-    }
 }
 
 #[cfg(test)]

@@ -45,6 +45,27 @@ const MIN_OVERLAY_PIXEL_SIZE: f32 = 0.01;
 const ROTATION_EPSILON: f64 = 0.001;
 const WEB_MERCATOR_EXTENT: (f64, f64, f64, f64) = (-180.0, -85.051_129, 180.0, 85.051_129);
 
+struct TileCtx {
+    z: u32,
+    x: u32,
+    y: u32,
+    w: f64,
+    s: f64,
+    e: f64,
+    n: f64,
+}
+
+impl TileCtx {
+    fn new(z: u32, x: u32, y: u32) -> Self {
+        let (w, s, e, n) = tile_bounds(z, x, y);
+        Self { z, x, y, w, s, e, n }
+    }
+
+    fn pixel(&self, lat: f64, lon: f64) -> (f32, f32) {
+        latlon_to_tile_pixel(lat, lon, self.z, self.x, self.y)
+    }
+}
+
 pub(crate) struct DecodedImage {
     pixmap: Pixmap,
     north: f64,
@@ -647,7 +668,7 @@ async fn serve_tile(
 
 fn render_tile(state: &TileState, remote_tiles: &HashMap<u32, Pixmap>, z: u32, x: u32, y: u32) -> Vec<u8> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).expect("256x256 pixmap");
-    let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
+    let ctx = TileCtx::new(z, x, y);
 
     {
         let layers = state.layers.read().unpoison();
@@ -658,8 +679,8 @@ fn render_tile(state: &TileState, remote_tiles: &HashMap<u32, Pixmap>, z: u32, x
             let opacity = layer.opacity;
             match &layer.source {
                 LayerSource::Kmz { data, images, .. } => {
-                    render_ground_overlays(&mut pixmap, images, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
-                    render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
+                    render_ground_overlays(&mut pixmap, images, opacity, &ctx);
+                    render_geometry(&mut pixmap, data, opacity, &ctx);
                 }
                 LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } => {
                     if let Some(remote_pixmap) = remote_tiles.get(&layer.id) {
@@ -684,18 +705,17 @@ fn render_ground_overlays(
     pixmap: &mut Pixmap,
     images: &[DecodedImage],
     opacity: f32,
-    z: u32, x: u32, y: u32,
-    tile_w: f64, tile_s: f64, tile_e: f64, tile_n: f64,
+    ctx: &TileCtx,
 ) {
     let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
 
     for ov in images {
-        if ov.east < tile_w || ov.west > tile_e || ov.north < tile_s || ov.south > tile_n {
+        if ov.east < ctx.w || ov.west > ctx.e || ov.north < ctx.s || ov.south > ctx.n {
             continue;
         }
 
-        let (px_left, py_top) = latlon_to_tile_pixel(ov.north, ov.west, z, x, y);
-        let (px_right, py_bottom) = latlon_to_tile_pixel(ov.south, ov.east, z, x, y);
+        let (px_left, py_top) = ctx.pixel(ov.north, ov.west);
+        let (px_right, py_bottom) = ctx.pixel(ov.south, ov.east);
 
         let dest_w = px_right - px_left;
         let dest_h = py_bottom - py_top;
@@ -730,18 +750,20 @@ fn render_geometry(
     pixmap: &mut Pixmap,
     data: &OverlayData,
     opacity: f32,
-    z: u32, x: u32, y: u32,
-    tile_w: f64, tile_s: f64, tile_e: f64, tile_n: f64,
+    ctx: &TileCtx,
 ) {
-    let margin = (tile_e - tile_w) * 0.1;
-    let ew = tile_w - margin;
-    let ee = tile_e + margin;
-    let es = tile_s - margin;
-    let en = tile_n + margin;
+    let margin = (ctx.e - ctx.w) * 0.1;
+    let expanded = TileCtx {
+        w: ctx.w - margin,
+        s: ctx.s - margin,
+        e: ctx.e + margin,
+        n: ctx.n + margin,
+        ..*ctx
+    };
 
     for pm in &data.placemarks {
         let style = data.resolve_style(pm);
-        render_single_geometry(pixmap, &pm.geometry, opacity, z, x, y, ew, es, ee, en, &style);
+        render_single_geometry(pixmap, &pm.geometry, opacity, &expanded, &style);
     }
 }
 
@@ -751,42 +773,40 @@ fn render_single_geometry(
     pixmap: &mut Pixmap,
     geom: &Geometry,
     opacity: f32,
-    z: u32, x: u32, y: u32,
-    ew: f64, es: f64, ee: f64, en: f64,
+    ctx: &TileCtx,
     style: &Style,
 ) {
-    render_geometry_depth(pixmap, geom, opacity, z, x, y, ew, es, ee, en, style, 0);
+    render_geometry_depth(pixmap, geom, opacity, ctx, style, 0);
 }
 
 fn render_geometry_depth(
     pixmap: &mut Pixmap,
     geom: &Geometry,
     opacity: f32,
-    z: u32, x: u32, y: u32,
-    ew: f64, es: f64, ee: f64, en: f64,
+    ctx: &TileCtx,
     style: &Style,
     depth: usize,
 ) {
     if depth > MAX_RENDER_DEPTH { return; }
     match geom {
         Geometry::Point { lon, lat } => {
-            if *lon >= ew && *lon <= ee && *lat >= es && *lat <= en {
-                render_point(pixmap, *lat, *lon, opacity, z, x, y, style);
+            if *lon >= ctx.w && *lon <= ctx.e && *lat >= ctx.s && *lat <= ctx.n {
+                render_point(pixmap, *lat, *lon, opacity, ctx, style);
             }
         }
         Geometry::LineString { coords } => {
-            if coords_intersect(coords, ew, es, ee, en) {
-                render_linestring(pixmap, coords, opacity, z, x, y, style);
+            if coords_intersect(coords, ctx.w, ctx.s, ctx.e, ctx.n) {
+                render_linestring(pixmap, coords, opacity, ctx, style);
             }
         }
         Geometry::Polygon { outer, inner } => {
-            if coords_intersect(outer, ew, es, ee, en) {
-                render_polygon(pixmap, outer, inner, opacity, z, x, y, style);
+            if coords_intersect(outer, ctx.w, ctx.s, ctx.e, ctx.n) {
+                render_polygon(pixmap, outer, inner, opacity, ctx, style);
             }
         }
         Geometry::Multi(geoms) => {
             for g in geoms {
-                render_geometry_depth(pixmap, g, opacity, z, x, y, ew, es, ee, en, style, depth + 1);
+                render_geometry_depth(pixmap, g, opacity, ctx, style, depth + 1);
             }
         }
     }
@@ -803,8 +823,8 @@ fn coords_intersect(coords: &[(f64, f64)], w: f64, s: f64, e: f64, n: f64) -> bo
     })
 }
 
-fn render_point(pixmap: &mut Pixmap, lat: f64, lon: f64, opacity: f32, z: u32, x: u32, y: u32, style: &Style) {
-    let (px, py) = latlon_to_tile_pixel(lat, lon, z, x, y);
+fn render_point(pixmap: &mut Pixmap, lat: f64, lon: f64, opacity: f32, ctx: &TileCtx, style: &Style) {
+    let (px, py) = ctx.pixel(lat, lon);
 
     let rgba = apply_opacity(style.line_color.unwrap_or(POINT_COLOR), opacity);
     let mut paint = Paint::default();
@@ -822,7 +842,7 @@ fn render_linestring(
     pixmap: &mut Pixmap,
     coords: &[(f64, f64)],
     opacity: f32,
-    z: u32, x: u32, y: u32,
+    ctx: &TileCtx,
     style: &Style,
 ) {
     if coords.len() < 2 {
@@ -830,10 +850,10 @@ fn render_linestring(
     }
 
     let mut pb = PathBuilder::new();
-    let (px, py) = latlon_to_tile_pixel(coords[0].1, coords[0].0, z, x, y);
+    let (px, py) = ctx.pixel(coords[0].1, coords[0].0);
     pb.move_to(px, py);
     for &(lon, lat) in &coords[1..] {
-        let (px, py) = latlon_to_tile_pixel(lat, lon, z, x, y);
+        let (px, py) = ctx.pixel(lat, lon);
         pb.line_to(px, py);
     }
 
@@ -857,7 +877,7 @@ fn render_polygon(
     outer: &[(f64, f64)],
     inner: &[Vec<(f64, f64)>],
     opacity: f32,
-    z: u32, x: u32, y: u32,
+    ctx: &TileCtx,
     style: &Style,
 ) {
     if outer.len() < 3 {
@@ -865,10 +885,10 @@ fn render_polygon(
     }
 
     let mut pb = PathBuilder::new();
-    let (px, py) = latlon_to_tile_pixel(outer[0].1, outer[0].0, z, x, y);
+    let (px, py) = ctx.pixel(outer[0].1, outer[0].0);
     pb.move_to(px, py);
     for &(lon, lat) in &outer[1..] {
-        let (px, py) = latlon_to_tile_pixel(lat, lon, z, x, y);
+        let (px, py) = ctx.pixel(lat, lon);
         pb.line_to(px, py);
     }
     pb.close();
@@ -877,10 +897,10 @@ fn render_polygon(
         if ring.len() < 3 {
             continue;
         }
-        let (px, py) = latlon_to_tile_pixel(ring[0].1, ring[0].0, z, x, y);
+        let (px, py) = ctx.pixel(ring[0].1, ring[0].0);
         pb.move_to(px, py);
         for &(lon, lat) in &ring[1..] {
-            let (px, py) = latlon_to_tile_pixel(lat, lon, z, x, y);
+            let (px, py) = ctx.pixel(lat, lon);
             pb.line_to(px, py);
         }
         pb.close();

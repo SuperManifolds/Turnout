@@ -6,12 +6,15 @@ use std::path::Path;
 
 use crate::geo::mercator_to_latlon;
 use crate::kml::{Geometry, OverlayData, Placemark, Style};
+use crate::overlay_style::{self, DefaultColors};
 
-const DEFAULT_LINE_COLOR: [u8; 4] = [255, 140, 0, 200];
-const DEFAULT_FILL_COLOR: [u8; 4] = [70, 130, 180, 100];
-const DEFAULT_POINT_COLOR: [u8; 4] = [220, 50, 50, 220];
-const DEFAULT_LINE_WIDTH: f32 = 2.0;
-const DEFAULT_POLYGON_OUTLINE_WIDTH: f32 = 1.0;
+const COLORS: DefaultColors = DefaultColors {
+    line: [255, 140, 0, 200],
+    fill: [70, 130, 180, 100],
+    point: [220, 50, 50, 220],
+    line_width: 2.0,
+    polygon_outline_width: 1.0,
+};
 
 struct StyleRule {
     filter: Option<(String, String)>,
@@ -45,9 +48,9 @@ pub fn parse_shapefile(shp_path: &Path) -> Result<OverlayData> {
         let name = first_text_field(&record);
 
         let style_id = if rules.is_empty() {
-            let default_id = default_style_id(&geometry);
+            let default_id = overlay_style::default_style_id("_shp", &geometry);
             if !styles.contains_key(&default_id) {
-                styles.insert(default_id.clone(), default_style_for(&geometry));
+                styles.insert(default_id.clone(), overlay_style::default_style_for(&geometry, &COLORS));
             }
             default_id
         } else {
@@ -114,9 +117,9 @@ fn shape_to_geometry(shape: &shapefile::Shape, crs: &Crs) -> Option<Geometry> {
             let (lon, lat) = project(p.x, p.y, crs);
             Some(Geometry::Point { lon, lat })
         }
-        shapefile::Shape::Polyline(pl) => parts_to_lines(pl.parts(), crs),
-        shapefile::Shape::PolylineZ(pl) => partsz_to_lines(pl.parts(), crs),
-        shapefile::Shape::PolylineM(pl) => partsm_to_lines(pl.parts(), crs),
+        shapefile::Shape::Polyline(pl) => generic_parts_to_lines(pl.parts(), crs),
+        shapefile::Shape::PolylineZ(pl) => generic_parts_to_lines(pl.parts(), crs),
+        shapefile::Shape::PolylineM(pl) => generic_parts_to_lines(pl.parts(), crs),
         shapefile::Shape::Polygon(pg) => rings_to_polygon(pg.rings(), crs),
         shapefile::Shape::PolygonZ(pg) => ringsz_to_polygon(pg.rings(), crs),
         shapefile::Shape::PolygonM(pg) => ringsm_to_polygon(pg.rings(), crs),
@@ -138,57 +141,25 @@ fn shape_to_geometry(shape: &shapefile::Shape, crs: &Crs) -> Option<Geometry> {
     }
 }
 
-fn points_to_coords(points: &[shapefile::Point], crs: &Crs) -> Vec<(f64, f64)> {
-    points.iter().map(|p| project(p.x, p.y, crs)).collect()
-}
-
-fn parts_to_lines(parts: &[Vec<shapefile::Point>], crs: &Crs) -> Option<Geometry> {
-    let lines: Vec<Geometry> = parts
-        .iter()
-        .filter(|part| part.len() >= 2)
-        .map(|part| Geometry::LineString { coords: points_to_coords(part, crs) })
-        .collect();
-    match lines.len() {
-        0 => None,
-        1 => Some(lines.into_iter().next().expect("checked")),
-        _ => Some(Geometry::Multi(lines)),
-    }
-}
-
-fn partsz_to_lines(parts: &[Vec<shapefile::PointZ>], crs: &Crs) -> Option<Geometry> {
-    let lines: Vec<Geometry> = parts
-        .iter()
-        .filter(|part| part.len() >= 2)
-        .map(|part| Geometry::LineString {
-            coords: part.iter().map(|p| project(p.x, p.y, crs)).collect(),
-        })
-        .collect();
-    match lines.len() {
-        0 => None,
-        1 => Some(lines.into_iter().next().expect("checked")),
-        _ => Some(Geometry::Multi(lines)),
-    }
-}
-
-fn partsm_to_lines(parts: &[Vec<shapefile::PointM>], crs: &Crs) -> Option<Geometry> {
-    let lines: Vec<Geometry> = parts
-        .iter()
-        .filter(|part| part.len() >= 2)
-        .map(|part| Geometry::LineString {
-            coords: part.iter().map(|p| project(p.x, p.y, crs)).collect(),
-        })
-        .collect();
-    match lines.len() {
-        0 => None,
-        1 => Some(lines.into_iter().next().expect("checked")),
-        _ => Some(Geometry::Multi(lines)),
-    }
-}
-
 trait HasXY { fn x(&self) -> f64; fn y(&self) -> f64; }
 impl HasXY for shapefile::Point { fn x(&self) -> f64 { self.x } fn y(&self) -> f64 { self.y } }
 impl HasXY for shapefile::PointZ { fn x(&self) -> f64 { self.x } fn y(&self) -> f64 { self.y } }
 impl HasXY for shapefile::PointM { fn x(&self) -> f64 { self.x } fn y(&self) -> f64 { self.y } }
+
+fn generic_parts_to_lines<P: HasXY>(parts: &[Vec<P>], crs: &Crs) -> Option<Geometry> {
+    let lines: Vec<Geometry> = parts
+        .iter()
+        .filter(|part| part.len() >= 2)
+        .map(|part| Geometry::LineString {
+            coords: part.iter().map(|p| project(p.x(), p.y(), crs)).collect(),
+        })
+        .collect();
+    match lines.len() {
+        0 => None,
+        1 => Some(lines.into_iter().next().expect("checked")),
+        _ => Some(Geometry::Multi(lines)),
+    }
+}
 
 fn generic_rings_to_polygon<P: HasXY>(rings: &[shapefile::PolygonRing<P>], crs: &Crs) -> Option<Geometry> {
     let mut outers: Vec<Vec<(f64, f64)>> = Vec::new();
@@ -239,37 +210,7 @@ fn first_text_field(record: &shapefile::dbase::Record) -> Option<String> {
     None
 }
 
-fn default_style_id(geom: &Geometry) -> String {
-    match geom {
-        Geometry::Point { .. } => "_shp_default_point".to_string(),
-        Geometry::LineString { .. } => "_shp_default_line".to_string(),
-        Geometry::Polygon { .. } => "_shp_default_polygon".to_string(),
-        Geometry::Multi(gs) => gs.first().map_or("_shp_default_line".to_string(), default_style_id),
-    }
-}
 
-fn default_style_for(geom: &Geometry) -> Style {
-    match geom {
-        Geometry::Point { .. } => Style {
-            line_color: Some(DEFAULT_POINT_COLOR),
-            line_width: Some(DEFAULT_LINE_WIDTH),
-            ..Style::default()
-        },
-        Geometry::LineString { .. } => Style {
-            line_color: Some(DEFAULT_LINE_COLOR),
-            line_width: Some(DEFAULT_LINE_WIDTH),
-            ..Style::default()
-        },
-        Geometry::Polygon { .. } => Style {
-            fill_color: Some(DEFAULT_FILL_COLOR),
-            line_color: Some(DEFAULT_LINE_COLOR),
-            line_width: Some(DEFAULT_POLYGON_OUTLINE_WIDTH),
-            poly_fill: Some(true),
-            poly_outline: Some(true),
-        },
-        Geometry::Multi(gs) => gs.first().map_or(Style::default(), default_style_for),
-    }
-}
 
 fn match_style(rules: &[StyleRule], record: &shapefile::dbase::Record) -> Style {
     for rule in rules {
@@ -421,10 +362,10 @@ fn apply_css_param(
     fill_opacity: &mut Option<f32>, stroke_opacity: &mut Option<f32>,
 ) {
     match name {
-        "stroke" if in_stroke => style.line_color = parse_css_color(value),
+        "stroke" if in_stroke => style.line_color = overlay_style::parse_css_color(value),
         "stroke-width" if in_stroke => style.line_width = value.parse().ok(),
         "fill" if in_fill => {
-            style.fill_color = parse_css_color(value);
+            style.fill_color = overlay_style::parse_css_color(value);
             style.poly_fill = Some(true);
         }
         "fill-opacity" if in_fill => *fill_opacity = value.parse().ok(),
@@ -539,28 +480,6 @@ fn apply_qml_prop(style: &mut Style, key: &str, value: &str) {
     }
 }
 
-// --- Color parsing ---
-
-fn parse_css_color(s: &str) -> Option<[u8; 4]> {
-    let s = s.strip_prefix('#')?;
-    match s.len() {
-        6 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            Some([r, g, b, 255])
-        }
-        8 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-            Some([r, g, b, a])
-        }
-        _ => None,
-    }
-}
-
 fn parse_qml_color(s: &str) -> Option<[u8; 4]> {
     let parts: Vec<&str> = s.split(',').collect();
     match parts.len() {
@@ -586,9 +505,9 @@ mod tests {
 
     #[test]
     fn test_parse_css_color() {
-        assert_eq!(parse_css_color("#ff0000"), Some([255, 0, 0, 255]));
-        assert_eq!(parse_css_color("#00ff0080"), Some([0, 255, 0, 128]));
-        assert_eq!(parse_css_color("invalid"), None);
+        assert_eq!(overlay_style::parse_css_color("#ff0000"), Some([255, 0, 0, 255]));
+        assert_eq!(overlay_style::parse_css_color("#00ff0080"), Some([0, 255, 0, 128]));
+        assert_eq!(overlay_style::parse_css_color("invalid"), None);
     }
 
     #[test]
