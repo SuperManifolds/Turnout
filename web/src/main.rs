@@ -91,6 +91,7 @@ fn App() -> impl IntoView {
     });
 
     let (drawer_open, set_drawer_open) = create_signal(false);
+    let (overlay_open, set_overlay_open) = create_signal(false);
 
     view! {
         <Show when=move || is_settings>
@@ -110,6 +111,9 @@ fn App() -> impl IntoView {
                     />
                     <components::Search />
                     <components::LayerSwitcher />
+                    <button id="overlay-toggle" on:click=move |_| set_overlay_open.set(!overlay_open.get()) title="Overlays">
+                        <i class="fa-solid fa-layer-group"></i>
+                    </button>
                     <Show when=move || has_selection.get()>
                         <aside id="sidebar">
                             <components::TrackFilter
@@ -126,6 +130,10 @@ fn App() -> impl IntoView {
                             />
                         </aside>
                     </Show>
+                    <components::OverlayDrawer
+                        open=overlay_open
+                        set_open=set_overlay_open
+                    />
                     <components::BlueprintDrawer
                         open=drawer_open
                         set_open=set_drawer_open

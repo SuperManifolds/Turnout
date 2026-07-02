@@ -1,12 +1,15 @@
 // Thin wrappers around MapLibre GL JS API — all logic lives in Rust.
 
 let _map = null;
+let _map_loaded = false;
+let _dynamic_source_ids = new Set();
+let _dynamic_layer_ids = new Set();
 let _theme_override = "system"; // "system", "light", "dark"
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-const CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles"];
-const CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer"];
+const CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles", "kmz-overlay"];
+const CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer", "kmz-overlay-layer"];
 const PREVIEW_COLOR = "#0693FF";
 const PREVIEW_LINE_WIDTH = 4;
 const PREVIEW_GLOW_WIDTH = 8;
@@ -23,11 +26,13 @@ function get_preferred_style() {
 function preserve_custom_layers(prev, next) {
     if (!prev) return next;
     const sources = Object.assign({}, next.sources);
-    CUSTOM_SOURCE_IDS.forEach(function(id) {
+    var allSourceIds = CUSTOM_SOURCE_IDS.concat(Array.from(_dynamic_source_ids));
+    allSourceIds.forEach(function(id) {
         if (prev.sources[id]) sources[id] = prev.sources[id];
     });
+    var allLayerIds = CUSTOM_LAYER_IDS.concat(Array.from(_dynamic_layer_ids));
     const customLayers = prev.layers.filter(function(l) {
-        return CUSTOM_LAYER_IDS.indexOf(l.id) >= 0;
+        return allLayerIds.indexOf(l.id) >= 0;
     });
     return Object.assign({}, next, {
         sources: sources,
@@ -55,6 +60,7 @@ window.map_init = function(container) {
     });
 
     // Flush deferred on-load callbacks
+    _map.on("load", function() { _map_loaded = true; });
     _on_load_callbacks.forEach(function(cb) { _map.on("load", cb); });
     _on_load_callbacks = [];
 
@@ -285,4 +291,39 @@ window.map_query_features = function(lng, lat, layer_id) {
         return features[0].properties.handle;
     }
     return null;
+};
+
+window.map_add_overlay_layer = function(id, url, opacity) {
+    if (!_map_loaded) {
+        map_on_load(function() { map_add_overlay_layer(id, url, opacity); });
+        return;
+    }
+    if (_map.getSource(id)) return;
+    _map.addSource(id, {
+        type: "raster",
+        tiles: [url],
+        tileSize: 256,
+    });
+    var beforeLayer = _map.getLayer("orm-layer") ? "orm-layer" : undefined;
+    _map.addLayer({
+        id: id + "-layer",
+        type: "raster",
+        source: id,
+        paint: { "raster-opacity": opacity },
+    }, beforeLayer);
+    _dynamic_source_ids.add(id);
+    _dynamic_layer_ids.add(id + "-layer");
+};
+
+window.map_remove_overlay_layer = function(id) {
+    if (!_map) return;
+    if (_map.getLayer(id + "-layer")) _map.removeLayer(id + "-layer");
+    if (_map.getSource(id)) _map.removeSource(id);
+    _dynamic_source_ids.delete(id);
+    _dynamic_layer_ids.delete(id + "-layer");
+};
+
+window.map_fit_bounds = function(west, south, east, north) {
+    if (!_map) return;
+    _map.fitBounds([[west, south], [east, north]], { padding: 50 });
 };

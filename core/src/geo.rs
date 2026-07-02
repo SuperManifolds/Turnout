@@ -51,6 +51,34 @@ pub fn inverse_geodesic(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> (f64, f64
     (dist * bearing.sin(), dist * bearing.cos())
 }
 
+/// Convert slippy map tile `(z, x, y)` to WGS84 bounds `(west, south, east, north)`.
+#[must_use]
+pub fn tile_bounds(z: u32, x: u32, y: u32) -> (f64, f64, f64, f64) {
+    let n = f64::from(1u32 << z);
+    let west = f64::from(x) / n * 360.0 - 180.0;
+    let east = (f64::from(x) + 1.0) / n * 360.0 - 180.0;
+    let north = (std::f64::consts::PI * (1.0 - 2.0 * f64::from(y) / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let south = (std::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 1.0) / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    (west, south, east, north)
+}
+
+/// Project a lat/lon point to pixel coordinates within a specific tile.
+/// Returns `(px, py)` where `(0,0)` is top-left and `(256,256)` is bottom-right.
+#[must_use]
+pub fn latlon_to_tile_pixel(lat: f64, lon: f64, z: u32, x: u32, y: u32) -> (f32, f32) {
+    let n = f64::from(1u32 << z);
+    let px = ((lon + 180.0) / 360.0 * n - f64::from(x)) * 256.0;
+    let lat_rad = lat.to_radians();
+    let py = ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * n - f64::from(y)) * 256.0;
+    (px as f32, py as f32)
+}
+
 /// Find where a line segment (from `inside` toward `outside`) first crosses a rectangle.
 /// Coordinates are generic (lat/lon, x/y, lon/lat — caller decides).
 /// Returns the intersection point closest to the inside point, or None.
@@ -98,4 +126,65 @@ pub fn segment_rect_intersect(
     }
 
     if best_t < f64::MAX { Some(best_pt) } else { None }
+}
+
+/// Build an Apple Maps tile URL template.
+#[must_use]
+pub fn apple_tile_url(access_key: &str, version: &str, satellite: bool) -> String {
+    if satellite {
+        format!(
+            "https://sat-cdn.apple-mapkit.com/tile?style=7&size=2&scale=1\
+             &z={{z}}&x={{x}}&y={{y}}&v={version}&accessKey={access_key}"
+        )
+    } else {
+        format!(
+            "https://cdn.apple-mapkit.com/ti/tile?style=0&size=1&scale=1\
+             &lang=en&poi=0&labels=0&tint=light&emphasis=standard\
+             &z={{z}}&x={{x}}&y={{y}}&v={version}&accessKey={access_key}"
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tile_bounds_z0() {
+        let (w, s, e, n) = tile_bounds(0, 0, 0);
+        assert!((w - (-180.0)).abs() < 1e-6);
+        assert!((e - 180.0).abs() < 1e-6);
+        assert!(n > 85.0 && n < 86.0);
+        assert!(s < -85.0 && s > -86.0);
+    }
+
+    #[test]
+    fn test_tile_bounds_z1() {
+        let (w, _s, e, _n) = tile_bounds(1, 0, 0);
+        assert!((w - (-180.0)).abs() < 1e-6);
+        assert!((e - 0.0).abs() < 1e-6);
+        let (w2, _, e2, _) = tile_bounds(1, 1, 0);
+        assert!((w2 - 0.0).abs() < 1e-6);
+        assert!((e2 - 180.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tile_pixel_corners() {
+        let (px, py) = latlon_to_tile_pixel(0.0, 0.0, 1, 1, 1);
+        assert!((px - 0.0).abs() < 1.0);
+        assert!((py - 0.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_tile_pixel_roundtrip() {
+        let z = 10;
+        let x = 512;
+        let y = 340;
+        let (w, s, e, n) = tile_bounds(z, x, y);
+        let center_lon = (w + e) / 2.0;
+        let center_lat = (s + n) / 2.0;
+        let (px, py) = latlon_to_tile_pixel(center_lat, center_lon, z, x, y);
+        assert!((px - 128.0).abs() < 1.0);
+        assert!((py - 128.0).abs() < 1.0);
+    }
 }

@@ -228,3 +228,357 @@ pub async fn open_blueprint_folder(folder_name: &str) -> Result<(), String> {
     js_set(&args, "folderName", &folder_name.into())?;
     invoke("open_blueprint_folder", &args).await.map(|_| ())
 }
+
+#[derive(Clone, Debug)]
+pub struct LayerInfo {
+    pub id: u32,
+    pub name: String,
+    pub kind: String,
+    pub visible: bool,
+    pub opacity: f32,
+    pub bbox: [f64; 4],
+    pub has_errors: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct GroupInfo {
+    pub id: u32,
+    pub name: String,
+    pub tile_url: String,
+    pub tilejson_url: String,
+    pub layers: Vec<LayerInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct OverlayStatus {
+    pub groups: Vec<GroupInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WmsLayerInfo {
+    pub name: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArcGisServiceInfo {
+    pub name: String,
+    pub service_type: String,
+}
+
+fn parse_bbox(val: &JsValue) -> Option<[f64; 4]> {
+    let arr = js_sys::Array::from(val);
+    Some([arr.get(0).as_f64()?, arr.get(1).as_f64()?, arr.get(2).as_f64()?, arr.get(3).as_f64()?])
+}
+
+fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
+    let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
+    let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
+    let bbox_val = js_sys::Reflect::get(val, &"bbox".into()).ok()?;
+    Some(LayerInfo {
+        id: get_f64("id")? as u32,
+        name: get_str("name")?,
+        kind: get_str("kind").unwrap_or_else(|| "kmz".into()),
+        visible: js_sys::Reflect::get(val, &"visible".into()).ok()?.as_bool().unwrap_or(true),
+        opacity: get_f64("opacity").unwrap_or(1.0) as f32,
+        bbox: parse_bbox(&bbox_val)?,
+        has_errors: js_sys::Reflect::get(val, &"hasErrors".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false),
+    })
+}
+
+fn parse_group(val: &JsValue) -> Option<GroupInfo> {
+    let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
+    let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
+    let layers_val = js_sys::Reflect::get(val, &"layers".into()).ok()?;
+    let layers_arr = js_sys::Array::from(&layers_val);
+    Some(GroupInfo {
+        id: get_f64("id")? as u32,
+        name: get_str("name")?,
+        tile_url: get_str("tileUrl")?,
+        tilejson_url: get_str("tilejsonUrl").unwrap_or_default(),
+        layers: layers_arr.iter().filter_map(|v| parse_layer(&v)).collect(),
+    })
+}
+
+#[must_use]
+pub fn parse_overlay_status(val: &JsValue) -> Option<OverlayStatus> {
+    let groups_val = js_sys::Reflect::get(val, &"groups".into()).ok()?;
+    let groups_arr = js_sys::Array::from(&groups_val);
+    Some(OverlayStatus {
+        groups: groups_arr.iter().filter_map(|v| parse_group(&v)).collect(),
+    })
+}
+
+pub async fn update_apple_urls(access_key: &str, map_version: Option<&str>, sat_version: Option<&str>) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "accessKey", &access_key.into());
+    if let Some(v) = map_version { let _ = js_set(&args, "mapVersion", &v.into()); }
+    if let Some(v) = sat_version { let _ = js_set(&args, "satVersion", &v.into()); }
+    invoke("update_apple_urls", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn pick_kmz_file() -> Option<String> {
+    let result = invoke("pick_kmz_file", &JsValue::NULL).await.ok()?;
+    result.as_string()
+}
+
+pub async fn restore_overlays() -> OverlayStatus {
+    let result = invoke("restore_overlays", &JsValue::NULL).await.ok();
+    result
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn get_overlay_status() -> OverlayStatus {
+    let result = invoke("get_overlay_status", &JsValue::NULL).await.ok();
+    result
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn create_group(name: &str) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "name", &name.into())?;
+    let result = invoke("create_group", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn remove_group(group_id: u32) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let result = invoke("remove_group", &args).await.ok();
+    result
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn reorder_group(group_id: u32, direction: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "direction", &direction.into());
+    invoke("reorder_group", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn rename_group(group_id: u32, name: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "name", &name.into());
+    invoke("rename_group", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn add_overlay(path: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "path", &path.into())?;
+    if let Some(gid) = group_id {
+        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    let result = invoke("add_overlay", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn fetch_wms_layers(url: &str) -> Result<Vec<WmsLayerInfo>, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    let result = invoke("fetch_wms_layers", &args).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| {
+        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
+        Some(WmsLayerInfo { name: get_str("name")?, title: get_str("title")? })
+    }).collect())
+}
+
+pub async fn add_wms_layer(url: &str, layer_name: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    js_set(&args, "layerName", &layer_name.into())?;
+    js_set(&args, "displayName", &display_name.into())?;
+    if let Some(gid) = group_id {
+        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    let result = invoke("add_wms_layer", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn fetch_arcgis_services(url: &str) -> Result<Vec<ArcGisServiceInfo>, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    let result = invoke("fetch_arcgis_services", &args).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| {
+        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
+        Some(ArcGisServiceInfo { name: get_str("name")?, service_type: get_str("type")? })
+    }).collect())
+}
+
+pub async fn add_arcgis_layer(url: &str, service_name: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    js_set(&args, "serviceName", &service_name.into())?;
+    js_set(&args, "displayName", &display_name.into())?;
+    if let Some(gid) = group_id {
+        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    let result = invoke("add_arcgis_layer", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+#[derive(Clone, Debug)]
+pub struct WmtsLayerInfo {
+    pub identifier: String,
+    pub title: String,
+    pub tile_url: String,
+}
+
+pub async fn fetch_wmts_layers(url: &str) -> Result<Vec<WmtsLayerInfo>, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    let result = invoke("fetch_wmts_layers", &args).await?;
+    let arr = js_sys::Array::from(&result);
+    Ok(arr.iter().filter_map(|v| {
+        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
+        Some(WmtsLayerInfo {
+            identifier: get_str("identifier")?,
+            title: get_str("title")?,
+            tile_url: get_str("tileUrl")?,
+        })
+    }).collect())
+}
+
+pub async fn add_xyz_layer(url_template: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    add_xyz_layer_with_kind(url_template, display_name, group_id, None).await
+}
+
+pub async fn add_xyz_layer_with_kind(url_template: &str, display_name: &str, group_id: Option<u32>, kind: Option<&str>) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "urlTemplate", &url_template.into())?;
+    js_set(&args, "displayName", &display_name.into())?;
+    if let Some(gid) = group_id {
+        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    if let Some(k) = kind {
+        js_set(&args, "kind", &k.into())?;
+    }
+    let result = invoke("add_xyz_layer", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn move_layer(layer_id: u32, from_group_id: u32, to_group_id: u32) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)))?;
+    js_set(&args, "fromGroupId", &JsValue::from_f64(f64::from(from_group_id)))?;
+    js_set(&args, "toGroupId", &JsValue::from_f64(f64::from(to_group_id)))?;
+    let result = invoke("move_layer", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn rename_layer(group_id: u32, layer_id: u32, name: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    let _ = js_set(&args, "name", &name.into());
+    invoke("rename_layer", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn set_group_visible(group_id: u32, visible: bool) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "visible", &JsValue::from_bool(visible));
+    invoke("set_group_visible", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn reorder_layer(group_id: u32, layer_id: u32, direction: &str) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    let _ = js_set(&args, "direction", &direction.into());
+    invoke("reorder_layer", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn remove_overlay(group_id: u32, layer_id: u32) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    invoke("remove_overlay", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn set_layer_visible(group_id: u32, layer_id: u32, visible: bool) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    let _ = js_set(&args, "visible", &JsValue::from_bool(visible));
+    invoke("set_layer_visible", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
+pub async fn set_layer_opacity(group_id: u32, layer_id: u32, opacity: f32) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
+    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
+    let _ = js_set(&args, "opacity", &JsValue::from_f64(f64::from(opacity)));
+    invoke("set_layer_opacity", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}

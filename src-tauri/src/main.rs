@@ -1,9 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod arcgis;
 mod blueprint;
 mod import;
+mod overlay;
 mod overpass;
 mod settings;
+mod tile_server;
+mod wms;
+mod wmts;
 
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -15,7 +20,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
     }
     let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("Settings")
-        .inner_size(480.0, 400.0);
+        .inner_size(480.0, 600.0);
 
     // Inherit system theme so CSS prefers-color-scheme works
     if let Some(theme) = app.get_webview_window("main").and_then(|w| w.theme().ok()) {
@@ -83,6 +88,7 @@ fn main() {
         .setup(|app| {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
+            app.manage(overlay::OverlayState::new());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -105,6 +111,28 @@ fn main() {
             settings::get_settings,
             settings::set_settings,
             settings::pick_folder,
+            overlay::restore_overlays,
+            overlay::pick_kmz_file,
+            overlay::create_group,
+            overlay::remove_group,
+            overlay::reorder_group,
+            overlay::rename_group,
+            overlay::rename_layer,
+            overlay::set_group_visible,
+            overlay::add_overlay,
+            overlay::fetch_wms_layers,
+            overlay::add_wms_layer,
+            overlay::fetch_arcgis_services,
+            overlay::add_arcgis_layer,
+            overlay::add_xyz_layer,
+            overlay::update_apple_urls,
+            overlay::fetch_wmts_layers,
+            overlay::move_layer,
+            overlay::remove_overlay,
+            overlay::reorder_layer,
+            overlay::set_layer_visible,
+            overlay::set_layer_opacity,
+            overlay::get_overlay_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
