@@ -212,4 +212,10 @@ mod tests {
         assert!(layers[0].tile_url.contains("format=image/jpeg"));
         assert!(layers[0].tile_url.contains("{z}"));
     }
+
+    #[test]
+    fn test_empty_capabilities() {
+        let xml = r#"<?xml version="1.0"?><Capabilities><Contents></Contents></Capabilities>"#;
+        assert!(parse_capabilities(xml, "https://example.com").is_err());
+    }
 }

@@ -129,4 +129,9 @@ mod tests {
         assert_eq!(layers[1].title, "Hillshade Gray");
     }
 
+    #[test]
+    fn test_empty_capabilities() {
+        let xml = r#"<?xml version="1.0"?><WMS_Capabilities><Capability></Capability></WMS_Capabilities>"#;
+        assert!(parse_capabilities(xml).is_err());
+    }
 }

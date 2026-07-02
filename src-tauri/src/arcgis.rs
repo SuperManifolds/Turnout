@@ -50,17 +50,38 @@ pub async fn list_services(base_url: &str) -> Result<Vec<ArcGisServiceInfo>, Str
 mod tests {
     use super::*;
 
+    fn parse_and_filter(json: &str) -> Result<Vec<ArcGisServiceInfo>, String> {
+        let body: ServicesResponse = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let services: Vec<ArcGisServiceInfo> = body.services.into_iter()
+            .filter(|s| s.service_type == "MapServer").collect();
+        if services.is_empty() { return Err("No MapServer services found".into()); }
+        Ok(services)
+    }
+
     #[test]
-    fn test_parse_services() {
+    fn test_filters_to_map_server() {
         let json = r#"{"services":[
             {"name":"Elevation/USGS","type":"MapServer"},
             {"name":"Features/Points","type":"FeatureServer"},
             {"name":"Imagery/Basemap","type":"MapServer"}
         ]}"#;
-        let resp: ServicesResponse = serde_json::from_str(json).expect("parse");
-        let filtered: Vec<_> = resp.services.into_iter().filter(|s| s.service_type == "MapServer").collect();
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].name, "Elevation/USGS");
-        assert_eq!(filtered[1].name, "Imagery/Basemap");
+        let services = parse_and_filter(json).expect("should have MapServers");
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].name, "Elevation/USGS");
+        assert_eq!(services[1].name, "Imagery/Basemap");
+    }
+
+    #[test]
+    fn test_no_map_servers() {
+        let json = r#"{"services":[
+            {"name":"Features/Points","type":"FeatureServer"}
+        ]}"#;
+        assert!(parse_and_filter(json).is_err());
+    }
+
+    #[test]
+    fn test_empty_services() {
+        let json = r#"{"services":[]}"#;
+        assert!(parse_and_filter(json).is_err());
     }
 }

@@ -323,4 +323,70 @@ mod tests {
             _ => panic!("expected Multi"),
         }
     }
+
+    #[test]
+    fn test_geometry_collection() {
+        let json = r#"{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "GeometryCollection",
+                "geometries": [
+                    { "type": "Point", "coordinates": [1, 2] },
+                    { "type": "LineString", "coordinates": [[0,0],[1,1]] }
+                ]
+            }
+        }"#;
+        let data = parse_geojson(json).expect("parse");
+        assert_eq!(data.placemarks.len(), 1);
+        match &data.placemarks[0].geometry {
+            Geometry::Multi(gs) => assert_eq!(gs.len(), 2),
+            _ => panic!("expected Multi"),
+        }
+    }
+
+    #[test]
+    fn test_multi_linestring() {
+        let json = r#"{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "MultiLineString",
+                "coordinates": [[[0,0],[1,1]], [[2,2],[3,3],[4,4]]]
+            }
+        }"#;
+        let data = parse_geojson(json).expect("parse");
+        match &data.placemarks[0].geometry {
+            Geometry::Multi(gs) => {
+                assert_eq!(gs.len(), 2);
+                match &gs[1] {
+                    Geometry::LineString { coords } => assert_eq!(coords.len(), 3),
+                    _ => panic!("expected LineString"),
+                }
+            }
+            _ => panic!("expected Multi"),
+        }
+    }
+
+    #[test]
+    fn test_malformed_geojson() {
+        assert!(parse_geojson("not json").is_err());
+        assert!(parse_geojson(r#"{"type":"Unknown"}"#).is_err());
+        assert!(parse_geojson(r#"{"type":"FeatureCollection"}"#).is_err());
+    }
+
+    #[test]
+    fn test_nested_geometry_collection_depth_limit() {
+        let mut json = r#"{"type":"GeometryCollection","geometries":["#.to_string();
+        for _ in 0..20 {
+            json.push_str(r#"{"type":"GeometryCollection","geometries":["#);
+        }
+        json.push_str(r#"{"type":"Point","coordinates":[0,0]}"#);
+        for _ in 0..20 {
+            json.push_str("]}");
+        }
+        json.push_str("]}");
+        let data = parse_geojson(&json).expect("parse without stack overflow");
+        assert_eq!(data.placemarks.len(), 0);
+    }
 }

@@ -658,4 +658,49 @@ mod tests {
         assert_eq!(rules[1].filter, Some(("CLASS".into(), "rail".into())));
         assert_eq!(rules[1].style.line_color, Some([0, 0, 255, 255]));
     }
+
+    #[test]
+    fn test_sld_opacity() {
+        let sld = r#"<?xml version="1.0"?>
+<StyledLayerDescriptor version="1.0.0">
+  <NamedLayer><UserStyle><FeatureTypeStyle>
+    <Rule>
+      <PolygonSymbolizer>
+        <Fill>
+          <CssParameter name="fill">#00ff00</CssParameter>
+          <CssParameter name="fill-opacity">0.5</CssParameter>
+        </Fill>
+        <Stroke>
+          <CssParameter name="stroke">#ff0000</CssParameter>
+          <CssParameter name="stroke-opacity">0.8</CssParameter>
+        </Stroke>
+      </PolygonSymbolizer>
+    </Rule>
+  </FeatureTypeStyle></UserStyle></NamedLayer>
+</StyledLayerDescriptor>"#;
+        let rules = parse_sld(sld);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].style.fill_color, Some([0, 255, 0, 127]));
+        assert_eq!(rules[0].style.line_color, Some([255, 0, 0, 204]));
+    }
+
+    #[test]
+    fn test_sld_opacity_before_color() {
+        let sld = r#"<?xml version="1.0"?>
+<StyledLayerDescriptor version="1.0.0">
+  <NamedLayer><UserStyle><FeatureTypeStyle>
+    <Rule>
+      <PolygonSymbolizer>
+        <Fill>
+          <CssParameter name="fill-opacity">0.5</CssParameter>
+          <CssParameter name="fill">#0000ff</CssParameter>
+        </Fill>
+      </PolygonSymbolizer>
+    </Rule>
+  </FeatureTypeStyle></UserStyle></NamedLayer>
+</StyledLayerDescriptor>"#;
+        let rules = parse_sld(sld);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].style.fill_color, Some([0, 0, 255, 127]));
+    }
 }

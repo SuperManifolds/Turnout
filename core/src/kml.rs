@@ -596,4 +596,43 @@ mod tests {
         assert!((e - 12.0).abs() < 1e-10);
         assert!((n - 51.0).abs() < 1e-10);
     }
+
+    #[test]
+    fn test_bbox_empty() {
+        let data = KmzData::default();
+        assert!(data.bbox().is_none());
+    }
+
+    #[test]
+    fn test_malformed_kml() {
+        let result = parse_kml("<not-kml>broken", &HashMap::new());
+        assert!(result.is_ok());
+        let data = result.expect("should parse without panic");
+        assert!(data.placemarks.is_empty());
+    }
+
+    #[test]
+    fn test_polygon_with_inner_rings() {
+        let kml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <Polygon>
+        <outerBoundaryIs><LinearRing><coordinates>0,0 10,0 10,10 0,10 0,0</coordinates></LinearRing></outerBoundaryIs>
+        <innerBoundaryIs><LinearRing><coordinates>2,2 8,2 8,8 2,8 2,2</coordinates></LinearRing></innerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>"#;
+        let data = parse_kml(kml, &HashMap::new()).expect("parse");
+        assert_eq!(data.placemarks.len(), 1);
+        match &data.placemarks[0].geometry {
+            Geometry::Polygon { outer, inner } => {
+                assert_eq!(outer.len(), 5);
+                assert_eq!(inner.len(), 1);
+                assert_eq!(inner[0].len(), 5);
+            }
+            _ => panic!("expected Polygon"),
+        }
+    }
 }
