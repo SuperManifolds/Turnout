@@ -40,9 +40,9 @@ fn layer_icon(kind: &str) -> &'static str {
     match kind {
         "wms" => "fa-solid fa-globe",
         "wmts" => "fa-solid fa-map",
-        "arcgis" => "fa-solid fa-server",
+        "arcGis" => "fa-solid fa-server",
         "shp" => "fa-solid fa-shapes",
-        "geojson" => "fa-solid fa-code",
+        "geoJson" => "fa-solid fa-code",
         "xyz" => "fa-solid fa-link",
         "apple" => "fa-solid fa-map-location-dot",
         "bing" => "fa-solid fa-satellite",
@@ -51,7 +51,7 @@ fn layer_icon(kind: &str) -> &'static str {
 }
 
 fn is_remote(kind: &str) -> bool {
-    matches!(kind, "wms" | "arcgis" | "xyz")
+    matches!(kind, "wms" | "arcGis" | "xyz" | "wmts" | "apple" | "bing")
 }
 
 #[derive(Clone, Copy, PartialEq)]

@@ -1,14 +1,14 @@
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
-use crate::kml::{Geometry, KmzData, Placemark, Style};
+use crate::kml::{Geometry, OverlayData, Placemark, Style};
 
 const DEFAULT_LINE_COLOR: [u8; 4] = [51, 136, 255, 200];
 const DEFAULT_FILL_COLOR: [u8; 4] = [51, 136, 255, 80];
 const DEFAULT_POINT_COLOR: [u8; 4] = [255, 85, 0, 220];
 const DEFAULT_LINE_WIDTH: f32 = 2.0;
 
-pub fn parse_geojson(json: &str) -> Result<KmzData> {
+pub fn parse_geojson(json: &str) -> Result<OverlayData> {
     let root: serde_json::Value = serde_json::from_str(json)?;
     let features = extract_features(&root)?;
 
@@ -48,7 +48,7 @@ pub fn parse_geojson(json: &str) -> Result<KmzData> {
 
     let doc_name = root["name"].as_str().map(String::from);
 
-    Ok(KmzData {
+    Ok(OverlayData {
         name: doc_name,
         placemarks,
         ground_overlays: Vec::new(),

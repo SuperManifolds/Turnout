@@ -1,6 +1,20 @@
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
+
+pub trait UnpoisonExt<T> {
+    fn unpoison(self) -> T;
+}
+impl<'a, T> UnpoisonExt<MutexGuard<'a, T>> for Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>> {
+    fn unpoison(self) -> MutexGuard<'a, T> { self.unwrap_or_else(PoisonError::into_inner) }
+}
+impl<'a, T> UnpoisonExt<RwLockReadGuard<'a, T>> for Result<RwLockReadGuard<'a, T>, PoisonError<RwLockReadGuard<'a, T>>> {
+    fn unpoison(self) -> RwLockReadGuard<'a, T> { self.unwrap_or_else(PoisonError::into_inner) }
+}
+impl<'a, T> UnpoisonExt<RwLockWriteGuard<'a, T>> for Result<RwLockWriteGuard<'a, T>, PoisonError<RwLockWriteGuard<'a, T>>> {
+    fn unpoison(self) -> RwLockWriteGuard<'a, T> { self.unwrap_or_else(PoisonError::into_inner) }
+}
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -13,7 +27,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 use turnout_core::geo::{latlon_to_mercator, latlon_to_tile_pixel, tile_bounds};
-use turnout_core::kml::{Geometry, KmzData, Style};
+use turnout_core::kml::{Geometry, OverlayData, Style};
 
 const TILE_SIZE: u32 = 256;
 const RENDER_CACHE_CAPACITY: usize = 512;
@@ -29,7 +43,7 @@ const POINT_RADIUS: f32 = 5.0;
 const POINT_COLOR: [u8; 4] = [255, 60, 0, 220];
 const MIN_OVERLAY_PIXEL_SIZE: f32 = 0.01;
 const ROTATION_EPSILON: f64 = 0.001;
-const WMS_BBOX: (f64, f64, f64, f64) = (-180.0, -85.051_129, 180.0, 85.051_129);
+const WEB_MERCATOR_EXTENT: (f64, f64, f64, f64) = (-180.0, -85.051_129, 180.0, 85.051_129);
 
 pub(crate) struct DecodedImage {
     pixmap: Pixmap,
@@ -40,8 +54,14 @@ pub(crate) struct DecodedImage {
     rotation: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LayerKind {
+    Kmz, Shp, GeoJson, Wms, ArcGis, Xyz, Wmts, Apple, Bing, Image,
+}
+
 pub enum LayerSource {
-    Kmz { data: KmzData, images: Vec<DecodedImage>, path: Option<String> },
+    Kmz { data: OverlayData, images: Vec<DecodedImage>, path: Option<String> },
     Wms { base_url: String, layer_name: String },
     ArcGis { base_url: String, service_name: String },
     Xyz { url_template: String },
@@ -51,7 +71,7 @@ pub struct Layer {
     pub id: u32,
     pub name: String,
     pub bbox: (f64, f64, f64, f64),
-    pub kind: &'static str,
+    pub kind: LayerKind,
     pub visible: bool,
     pub opacity: f32,
     pub source: LayerSource,
@@ -78,13 +98,13 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    pub fn add_kmz_layer(&self, data: KmzData, path: Option<String>, kind: &'static str) -> bool {
+    pub fn add_kmz_layer(&self, data: OverlayData, path: Option<String>, kind: LayerKind) -> bool {
         let Some(bbox) = data.bbox() else { return false };
         let name = data.name.clone().unwrap_or_else(|| "Overlay".to_string());
         let images = decode_images(&data);
         let id = self.next_id();
 
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         layers.push(Layer {
             id, name, bbox, kind, visible: true, opacity: 1.0,
             source: LayerSource::Kmz { data, images, path },
@@ -97,9 +117,9 @@ impl ServerHandle {
     pub fn add_wms_layer(&self, base_url: String, layer_name: String, display_name: String) -> u32 {
         let id = self.next_id();
 
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         layers.push(Layer {
-            id, name: display_name, bbox: WMS_BBOX, kind: "wms", visible: true, opacity: 1.0,
+            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, kind: LayerKind::Wms, visible: true, opacity: 1.0,
             source: LayerSource::Wms { base_url, layer_name },
         });
         drop(layers);
@@ -108,21 +128,15 @@ impl ServerHandle {
     }
 
     pub fn add_xyz_layer(&self, url_template: String, display_name: String) -> u32 {
-        self.add_xyz_layer_with_kind(url_template, display_name, "xyz")
+        self.add_xyz_layer_with_kind(url_template, display_name, LayerKind::Xyz)
     }
 
-    pub fn add_xyz_layer_with_kind(&self, url_template: String, display_name: String, kind: &str) -> u32 {
+    pub fn add_xyz_layer_with_kind(&self, url_template: String, display_name: String, kind: LayerKind) -> u32 {
         let id = self.next_id();
-        let kind_static = match kind {
-            "wmts" => "wmts",
-            "apple" => "apple",
-            "bing" => "bing",
-            _ => "xyz",
-        };
 
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         layers.push(Layer {
-            id, name: display_name, bbox: WMS_BBOX, kind: kind_static, visible: true, opacity: 1.0,
+            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, kind, visible: true, opacity: 1.0,
             source: LayerSource::Xyz { url_template },
         });
         drop(layers);
@@ -133,9 +147,9 @@ impl ServerHandle {
     pub fn add_arcgis_layer(&self, base_url: String, service_name: String, display_name: String) -> u32 {
         let id = self.next_id();
 
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         layers.push(Layer {
-            id, name: display_name, bbox: WMS_BBOX, kind: "arcgis", visible: true, opacity: 1.0,
+            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, kind: LayerKind::ArcGis, visible: true, opacity: 1.0,
             source: LayerSource::ArcGis { base_url, service_name },
         });
         drop(layers);
@@ -144,7 +158,7 @@ impl ServerHandle {
     }
 
     pub fn remove_layer(&self, id: u32) -> bool {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         let before = layers.len();
         layers.retain(|l| l.id != id);
         let removed = layers.len() < before;
@@ -157,7 +171,7 @@ impl ServerHandle {
     }
 
     pub fn take_layer(&self, id: u32) -> Option<Layer> {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         let idx = layers.iter().position(|l| l.id == id)?;
         let layer = layers.remove(idx);
         drop(layers);
@@ -166,7 +180,7 @@ impl ServerHandle {
     }
 
     pub fn move_layer_up(&self, id: u32) -> bool {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         let Some(idx) = layers.iter().position(|l| l.id == id) else { return false };
         if idx == 0 { return false; }
         layers.swap(idx, idx - 1);
@@ -176,7 +190,7 @@ impl ServerHandle {
     }
 
     pub fn move_layer_down(&self, id: u32) -> bool {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         let Some(idx) = layers.iter().position(|l| l.id == id) else { return false };
         if idx + 1 >= layers.len() { return false; }
         layers.swap(idx, idx + 1);
@@ -186,19 +200,19 @@ impl ServerHandle {
     }
 
     pub fn insert_layer(&self, layer: Layer) {
-        let mut next = self.state.next_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = self.state.next_id.lock().unpoison();
         if layer.id >= *next {
             *next = layer.id + 1;
         }
         drop(next);
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         layers.push(layer);
         drop(layers);
         self.clear_cache();
     }
 
     pub fn update_xyz_url(&self, id: u32, url_template: String) {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         if let Some(layer) = layers.iter_mut().find(|l| l.id == id)
             && let LayerSource::Xyz { url_template: ref mut tpl } = layer.source
         {
@@ -210,14 +224,14 @@ impl ServerHandle {
     }
 
     pub fn rename_layer(&self, id: u32, name: String) {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
             layer.name = name;
         }
     }
 
     pub fn set_layer_visible(&self, id: u32, visible: bool) -> bool {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
             layer.visible = visible;
             drop(layers);
@@ -228,8 +242,17 @@ impl ServerHandle {
         }
     }
 
+    pub fn set_all_visible(&self, visible: bool) {
+        let mut layers = self.state.layers.write().unpoison();
+        for layer in layers.iter_mut() {
+            layer.visible = visible;
+        }
+        drop(layers);
+        self.clear_cache();
+    }
+
     pub fn set_layer_opacity(&self, id: u32, opacity: f32) -> bool {
-        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut layers = self.state.layers.write().unpoison();
         if let Some(layer) = layers.iter_mut().find(|l| l.id == id) {
             layer.opacity = opacity.clamp(0.0, 1.0);
             drop(layers);
@@ -241,23 +264,23 @@ impl ServerHandle {
     }
 
     pub fn layer_count(&self) -> usize {
-        self.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.state.layers.read().unpoison().len()
     }
 
     fn next_id(&self) -> u32 {
-        let mut next = self.state.next_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = self.state.next_id.lock().unpoison();
         let id = *next;
         *next += 1;
         id
     }
 
     pub fn clear_cache(&self) {
-        let mut cache = self.state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.state.render_cache.lock().unpoison();
         cache.clear();
     }
 
     pub fn evict_remote_cache(&self, layer_id: u32) {
-        let mut cache = self.state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.state.remote_cache.lock().unpoison();
         let keys: Vec<_> = cache.iter()
             .filter(|((lid, ..), _)| *lid == layer_id)
             .map(|(k, _)| *k)
@@ -317,7 +340,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
     Ok(ServerHandle { port, state, shutdown_tx })
 }
 
-fn decode_images(data: &KmzData) -> Vec<DecodedImage> {
+fn decode_images(data: &OverlayData) -> Vec<DecodedImage> {
     data.ground_overlays
         .iter()
         .filter_map(|go| {
@@ -364,12 +387,12 @@ fn decoded_to_pixmap(decoded: &DecodedTile) -> Option<Pixmap> {
 }
 
 fn get_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32) -> Option<DecodedTile> {
-    let mut cache = state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = state.remote_cache.lock().unpoison();
     cache.get(&(layer_id, z, x, y)).cloned()
 }
 
 fn put_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32, decoded: DecodedTile) {
-    let mut cache = state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = state.remote_cache.lock().unpoison();
     cache.put((layer_id, z, x, y), decoded);
 }
 
@@ -503,7 +526,7 @@ async fn serve_tilejson(
     let (min_zoom, max_zoom) = (0, MAX_ZOOM);
 
     let bounds = {
-        let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layers = state.layers.read().unpoison();
         if layers.is_empty() {
             [-180.0, -85.051_129, 180.0, 85.051_129]
         } else {
@@ -552,14 +575,14 @@ async fn serve_tile(
     }
 
     {
-        let mut cache = state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = state.render_cache.lock().unpoison();
         if let Some(png) = cache.get(&(z, x, y)) {
             return (StatusCode::OK, [("content-type", "image/png")], png.clone());
         }
     }
 
     let remote_requests: Vec<(u32, RemoteReq)> = {
-        let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layers = state.layers.read().unpoison();
         layers.iter().filter_map(|l| {
             if !l.visible { return None; }
             match &l.source {
@@ -588,7 +611,7 @@ async fn serve_tile(
                 RemoteReq::Xyz(tpl) => fetch_xyz_tile(client, tpl, z.into(), x, y).await,
             };
             if let Some(b) = bytes {
-                state_ref.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                state_ref.error_layers.lock().unpoison().remove(&id);
                 if let Some(decoded) = decode_remote_bytes(&b) {
                     let pixmap = decoded_to_pixmap(&decoded);
                     put_remote_cached(state_ref, id, z, x, y, decoded);
@@ -597,7 +620,7 @@ async fn serve_tile(
                     (id, None)
                 }
             } else {
-                state_ref.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id);
+                state_ref.error_layers.lock().unpoison().insert(id);
                 (id, None)
             }
         }
@@ -607,7 +630,7 @@ async fn serve_tile(
         .into_iter()
         .collect();
     let any_failed = fetch_results.iter().any(|(_, pm)| pm.is_none());
-    let remote_tiles: Vec<(u32, Pixmap)> = fetch_results
+    let remote_tiles: HashMap<u32, Pixmap> = fetch_results
         .into_iter()
         .filter_map(|(id, pm)| pm.map(|p| (id, p)))
         .collect();
@@ -615,19 +638,19 @@ async fn serve_tile(
     let png = render_tile(&state, &remote_tiles, z.into(), x, y);
 
     if !any_failed {
-        let mut cache = state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = state.render_cache.lock().unpoison();
         cache.put((z, x, y), png.clone());
     }
 
     (StatusCode::OK, [("content-type", "image/png")], png)
 }
 
-fn render_tile(state: &TileState, remote_tiles: &[(u32, Pixmap)], z: u32, x: u32, y: u32) -> Vec<u8> {
+fn render_tile(state: &TileState, remote_tiles: &HashMap<u32, Pixmap>, z: u32, x: u32, y: u32) -> Vec<u8> {
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).expect("256x256 pixmap");
     let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
 
     {
-        let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layers = state.layers.read().unpoison();
         for layer in layers.iter() {
             if !layer.visible {
                 continue;
@@ -639,7 +662,7 @@ fn render_tile(state: &TileState, remote_tiles: &[(u32, Pixmap)], z: u32, x: u32
                     render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
                 }
                 LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } => {
-                    if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(id, _)| *id == layer.id) {
+                    if let Some(remote_pixmap) = remote_tiles.get(&layer.id) {
                         let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
                         pixmap.draw_pixmap(
                             0, 0,
@@ -705,7 +728,7 @@ fn apply_opacity(rgba: [u8; 4], opacity: f32) -> [u8; 4] {
 
 fn render_geometry(
     pixmap: &mut Pixmap,
-    data: &KmzData,
+    data: &OverlayData,
     opacity: f32,
     z: u32, x: u32, y: u32,
     tile_w: f64, tile_s: f64, tile_e: f64, tile_n: f64,

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 
 #[derive(Debug, Clone, Default)]
-pub struct KmzData {
+pub struct OverlayData {
     pub name: Option<String>,
     pub placemarks: Vec<Placemark>,
     pub ground_overlays: Vec<GroundOverlay>,
@@ -50,7 +50,7 @@ pub struct Style {
     pub poly_outline: Option<bool>,
 }
 
-impl KmzData {
+impl OverlayData {
     #[must_use]
     pub fn bbox(&self) -> Option<(f64, f64, f64, f64)> {
         let mut min_lon = f64::MAX;
@@ -111,7 +111,7 @@ fn geometry_visit_coords(geom: &Geometry, f: &mut impl FnMut(f64, f64)) {
 }
 
 /// Parse a KMZ (zipped KML + images) or plain KML file.
-pub fn parse_kmz(data: &[u8]) -> Result<KmzData> {
+pub fn parse_kmz(data: &[u8]) -> Result<OverlayData> {
     let cursor = std::io::Cursor::new(data);
     if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
         parse_kmz_archive(&mut archive)
@@ -121,7 +121,7 @@ pub fn parse_kmz(data: &[u8]) -> Result<KmzData> {
     }
 }
 
-fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<KmzData> {
+fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<OverlayData> {
     let mut kml_xml = None;
     let mut images = HashMap::new();
 
@@ -151,9 +151,9 @@ fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result
     parse_kml(&xml, &images)
 }
 
-fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
+fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<OverlayData> {
     let mut reader = Reader::from_str(xml);
-    let mut data = KmzData {
+    let mut data = OverlayData {
         images: images.clone(),
         ..Default::default()
     };
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_bbox() {
-        let data = KmzData {
+        let data = OverlayData {
             placemarks: vec![Placemark {
                 name: None,
                 style_url: None,
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_bbox_empty() {
-        let data = KmzData::default();
+        let data = OverlayData::default();
         assert!(data.bbox().is_none());
     }
 

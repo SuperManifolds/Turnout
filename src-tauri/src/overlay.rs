@@ -5,7 +5,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::arcgis;
-use crate::tile_server::{self, LayerSource};
+use crate::tile_server::{self, LayerKind, LayerSource, UnpoisonExt};
 use crate::wms;
 use crate::wmts;
 
@@ -32,7 +32,7 @@ struct SavedGroup {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SavedLayer {
-    kind: String,
+    kind: LayerKind,
     name: String,
     visible: bool,
     opacity: f32,
@@ -49,7 +49,7 @@ struct SavedLayer {
 pub struct LayerInfo {
     pub id: u32,
     pub name: String,
-    pub kind: &'static str,
+    pub kind: LayerKind,
     pub visible: bool,
     pub opacity: f32,
     pub bbox: [f64; 4],
@@ -81,7 +81,7 @@ impl OverlayState {
     }
 
     fn next_group_id(&self) -> u32 {
-        let mut id = self.next_group_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut id = self.next_group_id.lock().unpoison();
         let val = *id;
         *id += 1;
         val
@@ -114,7 +114,7 @@ pub async fn create_group(app: tauri::AppHandle, name: String) -> Result<Overlay
         .await
         .map_err(|e| format!("Failed to start tile server: {e}"))?;
 
-    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut groups = state.groups.lock().unpoison();
     groups.push(TileGroup { id: group_id, name, handle });
     let status = build_status(&groups);
     drop(groups);
@@ -126,7 +126,7 @@ pub async fn create_group(app: tauri::AppHandle, name: String) -> Result<Overlay
 #[allow(clippy::needless_pass_by_value)]
 pub fn remove_group(app: tauri::AppHandle, group_id: u32) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut groups = state.groups.lock().unpoison();
     if let Some(idx) = groups.iter().position(|g| g.id == group_id) {
         let group = groups.remove(idx);
         let _ = group.handle.shutdown_tx.send(true);
@@ -141,7 +141,7 @@ pub fn remove_group(app: tauri::AppHandle, group_id: u32) -> OverlayStatus {
 #[allow(clippy::needless_pass_by_value)]
 pub fn reorder_group(app: tauri::AppHandle, group_id: u32, direction: String) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut groups = state.groups.lock().unpoison();
     if let Some(idx) = groups.iter().position(|g| g.id == group_id) {
         match direction.as_str() {
             "up" if idx > 0 => { groups.swap(idx, idx - 1); }
@@ -159,7 +159,7 @@ pub fn reorder_group(app: tauri::AppHandle, group_id: u32, direction: String) ->
 #[allow(clippy::needless_pass_by_value)]
 pub fn rename_group(app: tauri::AppHandle, group_id: u32, name: String) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter_mut().find(|g| g.id == group_id) {
         group.name = name;
     }
@@ -184,18 +184,18 @@ pub async fn add_overlay(
         "shp" => {
             let d = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(&path))
                 .map_err(|e| format!("Parse error: {e}"))?;
-            (d, "shp")
+            (d, LayerKind::Shp)
         }
         "geojson" | "json" => {
             let text = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             let d = turnout_core::geojson_reader::parse_geojson(&text)
                 .map_err(|e| format!("Parse error: {e}"))?;
-            (d, "geojson")
+            (d, LayerKind::GeoJson)
         }
         _ => {
             let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             let d = turnout_core::kml::parse_kmz(&bytes).map_err(|e| format!("Parse error: {e}"))?;
-            (d, "kmz")
+            (d, LayerKind::Kmz)
         }
     };
 
@@ -212,7 +212,7 @@ pub async fn add_overlay(
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     let group = find_group(&groups, group_id)?;
     group.handle.add_kmz_layer(data, Some(path), kind);
     let status = build_status(&groups);
@@ -237,7 +237,7 @@ pub async fn add_wms_layer(
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     let group = find_group(&groups, group_id)?;
     group.handle.add_wms_layer(url, layer_name, display_name);
     let status = build_status(&groups);
@@ -262,7 +262,7 @@ pub async fn add_arcgis_layer(
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     let group = find_group(&groups, group_id)?;
     group.handle.add_arcgis_layer(url, service_name, display_name);
     let status = build_status(&groups);
@@ -287,8 +287,13 @@ pub async fn add_xyz_layer(
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
-    let layer_kind = kind.as_deref().unwrap_or("xyz");
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let layer_kind = match kind.as_deref() {
+        Some("wmts") => LayerKind::Wmts,
+        Some("apple") => LayerKind::Apple,
+        Some("bing") => LayerKind::Bing,
+        _ => LayerKind::Xyz,
+    };
+    let groups = state.groups.lock().unpoison();
     let group = find_group(&groups, group_id)?;
     group.handle.add_xyz_layer_with_kind(url_template, display_name, layer_kind);
     let status = build_status(&groups);
@@ -306,7 +311,7 @@ pub fn move_layer(
     to_group_id: u32,
 ) -> Result<OverlayStatus, String> {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
 
     let from = groups.iter().find(|g| g.id == from_group_id)
         .ok_or("Source group not found")?;
@@ -327,7 +332,7 @@ pub fn move_layer(
 #[allow(clippy::needless_pass_by_value)]
 pub fn remove_overlay(app: tauri::AppHandle, group_id: u32, layer_id: u32) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
         group.handle.remove_layer(layer_id);
         if group.handle.layer_count() == 0 {
@@ -346,7 +351,7 @@ pub fn remove_overlay(app: tauri::AppHandle, group_id: u32, layer_id: u32) -> Ov
 #[allow(clippy::needless_pass_by_value)]
 pub fn rename_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, name: String) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
         group.handle.rename_layer(layer_id, name);
     }
@@ -360,14 +365,9 @@ pub fn rename_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, name: S
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_group_visible(app: tauri::AppHandle, group_id: u32, visible: bool) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
-        let mut layers = group.handle.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for layer in layers.iter_mut() {
-            layer.visible = visible;
-        }
-        drop(layers);
-        group.handle.clear_cache();
+        group.handle.set_all_visible(visible);
     }
     let status = build_status(&groups);
     drop(groups);
@@ -379,7 +379,7 @@ pub fn set_group_visible(app: tauri::AppHandle, group_id: u32, visible: bool) ->
 #[allow(clippy::needless_pass_by_value)]
 pub fn reorder_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, direction: String) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
         match direction.as_str() {
             "up" => { group.handle.move_layer_up(layer_id); }
@@ -397,7 +397,7 @@ pub fn reorder_layer(app: tauri::AppHandle, group_id: u32, layer_id: u32, direct
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_layer_visible(app: tauri::AppHandle, group_id: u32, layer_id: u32, visible: bool) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
         group.handle.set_layer_visible(layer_id, visible);
     }
@@ -410,7 +410,7 @@ pub fn set_layer_visible(app: tauri::AppHandle, group_id: u32, layer_id: u32, vi
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_layer_opacity(app: tauri::AppHandle, group_id: u32, layer_id: u32, opacity: f32) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
         group.handle.set_layer_opacity(layer_id, opacity);
     }
@@ -428,11 +428,11 @@ pub fn update_apple_urls(
     sat_version: Option<String>,
 ) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     for group in groups.iter() {
-        let layers = group.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layers = group.handle.state.layers.read().unpoison();
         let apple_layers: Vec<(u32, bool)> = layers.iter().filter_map(|l| {
-            if l.kind != "apple" { return None; }
+            if l.kind != LayerKind::Apple { return None; }
             if let tile_server::LayerSource::Xyz { url_template } = &l.source {
                 let is_sat = url_template.contains("sat-cdn");
                 Some((l.id, is_sat))
@@ -457,7 +457,7 @@ pub fn update_apple_urls(
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_overlay_status(app: tauri::AppHandle) -> OverlayStatus {
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     build_status(&groups)
 }
 
@@ -466,7 +466,7 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
     let state = app.state::<OverlayState>();
 
     {
-        let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut groups = state.groups.lock().unpoison();
         for g in groups.drain(..) {
             let _ = g.handle.shutdown_tx.send(true);
         }
@@ -485,7 +485,7 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
         for layer in &saved_group.layers {
             restore_layer(&handle, layer);
         }
-        let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut groups = state.groups.lock().unpoison();
         groups.push(TileGroup {
             id: group_id,
             name: saved_group.name.clone(),
@@ -493,7 +493,7 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
         });
     }
 
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     build_status(&groups)
 }
 
@@ -505,7 +505,7 @@ async fn ensure_group_exists(
     group_id: Option<u32>,
 ) -> Result<(), String> {
     let has_target = {
-        let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let groups = state.groups.lock().unpoison();
         match group_id {
             Some(id) => groups.iter().any(|g| g.id == id),
             None => !groups.is_empty(),
@@ -522,7 +522,7 @@ async fn ensure_group_exists(
     let handle = tile_server::start(port)
         .await
         .map_err(|e| format!("Failed to start tile server: {e}"))?;
-    let mut groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut groups = state.groups.lock().unpoison();
     if group_id.is_none() && groups.is_empty() || group_id.is_some() && !groups.iter().any(|g| g.id == group_id.expect("checked")) {
         groups.push(TileGroup { id: gid, name: "Default".to_string(), handle });
     } else {
@@ -532,8 +532,8 @@ async fn ensure_group_exists(
 }
 
 fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
-    match layer.kind.as_str() {
-        "kmz" => {
+    match layer.kind {
+        LayerKind::Kmz => {
             let Some(ref path) = layer.path else { return };
             let Ok(bytes) = std::fs::read(path) else {
                 eprintln!("Restore: failed to read {path}");
@@ -546,17 +546,17 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
             if data.name.is_none() {
                 data.name = Some(layer.name.clone());
             }
-            handle.add_kmz_layer(data, Some(path.clone()), "kmz");
+            handle.add_kmz_layer(data, Some(path.clone()), LayerKind::Kmz);
         }
-        "shp" => {
+        LayerKind::Shp => {
             let Some(ref path) = layer.path else { return };
             let Ok(data) = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) else {
                 eprintln!("Restore: failed to parse shapefile {path}");
                 return;
             };
-            handle.add_kmz_layer(data, Some(path.clone()), "shp");
+            handle.add_kmz_layer(data, Some(path.clone()), LayerKind::Shp);
         }
-        "geojson" => {
+        LayerKind::GeoJson => {
             let Some(ref path) = layer.path else { return };
             let Ok(text) = std::fs::read_to_string(path) else {
                 eprintln!("Restore: failed to read {path}");
@@ -566,24 +566,24 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
                 eprintln!("Restore: failed to parse GeoJSON {path}");
                 return;
             };
-            handle.add_kmz_layer(data, Some(path.clone()), "geojson");
+            handle.add_kmz_layer(data, Some(path.clone()), LayerKind::GeoJson);
         }
-        "wms" => {
+        LayerKind::Wms => {
             let (Some(url), Some(wms_layer)) = (&layer.wms_url, &layer.wms_layer) else { return };
             handle.add_wms_layer(url.clone(), wms_layer.clone(), layer.name.clone());
         }
-        "arcgis" => {
+        LayerKind::ArcGis => {
             let (Some(url), Some(svc)) = (&layer.arcgis_url, &layer.arcgis_service) else { return };
             handle.add_arcgis_layer(url.clone(), svc.clone(), layer.name.clone());
         }
-        "xyz" => {
+        LayerKind::Xyz | LayerKind::Wmts | LayerKind::Apple | LayerKind::Bing => {
             let Some(url) = &layer.xyz_url else { return };
             handle.add_xyz_layer(url.clone(), layer.name.clone());
         }
-        _ => return,
+        LayerKind::Image => return,
     }
 
-    let layers = handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let layers = handle.state.layers.read().unpoison();
     if let Some(last) = layers.last() {
         let id = last.id;
         drop(layers);
@@ -603,8 +603,8 @@ fn find_group(groups: &[TileGroup], group_id: Option<u32>) -> Result<&TileGroup,
 fn build_status(groups: &[TileGroup]) -> OverlayStatus {
     OverlayStatus {
         groups: groups.iter().map(|g| {
-            let layers = g.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let errors = g.handle.state.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let layers = g.handle.state.layers.read().unpoison();
+            let errors = g.handle.state.error_layers.lock().unpoison();
             GroupInfo {
                 id: g.id,
                 name: g.name.clone(),
@@ -630,9 +630,9 @@ fn save_groups(app: &tauri::AppHandle) {
     use tauri_plugin_store::StoreExt;
 
     let state = app.state::<OverlayState>();
-    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let groups = state.groups.lock().unpoison();
     let saved: Vec<SavedGroup> = groups.iter().map(|g| {
-        let layers = g.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layers = g.handle.state.layers.read().unpoison();
         SavedGroup {
             name: g.name.clone(),
             layers: layers.iter().map(|l| {
@@ -646,7 +646,7 @@ fn save_groups(app: &tauri::AppHandle) {
                         (None, None, None, None, None, Some(url_template.clone())),
                 };
                 SavedLayer {
-                    kind: l.kind.to_string(),
+                    kind: l.kind,
                     name: l.name.clone(),
                     visible: l.visible,
                     opacity: l.opacity,

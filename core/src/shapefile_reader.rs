@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::geo::mercator_to_latlon;
-use crate::kml::{Geometry, KmzData, Placemark, Style};
+use crate::kml::{Geometry, OverlayData, Placemark, Style};
 
 const DEFAULT_LINE_COLOR: [u8; 4] = [255, 140, 0, 200];
 const DEFAULT_FILL_COLOR: [u8; 4] = [70, 130, 180, 100];
@@ -23,7 +23,7 @@ enum Crs {
     WebMercator,
 }
 
-pub fn parse_shapefile(shp_path: &Path) -> Result<KmzData> {
+pub fn parse_shapefile(shp_path: &Path) -> Result<OverlayData> {
     let dir = shp_path.parent().unwrap_or(Path::new("."));
     let stem = shp_path.file_stem().context("no file stem")?.to_string_lossy();
 
@@ -64,7 +64,7 @@ pub fn parse_shapefile(shp_path: &Path) -> Result<KmzData> {
         });
     }
 
-    Ok(KmzData {
+    Ok(OverlayData {
         name: Some(stem.to_string()),
         placemarks,
         ground_overlays: Vec::new(),
