@@ -1058,6 +1058,26 @@ button {
     }
 }
 
+.icon-btn {
+    background: none;
+    border: none;
+    padding: var(--spacing-xs);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-sm);
+    box-shadow: none;
+
+    &:hover {
+        background: var(--color-bg-hover);
+        color: var(--color-text-primary);
+    }
+
+    &.danger:hover {
+        color: var(--color-danger);
+    }
+}
+
 .overlay-toast {
     position: fixed;
     bottom: var(--spacing-lg);

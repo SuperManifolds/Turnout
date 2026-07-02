@@ -501,8 +501,14 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
     match layer.kind.as_str() {
         "kmz" => {
             let Some(ref path) = layer.path else { return };
-            let Ok(bytes) = std::fs::read(path) else { return };
-            let Ok(mut data) = turnout_core::kml::parse_kmz(&bytes) else { return };
+            let Ok(bytes) = std::fs::read(path) else {
+                eprintln!("Restore: failed to read {path}");
+                return;
+            };
+            let Ok(mut data) = turnout_core::kml::parse_kmz(&bytes) else {
+                eprintln!("Restore: failed to parse {path}");
+                return;
+            };
             if data.name.is_none() {
                 data.name = Some(layer.name.clone());
             }
@@ -510,13 +516,22 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
         }
         "shp" => {
             let Some(ref path) = layer.path else { return };
-            let Ok(data) = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) else { return };
+            let Ok(data) = turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path)) else {
+                eprintln!("Restore: failed to parse shapefile {path}");
+                return;
+            };
             handle.add_kmz_layer(data, Some(path.clone()), "shp");
         }
         "geojson" => {
             let Some(ref path) = layer.path else { return };
-            let Ok(text) = std::fs::read_to_string(path) else { return };
-            let Ok(data) = turnout_core::geojson_reader::parse_geojson(&text) else { return };
+            let Ok(text) = std::fs::read_to_string(path) else {
+                eprintln!("Restore: failed to read {path}");
+                return;
+            };
+            let Ok(data) = turnout_core::geojson_reader::parse_geojson(&text) else {
+                eprintln!("Restore: failed to parse GeoJSON {path}");
+                return;
+            };
             handle.add_kmz_layer(data, Some(path.clone()), "geojson");
         }
         "wms" => {

@@ -319,7 +319,10 @@ pub async fn restore_overlays() -> OverlayStatus {
     result
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn get_overlay_status() -> OverlayStatus {
@@ -327,7 +330,10 @@ pub async fn get_overlay_status() -> OverlayStatus {
     result
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn create_group(name: &str) -> Result<OverlayStatus, String> {
@@ -344,7 +350,10 @@ pub async fn remove_group(group_id: u32) -> OverlayStatus {
     result
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn reorder_group(group_id: u32, direction: &str) -> OverlayStatus {
@@ -354,7 +363,10 @@ pub async fn reorder_group(group_id: u32, direction: &str) -> OverlayStatus {
     invoke("reorder_group", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn rename_group(group_id: u32, name: &str) -> OverlayStatus {
@@ -364,7 +376,10 @@ pub async fn rename_group(group_id: u32, name: &str) -> OverlayStatus {
     invoke("rename_group", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn add_overlay(path: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
@@ -473,7 +488,10 @@ pub async fn rename_layer(group_id: u32, layer_id: u32, name: &str) -> OverlaySt
     invoke("rename_layer", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn set_group_visible(group_id: u32, visible: bool) -> OverlayStatus {
@@ -483,7 +501,10 @@ pub async fn set_group_visible(group_id: u32, visible: bool) -> OverlayStatus {
     invoke("set_group_visible", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn reorder_layer(group_id: u32, layer_id: u32, direction: &str) -> OverlayStatus {
@@ -494,7 +515,10 @@ pub async fn reorder_layer(group_id: u32, layer_id: u32, direction: &str) -> Ove
     invoke("reorder_layer", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn remove_overlay(group_id: u32, layer_id: u32) -> OverlayStatus {
@@ -504,7 +528,10 @@ pub async fn remove_overlay(group_id: u32, layer_id: u32) -> OverlayStatus {
     invoke("remove_overlay", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn set_layer_visible(group_id: u32, layer_id: u32, visible: bool) -> OverlayStatus {
@@ -515,7 +542,10 @@ pub async fn set_layer_visible(group_id: u32, layer_id: u32, visible: bool) -> O
     invoke("set_layer_visible", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }
 
 pub async fn set_layer_opacity(group_id: u32, layer_id: u32, opacity: f32) -> OverlayStatus {
@@ -526,5 +556,8 @@ pub async fn set_layer_opacity(group_id: u32, layer_id: u32, opacity: f32) -> Ov
     invoke("set_layer_opacity", &args).await.ok()
         .as_ref()
         .and_then(parse_overlay_status)
-        .unwrap_or(OverlayStatus { groups: Vec::new() })
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
 }

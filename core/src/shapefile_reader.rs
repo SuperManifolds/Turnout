@@ -339,6 +339,8 @@ fn parse_sld(xml: &str) -> Vec<StyleRule> {
     let mut cur_literal: Option<String> = None;
     let mut cur_style = Style::default();
     let mut cur_css_param: Option<String> = None;
+    let mut cur_fill_opacity: Option<f32> = None;
+    let mut cur_stroke_opacity: Option<f32> = None;
 
     loop {
         match reader.read_event() {
@@ -349,6 +351,8 @@ fn parse_sld(xml: &str) -> Vec<StyleRule> {
                     cur_style = Style::default();
                     cur_prop_name = None;
                     cur_literal = None;
+                    cur_fill_opacity = None;
+                    cur_stroke_opacity = None;
                 } else if tag == "Filter" {
                     in_filter = true;
                 } else if tag == "Stroke" {
@@ -378,11 +382,17 @@ fn parse_sld(xml: &str) -> Vec<StyleRule> {
                     "Fill" => in_fill = false,
                     "CssParameter" | "SvgParameter" => {
                         if let Some(ref param) = cur_css_param {
-                            apply_css_param(&mut cur_style, param, &text, in_stroke, in_fill);
+                            apply_css_param(&mut cur_style, param, &text, in_stroke, in_fill, &mut cur_fill_opacity, &mut cur_stroke_opacity);
                         }
                         cur_css_param = None;
                     }
                     "Rule" => {
+                        if let (Some(opacity), Some(c)) = (cur_fill_opacity, &mut cur_style.fill_color) {
+                            c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
+                        }
+                        if let (Some(opacity), Some(c)) = (cur_stroke_opacity, &mut cur_style.line_color) {
+                            c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
+                        }
                         let filter = match (&cur_prop_name, &cur_literal) {
                             (Some(p), Some(v)) => Some((p.clone(), v.clone())),
                             _ => None,
@@ -406,7 +416,10 @@ fn parse_sld(xml: &str) -> Vec<StyleRule> {
     rules
 }
 
-fn apply_css_param(style: &mut Style, name: &str, value: &str, in_stroke: bool, in_fill: bool) {
+fn apply_css_param(
+    style: &mut Style, name: &str, value: &str, in_stroke: bool, in_fill: bool,
+    fill_opacity: &mut Option<f32>, stroke_opacity: &mut Option<f32>,
+) {
     match name {
         "stroke" if in_stroke => style.line_color = parse_css_color(value),
         "stroke-width" if in_stroke => style.line_width = value.parse().ok(),
@@ -414,16 +427,8 @@ fn apply_css_param(style: &mut Style, name: &str, value: &str, in_stroke: bool, 
             style.fill_color = parse_css_color(value);
             style.poly_fill = Some(true);
         }
-        "fill-opacity" if in_fill => {
-            if let (Some(c), Ok(opacity)) = (&mut style.fill_color, value.parse::<f32>()) {
-                c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
-            }
-        }
-        "stroke-opacity" if in_stroke => {
-            if let (Some(c), Ok(opacity)) = (&mut style.line_color, value.parse::<f32>()) {
-                c[3] = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
-            }
-        }
+        "fill-opacity" if in_fill => *fill_opacity = value.parse().ok(),
+        "stroke-opacity" if in_stroke => *stroke_opacity = value.parse().ok(),
         _ => {}
     }
 }

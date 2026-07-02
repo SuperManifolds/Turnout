@@ -16,13 +16,14 @@ pub fn parse_geojson(json: &str) -> Result<KmzData> {
     let mut styles: HashMap<String, Style> = HashMap::new();
 
     for (i, feature) in features.iter().enumerate() {
-        let geometry = parse_geometry(&feature["geometry"]);
+        let geometry = parse_geometry(feature.get("geometry").unwrap_or(&serde_json::Value::Null));
         let Some(geometry) = geometry else { continue };
 
-        let name = feature["properties"]["name"]
+        let props = feature.get("properties").unwrap_or(&serde_json::Value::Null);
+        let name = props["name"]
             .as_str()
-            .or_else(|| feature["properties"]["NAME"].as_str())
-            .or_else(|| feature["properties"]["title"].as_str())
+            .or_else(|| props["NAME"].as_str())
+            .or_else(|| props["title"].as_str())
             .map(String::from);
 
         let style = extract_style(feature);
@@ -56,22 +57,21 @@ pub fn parse_geojson(json: &str) -> Result<KmzData> {
     })
 }
 
-fn extract_features(root: &serde_json::Value) -> Result<Vec<&serde_json::Value>> {
+fn extract_features(root: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
     match root["type"].as_str() {
         Some("FeatureCollection") => {
             let Some(arr) = root["features"].as_array() else {
                 bail!("FeatureCollection has no features array");
             };
-            Ok(arr.iter().collect())
+            Ok(arr.clone())
         }
-        Some("Feature") => Ok(vec![root]),
+        Some("Feature") => Ok(vec![root.clone()]),
         Some("Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon" | "GeometryCollection") => {
-            let wrapper = serde_json::json!({
+            Ok(vec![serde_json::json!({
                 "type": "Feature",
                 "properties": {},
                 "geometry": root
-            });
-            Ok(vec![Box::leak(Box::new(wrapper))])
+            })])
         }
         _ => bail!("not a valid GeoJSON document"),
     }

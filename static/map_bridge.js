@@ -2,6 +2,8 @@
 
 let _map = null;
 let _map_loaded = false;
+let _dynamic_source_ids = new Set();
+let _dynamic_layer_ids = new Set();
 let _theme_override = "system"; // "system", "light", "dark"
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -24,11 +26,13 @@ function get_preferred_style() {
 function preserve_custom_layers(prev, next) {
     if (!prev) return next;
     const sources = Object.assign({}, next.sources);
-    CUSTOM_SOURCE_IDS.forEach(function(id) {
+    var allSourceIds = CUSTOM_SOURCE_IDS.concat(Array.from(_dynamic_source_ids));
+    allSourceIds.forEach(function(id) {
         if (prev.sources[id]) sources[id] = prev.sources[id];
     });
+    var allLayerIds = CUSTOM_LAYER_IDS.concat(Array.from(_dynamic_layer_ids));
     const customLayers = prev.layers.filter(function(l) {
-        return CUSTOM_LAYER_IDS.indexOf(l.id) >= 0;
+        return allLayerIds.indexOf(l.id) >= 0;
     });
     return Object.assign({}, next, {
         sources: sources,
@@ -307,12 +311,16 @@ window.map_add_overlay_layer = function(id, url, opacity) {
         source: id,
         paint: { "raster-opacity": opacity },
     }, beforeLayer);
+    _dynamic_source_ids.add(id);
+    _dynamic_layer_ids.add(id + "-layer");
 };
 
 window.map_remove_overlay_layer = function(id) {
     if (!_map) return;
     if (_map.getLayer(id + "-layer")) _map.removeLayer(id + "-layer");
     if (_map.getSource(id)) _map.removeSource(id);
+    _dynamic_source_ids.delete(id);
+    _dynamic_layer_ids.delete(id + "-layer");
 };
 
 window.map_fit_bounds = function(west, south, east, north) {
