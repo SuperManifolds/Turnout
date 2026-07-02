@@ -360,12 +360,12 @@ pub fn set_group_visible(app: tauri::AppHandle, group_id: u32, visible: bool) ->
     let state = app.state::<OverlayState>();
     let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(group) = groups.iter().find(|g| g.id == group_id) {
-        let layers = group.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ids: Vec<u32> = layers.iter().map(|l| l.id).collect();
-        drop(layers);
-        for id in ids {
-            group.handle.set_layer_visible(id, visible);
+        let mut layers = group.handle.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for layer in layers.iter_mut() {
+            layer.visible = visible;
         }
+        drop(layers);
+        group.handle.clear_cache();
     }
     let status = build_status(&groups);
     drop(groups);
@@ -401,7 +401,6 @@ pub fn set_layer_visible(app: tauri::AppHandle, group_id: u32, layer_id: u32, vi
     }
     let status = build_status(&groups);
     drop(groups);
-    save_groups(&app);
     status
 }
 
@@ -415,7 +414,6 @@ pub fn set_layer_opacity(app: tauri::AppHandle, group_id: u32, layer_id: u32, op
     }
     let status = build_status(&groups);
     drop(groups);
-    save_groups(&app);
     status
 }
 
@@ -553,6 +551,7 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
     if let Some(last) = layers.last() {
         let id = last.id;
         drop(layers);
+        handle.rename_layer(id, layer.name.clone());
         handle.set_layer_visible(id, layer.visible);
         handle.set_layer_opacity(id, layer.opacity);
     }

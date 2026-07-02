@@ -77,7 +77,14 @@ fn extract_features(root: &serde_json::Value) -> Result<Vec<serde_json::Value>> 
     }
 }
 
+const MAX_GEOMETRY_DEPTH: usize = 10;
+
 fn parse_geometry(val: &serde_json::Value) -> Option<Geometry> {
+    parse_geometry_depth(val, 0)
+}
+
+fn parse_geometry_depth(val: &serde_json::Value, depth: usize) -> Option<Geometry> {
+    if depth > MAX_GEOMETRY_DEPTH { return None; }
     let geom_type = val["type"].as_str()?;
     match geom_type {
         "Point" => {
@@ -150,7 +157,7 @@ fn parse_geometry(val: &serde_json::Value) -> Option<Geometry> {
         "GeometryCollection" => {
             let geoms: Vec<Geometry> = val["geometries"].as_array()?
                 .iter()
-                .filter_map(parse_geometry)
+                .filter_map(|g| parse_geometry_depth(g, depth + 1))
                 .collect();
             if geoms.is_empty() { None } else { Some(Geometry::Multi(geoms)) }
         }

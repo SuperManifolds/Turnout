@@ -58,7 +58,8 @@ pub struct Layer {
 }
 
 type RenderCache = LruCache<(u8, u32, u32), Vec<u8>>;
-type RemoteCache = LruCache<(u32, u8, u32, u32), Vec<u8>>;
+type DecodedTile = (Vec<u8>, u32, u32);
+type RemoteCache = LruCache<(u32, u8, u32, u32), DecodedTile>;
 
 pub struct TileState {
     pub(crate) layers: RwLock<Vec<Layer>>,
@@ -175,6 +176,11 @@ impl ServerHandle {
     }
 
     pub fn insert_layer(&self, layer: Layer) {
+        let mut next = self.state.next_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if layer.id >= *next {
+            *next = layer.id + 1;
+        }
+        drop(next);
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.push(layer);
         drop(layers);
@@ -318,26 +324,31 @@ fn decode_images(data: &KmzData) -> Vec<DecodedImage> {
         .collect()
 }
 
-fn decode_remote_bytes(bytes: &[u8]) -> Option<Pixmap> {
+fn decode_remote_bytes(bytes: &[u8]) -> Option<DecodedTile> {
     let dyn_img = image::load_from_memory(bytes).ok()?;
     let resized = if dyn_img.width() != TILE_SIZE || dyn_img.height() != TILE_SIZE {
-        dyn_img.resize_exact(TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Lanczos3)
+        dyn_img.resize_exact(TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle)
     } else {
         dyn_img
     };
     let rgba = resized.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
-    Pixmap::from_vec(rgba.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+    Some((rgba.into_raw(), w, h))
 }
 
-fn get_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
+fn decoded_to_pixmap(decoded: &DecodedTile) -> Option<Pixmap> {
+    let (data, w, h) = decoded;
+    Pixmap::from_vec(data.clone(), tiny_skia::IntSize::from_wh(*w, *h)?)
+}
+
+fn get_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32) -> Option<DecodedTile> {
     let mut cache = state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.get(&(layer_id, z, x, y)).cloned()
 }
 
-fn put_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32, bytes: Vec<u8>) {
+fn put_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32, decoded: DecodedTile) {
     let mut cache = state.remote_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.put((layer_id, z, x, y), bytes);
+    cache.put((layer_id, z, x, y), decoded);
 }
 
 async fn fetch_wms_tile(
@@ -513,8 +524,9 @@ async fn serve_tile(
     Path((z, x, y)): Path<(u8, u32, u32)>,
     State(state): State<Arc<TileState>>,
 ) -> impl IntoResponse {
-    if z > MAX_ZOOM {
-        return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], b"zoom level too high".to_vec());
+    let max_coord = 1u32 << z.min(MAX_ZOOM);
+    if z > MAX_ZOOM || x >= max_coord || y >= max_coord {
+        return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], b"invalid tile coordinates".to_vec());
     }
 
     {
@@ -546,7 +558,7 @@ async fn serve_tile(
         let state_ref = &state;
         async move {
             if let Some(cached) = get_remote_cached(state_ref, id, z, x, y) {
-                return (id, decode_remote_bytes(&cached));
+                return (id, decoded_to_pixmap(&cached));
             }
             let bytes = match req {
                 RemoteReq::Wms(url, layer) => fetch_wms_tile(client, url, layer, z.into(), x, y).await,
@@ -554,24 +566,33 @@ async fn serve_tile(
                 RemoteReq::Xyz(tpl) => fetch_xyz_tile(client, tpl, z.into(), x, y).await,
             };
             if let Some(b) = bytes {
-                put_remote_cached(state_ref, id, z, x, y, b.clone());
                 state_ref.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
-                (id, decode_remote_bytes(&b))
+                if let Some(decoded) = decode_remote_bytes(&b) {
+                    let pixmap = decoded_to_pixmap(&decoded);
+                    put_remote_cached(state_ref, id, z, x, y, decoded);
+                    (id, pixmap)
+                } else {
+                    (id, None)
+                }
             } else {
                 state_ref.error_layers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id);
                 (id, None)
             }
         }
     });
-    let remote_tiles: Vec<(u32, Pixmap)> = futures::future::join_all(fetches)
+    let fetch_results: Vec<(u32, Option<Pixmap>)> = futures::future::join_all(fetches)
         .await
+        .into_iter()
+        .collect();
+    let any_failed = fetch_results.iter().any(|(_, pm)| pm.is_none());
+    let remote_tiles: Vec<(u32, Pixmap)> = fetch_results
         .into_iter()
         .filter_map(|(id, pm)| pm.map(|p| (id, p)))
         .collect();
 
     let png = render_tile(&state, &remote_tiles, z.into(), x, y);
 
-    {
+    if !any_failed {
         let mut cache = state.render_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.put((z, x, y), png.clone());
     }
@@ -583,27 +604,29 @@ fn render_tile(state: &TileState, remote_tiles: &[(u32, Pixmap)], z: u32, x: u32
     let mut pixmap = Pixmap::new(TILE_SIZE, TILE_SIZE).expect("256x256 pixmap");
     let (tile_w, tile_s, tile_e, tile_n) = tile_bounds(z, x, y);
 
-    let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    for layer in layers.iter() {
-        if !layer.visible {
-            continue;
-        }
-        let opacity = layer.opacity;
-        match &layer.source {
-            LayerSource::Kmz { data, images, .. } => {
-                render_ground_overlays(&mut pixmap, images, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
-                render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
+    {
+        let layers = state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for layer in layers.iter() {
+            if !layer.visible {
+                continue;
             }
-            LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } => {
-                if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(id, _)| *id == layer.id) {
-                    let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
-                    pixmap.draw_pixmap(
-                        0, 0,
-                        remote_pixmap.as_ref(),
-                        &paint,
-                        Transform::identity(),
-                        None,
-                    );
+            let opacity = layer.opacity;
+            match &layer.source {
+                LayerSource::Kmz { data, images, .. } => {
+                    render_ground_overlays(&mut pixmap, images, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
+                    render_geometry(&mut pixmap, data, opacity, z, x, y, tile_w, tile_s, tile_e, tile_n);
+                }
+                LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } => {
+                    if let Some((_, remote_pixmap)) = remote_tiles.iter().find(|(id, _)| *id == layer.id) {
+                        let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
+                        pixmap.draw_pixmap(
+                            0, 0,
+                            remote_pixmap.as_ref(),
+                            &paint,
+                            Transform::identity(),
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -677,6 +700,8 @@ fn render_geometry(
     }
 }
 
+const MAX_RENDER_DEPTH: usize = 10;
+
 fn render_single_geometry(
     pixmap: &mut Pixmap,
     geom: &Geometry,
@@ -685,6 +710,19 @@ fn render_single_geometry(
     ew: f64, es: f64, ee: f64, en: f64,
     style: &Style,
 ) {
+    render_geometry_depth(pixmap, geom, opacity, z, x, y, ew, es, ee, en, style, 0);
+}
+
+fn render_geometry_depth(
+    pixmap: &mut Pixmap,
+    geom: &Geometry,
+    opacity: f32,
+    z: u32, x: u32, y: u32,
+    ew: f64, es: f64, ee: f64, en: f64,
+    style: &Style,
+    depth: usize,
+) {
+    if depth > MAX_RENDER_DEPTH { return; }
     match geom {
         Geometry::Point { lon, lat } => {
             if *lon >= ew && *lon <= ee && *lat >= es && *lat <= en {
@@ -703,7 +741,7 @@ fn render_single_geometry(
         }
         Geometry::Multi(geoms) => {
             for g in geoms {
-                render_single_geometry(pixmap, g, opacity, z, x, y, ew, es, ee, en, style);
+                render_geometry_depth(pixmap, g, opacity, z, x, y, ew, es, ee, en, style, depth + 1);
             }
         }
     }

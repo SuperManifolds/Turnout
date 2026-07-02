@@ -127,3 +127,47 @@ pub fn segment_rect_intersect(
 
     if best_t < f64::MAX { Some(best_pt) } else { None }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tile_bounds_z0() {
+        let (w, s, e, n) = tile_bounds(0, 0, 0);
+        assert!((w - (-180.0)).abs() < 1e-6);
+        assert!((e - 180.0).abs() < 1e-6);
+        assert!(n > 85.0 && n < 86.0);
+        assert!(s < -85.0 && s > -86.0);
+    }
+
+    #[test]
+    fn test_tile_bounds_z1() {
+        let (w, _s, e, _n) = tile_bounds(1, 0, 0);
+        assert!((w - (-180.0)).abs() < 1e-6);
+        assert!((e - 0.0).abs() < 1e-6);
+        let (w2, _, e2, _) = tile_bounds(1, 1, 0);
+        assert!((w2 - 0.0).abs() < 1e-6);
+        assert!((e2 - 180.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tile_pixel_corners() {
+        let (px, py) = latlon_to_tile_pixel(0.0, 0.0, 1, 1, 1);
+        assert!((px - 0.0).abs() < 1.0);
+        assert!((py - 0.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_tile_pixel_roundtrip() {
+        let z = 10;
+        let x = 512;
+        let y = 340;
+        let (w, s, e, n) = tile_bounds(z, x, y);
+        let center_lon = (w + e) / 2.0;
+        let center_lat = (s + n) / 2.0;
+        let (px, py) = latlon_to_tile_pixel(center_lat, center_lon, z, x, y);
+        assert!((px - 128.0).abs() < 1.0);
+        assert!((py - 128.0).abs() < 1.0);
+    }
+}

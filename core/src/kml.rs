@@ -60,13 +60,13 @@ impl KmzData {
         let mut any = false;
 
         for pm in &self.placemarks {
-            for (lon, lat) in geometry_coords(&pm.geometry) {
+            geometry_visit_coords(&pm.geometry, &mut |lon, lat| {
                 min_lon = min_lon.min(lon);
                 min_lat = min_lat.min(lat);
                 max_lon = max_lon.max(lon);
                 max_lat = max_lat.max(lat);
                 any = true;
-            }
+            });
         }
         for go in &self.ground_overlays {
             min_lon = min_lon.min(go.west);
@@ -92,11 +92,21 @@ impl KmzData {
     }
 }
 
-fn geometry_coords(geom: &Geometry) -> Vec<(f64, f64)> {
+fn geometry_visit_coords(geom: &Geometry, f: &mut impl FnMut(f64, f64)) {
     match geom {
-        Geometry::Point { lon, lat } => vec![(*lon, *lat)],
-        Geometry::LineString { coords } | Geometry::Polygon { outer: coords, .. } => coords.clone(),
-        Geometry::Multi(geoms) => geoms.iter().flat_map(geometry_coords).collect(),
+        Geometry::Point { lon, lat } => f(*lon, *lat),
+        Geometry::LineString { coords } => {
+            for &(lon, lat) in coords { f(lon, lat); }
+        }
+        Geometry::Polygon { outer, inner } => {
+            for &(lon, lat) in outer { f(lon, lat); }
+            for ring in inner {
+                for &(lon, lat) in ring { f(lon, lat); }
+            }
+        }
+        Geometry::Multi(geoms) => {
+            for g in geoms { geometry_visit_coords(g, f); }
+        }
     }
 }
 
@@ -181,9 +191,10 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
-                let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let tag_bytes = e.local_name();
+                let tag_bytes = tag_bytes.as_ref();
 
-                if tag == "Style" {
+                if tag_bytes == b"Style" {
                     cur_style = Style::default();
                     cur_style_id = e.attributes().filter_map(Result::ok).find_map(|a| {
                         if a.key.as_ref() == b"id" {
@@ -192,7 +203,7 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             None
                         }
                     });
-                } else if tag == "StyleMap" {
+                } else if tag_bytes == b"StyleMap" {
                     in_style_map = true;
                     cur_style_id = e.attributes().filter_map(Result::ok).find_map(|a| {
                         if a.key.as_ref() == b"id" {
@@ -201,22 +212,22 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             None
                         }
                     });
-                } else if tag == "Pair" {
+                } else if tag_bytes == b"Pair" {
                     cur_pair_key = None;
-                } else if tag == "LineStyle" {
+                } else if tag_bytes == b"LineStyle" {
                     in_line_style = true;
-                } else if tag == "PolyStyle" {
+                } else if tag_bytes == b"PolyStyle" {
                     in_poly_style = true;
-                } else if tag == "IconStyle" {
+                } else if tag_bytes == b"IconStyle" {
                     in_icon_style = true;
-                } else if tag == "Placemark" {
+                } else if tag_bytes == b"Placemark" {
                     in_placemark = true;
                     cur_pm_name = None;
                     cur_pm_style_url = None;
                     cur_pm_inline_style = None;
                     cur_pm_geoms.clear();
                     inner_rings.clear();
-                } else if tag == "GroundOverlay" {
+                } else if tag_bytes == b"GroundOverlay" {
                     in_ground_overlay = true;
                     cur_go_name = None;
                     cur_go_href = None;
@@ -225,23 +236,24 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                     cur_go_east = 0.0;
                     cur_go_west = 0.0;
                     cur_go_rotation = 0.0;
-                } else if tag == "LatLonBox" && in_ground_overlay {
+                } else if tag_bytes == b"LatLonBox" && in_ground_overlay {
                     in_latlonbox = true;
-                } else if tag == "outerBoundaryIs" {
+                } else if tag_bytes == b"outerBoundaryIs" {
                     in_outer = true;
-                } else if tag == "innerBoundaryIs" {
+                } else if tag_bytes == b"innerBoundaryIs" {
                     in_inner = true;
                 }
 
-                path.push(tag);
+                path.push(String::from_utf8_lossy(tag_bytes).to_string());
                 text_buf.clear();
             }
             Ok(Event::End(ref e)) => {
-                let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let tag_bytes = e.local_name();
+                let tag_bytes = tag_bytes.as_ref();
                 let text = text_buf.trim().to_string();
 
-                match tag.as_str() {
-                    "Style" => {
+                match tag_bytes {
+                    b"Style" => {
                         if in_placemark {
                             cur_pm_inline_style = Some(cur_style.clone());
                         } else if let Some(id) = cur_style_id.take() {
@@ -249,18 +261,18 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                         }
                         cur_style = Style::default();
                     }
-                    "StyleMap" => {
+                    b"StyleMap" => {
                         in_style_map = false;
                         cur_style_id = None;
                     }
-                    "Pair" => { cur_pair_key = None; }
-                    "key" if in_style_map => {
+                    b"Pair" => { cur_pair_key = None; }
+                    b"key" if in_style_map => {
                         cur_pair_key = Some(text.clone());
                     }
-                    "LineStyle" => in_line_style = false,
-                    "PolyStyle" => in_poly_style = false,
-                    "IconStyle" => in_icon_style = false,
-                    "color" => {
+                    b"LineStyle" => in_line_style = false,
+                    b"PolyStyle" => in_poly_style = false,
+                    b"IconStyle" => in_icon_style = false,
+                    b"color" => {
                         if let Some(rgba) = parse_kml_color(&text) {
                             if in_line_style {
                                 cur_style.line_color = Some(rgba);
@@ -269,18 +281,18 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             }
                         }
                     }
-                    "width" if in_line_style => {
+                    b"width" if in_line_style => {
                         if let Ok(w) = text.parse::<f32>() {
                             cur_style.line_width = Some(w);
                         }
                     }
-                    "fill" if in_poly_style => {
+                    b"fill" if in_poly_style => {
                         cur_style.poly_fill = Some(&text != "0");
                     }
-                    "outline" if in_poly_style => {
+                    b"outline" if in_poly_style => {
                         cur_style.poly_outline = Some(&text != "0");
                     }
-                    "name" => {
+                    b"name" => {
                         if in_placemark {
                             cur_pm_name = Some(text);
                         } else if in_ground_overlay {
@@ -289,7 +301,7 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             data.name = Some(text);
                         }
                     }
-                    "styleUrl" if in_style_map => {
+                    b"styleUrl" if in_style_map => {
                         if cur_pair_key.as_deref() == Some("normal")
                             && let Some(ref map_id) = cur_style_id
                         {
@@ -297,10 +309,10 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             style_map_refs.insert(map_id.clone(), target.to_string());
                         }
                     }
-                    "styleUrl" if in_placemark => {
+                    b"styleUrl" if in_placemark => {
                         cur_pm_style_url = Some(text);
                     }
-                    "coordinates" => {
+                    b"coordinates" => {
                         let coords = parse_coordinates(&text);
                         let parent = path.iter().rev().nth(1).map(String::as_str);
                         match parent {
@@ -325,9 +337,9 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             _ => {}
                         }
                     }
-                    "innerBoundaryIs" => in_inner = false,
-                    "outerBoundaryIs" => in_outer = false,
-                    "Polygon" => {
+                    b"innerBoundaryIs" => in_inner = false,
+                    b"outerBoundaryIs" => in_outer = false,
+                    b"Polygon" => {
                         if !inner_rings.is_empty()
                             && let Some(Geometry::Polygon { inner, .. }) =
                                 cur_pm_geoms.last_mut()
@@ -335,7 +347,7 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             *inner = std::mem::take(&mut inner_rings);
                         }
                     }
-                    "Placemark" => {
+                    b"Placemark" => {
                         in_placemark = false;
                         let geometry = match cur_pm_geoms.len() {
                             0 => None,
@@ -357,26 +369,26 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<KmzData> {
                             });
                         }
                     }
-                    "href" if in_ground_overlay && !in_icon_style => {
+                    b"href" if in_ground_overlay && !in_icon_style => {
                         cur_go_href = Some(text);
                     }
-                    "north" if in_latlonbox => {
+                    b"north" if in_latlonbox => {
                         cur_go_north = text.parse().unwrap_or(0.0);
                     }
-                    "south" if in_latlonbox => {
+                    b"south" if in_latlonbox => {
                         cur_go_south = text.parse().unwrap_or(0.0);
                     }
-                    "east" if in_latlonbox => {
+                    b"east" if in_latlonbox => {
                         cur_go_east = text.parse().unwrap_or(0.0);
                     }
-                    "west" if in_latlonbox => {
+                    b"west" if in_latlonbox => {
                         cur_go_west = text.parse().unwrap_or(0.0);
                     }
-                    "rotation" if in_latlonbox => {
+                    b"rotation" if in_latlonbox => {
                         cur_go_rotation = text.parse().unwrap_or(0.0);
                     }
-                    "LatLonBox" => in_latlonbox = false,
-                    "GroundOverlay" => {
+                    b"LatLonBox" => in_latlonbox = false,
+                    b"GroundOverlay" => {
                         in_ground_overlay = false;
                         if let Some(href) = cur_go_href.take() {
                             data.ground_overlays.push(GroundOverlay {
