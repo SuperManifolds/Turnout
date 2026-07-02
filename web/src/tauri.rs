@@ -158,6 +158,35 @@ pub async fn check_for_update() -> Result<Option<String>, String> {
     Ok(version)
 }
 
+pub async fn download_and_install_update() -> Result<(), String> {
+    let tauri = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
+        .map_err(|_| "Tauri not available".to_string())?;
+    let updater = js_sys::Reflect::get(&tauri, &"updater".into())
+        .map_err(|_| "Updater not available".to_string())?;
+    let check_fn = js_sys::Reflect::get(&updater, &"check".into())
+        .map_err(|_| "check not available".to_string())?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| "check is not a function".to_string())?;
+    let promise = check_fn.call0(&JsValue::NULL)
+        .map_err(|e| format!("{e:?}"))?;
+    let update = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    if update.is_null() || update.is_undefined() {
+        return Err("No update available".into());
+    }
+    let install_fn = js_sys::Reflect::get(&update, &"downloadAndInstall".into())
+        .map_err(|_| "downloadAndInstall not available".to_string())?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| "downloadAndInstall is not a function".to_string())?;
+    let promise = install_fn.call0(&update)
+        .map_err(|e| format!("{e:?}"))?;
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    Ok(())
+}
+
 pub async fn get_mods_dir() -> Option<String> {
     let result = invoke("get_mods_dir", &JsValue::NULL).await.ok()?;
     result.as_string()

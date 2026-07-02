@@ -388,7 +388,7 @@ pub fn AppSettings() -> impl IntoView {
                         set_update_status.set("Checking...".into());
                         spawn_local(async move {
                             match crate::tauri::check_for_update().await {
-                                Ok(Some(version)) => set_update_status.set(format!("Update available: v{version}")),
+                                Ok(Some(version)) => set_update_status.set(format!("update:v{version}")),
                                 Ok(None) => set_update_status.set("You're up to date".into()),
                                 Err(e) => set_update_status.set(format!("Check failed: {e}")),
                             }
@@ -400,7 +400,31 @@ pub fn AppSettings() -> impl IntoView {
                 </nav>
                 {move || {
                     let s = update_status.get();
-                    if s.is_empty() { None } else { Some(view! { <p class="path-display">{s}</p> }) }
+                    if s.is_empty() {
+                        None
+                    } else if let Some(version) = s.strip_prefix("update:") {
+                        let version = version.to_string();
+                        Some(view! {
+                            <p class="path-display">
+                                {format!("Update available: {version}")}
+                                " "
+                                <button type="button" on:click=move |_| {
+                                    set_update_status.set("Downloading...".into());
+                                    spawn_local(async move {
+                                        match crate::tauri::download_and_install_update().await {
+                                            Ok(()) => set_update_status.set("Restarting...".into()),
+                                            Err(e) => set_update_status.set(format!("Update failed: {e}")),
+                                        }
+                                    });
+                                }>
+                                    <i class="fa-solid fa-download"></i>
+                                    " Install & Restart"
+                                </button>
+                            </p>
+                        }.into_any())
+                    } else {
+                        Some(view! { <p class="path-display">{s}</p> }.into_any())
+                    }
                 }}
                 <p class="path-display">{move || {
                     let v = app_version.get();

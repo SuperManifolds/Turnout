@@ -13,6 +13,63 @@ mod wmts;
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+async fn check_for_updates_on_startup(app: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+
+    if !settings::load(&app).check_for_updates {
+        return;
+    }
+    let Ok(updater) = app.updater() else { return };
+    let Ok(Some(update)) = updater.check().await else { return };
+    prompt_install(&app, update).await;
+}
+
+async fn check_for_updates(app: &tauri::AppHandle) {
+    use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            app.dialog().message(format!("Updater unavailable: {e}")).title("Update Error").blocking_show();
+            return;
+        }
+    };
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            app.dialog().message("You're running the latest version.").title("No Updates Available").blocking_show();
+            return;
+        }
+        Err(e) => {
+            app.dialog().message(format!("Failed to check for updates: {e}")).title("Update Error").blocking_show();
+            return;
+        }
+    };
+    prompt_install(app, update).await;
+}
+
+async fn prompt_install(app: &tauri::AppHandle, update: tauri_plugin_updater::Update) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+
+    let version = update.version.clone();
+    let confirmed = app.dialog()
+        .message(format!("Version {version} is available. Download and install?"))
+        .title("Update Available")
+        .buttons(MessageDialogButtons::OkCancelCustom("Install & Restart".into(), "Later".into()))
+        .blocking_show();
+
+    if !confirmed {
+        return;
+    }
+
+    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+        app.dialog().message(format!("Update failed: {e}")).title("Update Error").blocking_show();
+        return;
+    }
+    app.restart();
+}
+
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.webview_windows().get("settings") {
         let _ = window.set_focus();
@@ -34,6 +91,11 @@ fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let app_submenu = SubmenuBuilder::new(app, "Turnout")
         .about(None)
         .separator()
+        .item(
+            &MenuItemBuilder::new("Check for Updates...")
+                .id("check_updates")
+                .build(app)?
+        )
         .item(
             &MenuItemBuilder::new("Settings...")
                 .id("settings")
@@ -89,11 +151,18 @@ fn main() {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
             Ok(())
         })
         .on_menu_event(|app, event| {
             if event.id() == "settings" {
                 open_settings_window(app);
+            } else if event.id() == "check_updates" {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    check_for_updates(&app).await;
+                });
             }
         })
         .invoke_handler(tauri::generate_handler![
