@@ -282,13 +282,15 @@ pub async fn add_xyz_layer(
     url_template: String,
     display_name: String,
     group_id: Option<u32>,
+    kind: Option<String>,
 ) -> Result<OverlayStatus, String> {
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
+    let layer_kind = kind.as_deref().unwrap_or("xyz");
     let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let group = find_group(&groups, group_id)?;
-    group.handle.add_xyz_layer(url_template, display_name);
+    group.handle.add_xyz_layer_with_kind(url_template, display_name, layer_kind);
     let status = build_status(&groups);
     drop(groups);
     save_groups(&app);
@@ -414,6 +416,40 @@ pub fn set_layer_opacity(app: tauri::AppHandle, group_id: u32, layer_id: u32, op
     }
     let status = build_status(&groups);
     drop(groups);
+    status
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn update_apple_urls(
+    app: tauri::AppHandle,
+    access_key: String,
+    map_version: Option<String>,
+    sat_version: Option<String>,
+) -> OverlayStatus {
+    let state = app.state::<OverlayState>();
+    let groups = state.groups.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for group in groups.iter() {
+        let layers = group.handle.state.layers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let apple_layers: Vec<(u32, bool)> = layers.iter().filter_map(|l| {
+            if l.kind != "apple" { return None; }
+            if let tile_server::LayerSource::Xyz { url_template } = &l.source {
+                let is_sat = url_template.contains("sat-cdn");
+                Some((l.id, is_sat))
+            } else { None }
+        }).collect();
+        drop(layers);
+
+        for (id, is_sat) in apple_layers {
+            let ver = if is_sat { &sat_version } else { &map_version };
+            let Some(ver) = ver else { continue };
+            let url = turnout_core::geo::apple_tile_url(&access_key, ver, is_sat);
+            group.handle.update_xyz_url(id, url);
+        }
+    }
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
     status
 }
 

@@ -17,22 +17,35 @@ fn source_id(group_id: u32) -> String {
     format!("overlay-{group_id}")
 }
 
-fn sync_map_layers(status: &tauri::OverlayStatus, prev_group_ids: &[u32]) {
+fn sync_map_layers(status: &tauri::OverlayStatus, prev_group_ids: &[u32], force_refresh: bool) {
+    let new_ids: Vec<u32> = status.groups.iter().map(|g| g.id).collect();
+
     for id in prev_group_ids {
-        map_remove_overlay_layer(&source_id(*id));
+        if !new_ids.contains(id) {
+            map_remove_overlay_layer(&source_id(*id));
+        }
     }
+
     for g in &status.groups {
-        map_add_overlay_layer(&source_id(g.id), &g.tile_url, 1.0);
+        if !prev_group_ids.contains(&g.id) {
+            map_add_overlay_layer(&source_id(g.id), &g.tile_url, 1.0);
+        } else if force_refresh {
+            map_remove_overlay_layer(&source_id(g.id));
+            map_add_overlay_layer(&source_id(g.id), &g.tile_url, 1.0);
+        }
     }
 }
 
 fn layer_icon(kind: &str) -> &'static str {
     match kind {
         "wms" => "fa-solid fa-globe",
+        "wmts" => "fa-solid fa-map",
         "arcgis" => "fa-solid fa-server",
         "shp" => "fa-solid fa-shapes",
         "geojson" => "fa-solid fa-code",
         "xyz" => "fa-solid fa-link",
+        "apple" => "fa-solid fa-map-location-dot",
+        "bing" => "fa-solid fa-satellite",
         _ => "fa-solid fa-layer-group",
     }
 }
@@ -73,11 +86,25 @@ pub fn OverlayDrawer(
     let load_apple_creds = move || {
         spawn_local(async move {
             let settings = crate::components::app_settings::load_settings().await;
-            if let Some(key) = settings.apple_access_key
+            if let Some(ref key) = settings.apple_access_key
                 && !key.is_empty()
                 && (settings.apple_map_version.is_some() || settings.apple_sat_version.is_some())
             {
-                set_apple_creds.set(Some((key, settings.apple_map_version, settings.apple_sat_version)));
+                let s = tauri::update_apple_urls(
+                    key,
+                    settings.apple_map_version.as_deref(),
+                    settings.apple_sat_version.as_deref(),
+                ).await;
+                if !s.groups.is_empty() {
+                    let prev: Vec<u32> = status.get_untracked().groups.iter().map(|g| g.id).collect();
+                    sync_map_layers(&s, &prev, true);
+                    set_status.set(s);
+                }
+                set_apple_creds.set(Some((
+                    key.clone(),
+                    settings.apple_map_version,
+                    settings.apple_sat_version,
+                )));
             } else {
                 set_apple_creds.set(None);
             }
@@ -118,7 +145,13 @@ pub fn OverlayDrawer(
 
     let apply_status = move |new_status: tauri::OverlayStatus| {
         let prev = group_ids();
-        sync_map_layers(&new_status, &prev);
+        sync_map_layers(&new_status, &prev, true);
+        set_status.set(new_status);
+    };
+
+    let apply_status_no_refresh = move |new_status: tauri::OverlayStatus| {
+        let prev = group_ids();
+        sync_map_layers(&new_status, &prev, false);
         set_status.set(new_status);
     };
 
@@ -165,11 +198,11 @@ pub fn OverlayDrawer(
     };
 
     let on_reorder_group = move |gid: u32, dir: &'static str| {
-        spawn_local(async move { apply_status(tauri::reorder_group(gid, dir).await); });
+        spawn_local(async move { apply_status_no_refresh(tauri::reorder_group(gid, dir).await); });
     };
 
     let on_rename_group = move |gid: u32, name: String| {
-        spawn_local(async move { apply_status(tauri::rename_group(gid, &name).await); });
+        spawn_local(async move { apply_status_no_refresh(tauri::rename_group(gid, &name).await); });
     };
 
     let on_group_visible = move |gid: u32, visible: bool| {
@@ -181,7 +214,7 @@ pub fn OverlayDrawer(
     };
 
     let on_rename_layer = move |gid: u32, lid: u32, name: String| {
-        spawn_local(async move { apply_status(tauri::rename_layer(gid, lid, &name).await); });
+        spawn_local(async move { apply_status_no_refresh(tauri::rename_layer(gid, lid, &name).await); });
     };
 
     let on_zoom_layer = move |bbox: [f64; 4]| {
@@ -295,7 +328,7 @@ pub fn OverlayDrawer(
         spawn_local(async move {
             let result = match form {
                 ServiceForm::Wms => tauri::add_wms_layer(&url, &name, &display, gid).await,
-                ServiceForm::Wmts => tauri::add_xyz_layer(&name, &display, gid).await,
+                ServiceForm::Wmts => tauri::add_xyz_layer_with_kind(&name, &display, gid, Some("wmts")).await,
                 ServiceForm::ArcGis => tauri::add_arcgis_layer(&url, &name, &display, gid).await,
                 ServiceForm::None | ServiceForm::Xyz => return,
             };
@@ -318,18 +351,14 @@ pub fn OverlayDrawer(
         let gid = target_group.get();
         let (tile_url, name) = if satellite {
             let Some(ver) = sat_ver else { return };
-            (format!(
-                "https://sat-cdn.apple-mapkit.com/tile?style=7&size=2&scale=1&z={{z}}&x={{x}}&y={{y}}&v={ver}&accessKey={key}"
-            ), "Apple Satellite")
+            (turnout_core::geo::apple_tile_url(&key, &ver, true), "Apple Satellite")
         } else {
             let Some(ver) = map_ver else { return };
-            (format!(
-                "https://cdn.apple-mapkit.com/ti/tile?style=0&size=1&scale=1&lang=en&poi=0&labels=0&tint=light&emphasis=standard&z={{z}}&x={{x}}&y={{y}}&v={ver}&accessKey={key}"
-            ), "Apple Maps")
+            (turnout_core::geo::apple_tile_url(&key, &ver, false), "Apple Maps")
         };
         set_service_loading.set(true);
         spawn_local(async move {
-            match tauri::add_xyz_layer(&tile_url, name, gid).await {
+            match tauri::add_xyz_layer_with_kind(&tile_url, name, gid, Some("apple")).await {
                 Ok(s) => apply_status(s),
                 Err(e) => show_toast(e),
             }
@@ -344,7 +373,7 @@ pub fn OverlayDrawer(
             "https://ecn.t0.tiles.virtualearth.net/tiles/{tile_type}{{q}}?g=1&mkt=en"
         );
         spawn_local(async move {
-            match tauri::add_xyz_layer(&tile_url, name, gid).await {
+            match tauri::add_xyz_layer_with_kind(&tile_url, name, gid, Some("bing")).await {
                 Ok(s) => apply_status(s),
                 Err(e) => show_toast(e),
             }

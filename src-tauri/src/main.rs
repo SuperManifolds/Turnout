@@ -125,6 +125,7 @@ fn main() {
             overlay::fetch_arcgis_services,
             overlay::add_arcgis_layer,
             overlay::add_xyz_layer,
+            overlay::update_apple_urls,
             overlay::fetch_wmts_layers,
             overlay::move_layer,
             overlay::remove_overlay,

@@ -309,6 +309,20 @@ pub fn parse_overlay_status(val: &JsValue) -> Option<OverlayStatus> {
     })
 }
 
+pub async fn update_apple_urls(access_key: &str, map_version: Option<&str>, sat_version: Option<&str>) -> OverlayStatus {
+    let args = js_sys::Object::new();
+    let _ = js_set(&args, "accessKey", &access_key.into());
+    if let Some(v) = map_version { let _ = js_set(&args, "mapVersion", &v.into()); }
+    if let Some(v) = sat_version { let _ = js_set(&args, "satVersion", &v.into()); }
+    invoke("update_apple_urls", &args).await.ok()
+        .as_ref()
+        .and_then(parse_overlay_status)
+        .unwrap_or_else(|| {
+            web_sys::console::warn_1(&"overlay command failed".into());
+            OverlayStatus { groups: Vec::new() }
+        })
+}
+
 pub async fn pick_kmz_file() -> Option<String> {
     let result = invoke("pick_kmz_file", &JsValue::NULL).await.ok()?;
     result.as_string()
@@ -461,11 +475,18 @@ pub async fn fetch_wmts_layers(url: &str) -> Result<Vec<WmtsLayerInfo>, String> 
 }
 
 pub async fn add_xyz_layer(url_template: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    add_xyz_layer_with_kind(url_template, display_name, group_id, None).await
+}
+
+pub async fn add_xyz_layer_with_kind(url_template: &str, display_name: &str, group_id: Option<u32>, kind: Option<&str>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
     js_set(&args, "urlTemplate", &url_template.into())?;
     js_set(&args, "displayName", &display_name.into())?;
     if let Some(gid) = group_id {
         js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    if let Some(k) = kind {
+        js_set(&args, "kind", &k.into())?;
     }
     let result = invoke("add_xyz_layer", &args).await?;
     parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())

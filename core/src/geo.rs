@@ -128,6 +128,23 @@ pub fn segment_rect_intersect(
     if best_t < f64::MAX { Some(best_pt) } else { None }
 }
 
+/// Build an Apple Maps tile URL template.
+#[must_use]
+pub fn apple_tile_url(access_key: &str, version: &str, satellite: bool) -> String {
+    if satellite {
+        format!(
+            "https://sat-cdn.apple-mapkit.com/tile?style=7&size=2&scale=1\
+             &z={{z}}&x={{x}}&y={{y}}&v={version}&accessKey={access_key}"
+        )
+    } else {
+        format!(
+            "https://cdn.apple-mapkit.com/ti/tile?style=0&size=1&scale=1\
+             &lang=en&poi=0&labels=0&tint=light&emphasis=standard\
+             &z={{z}}&x={{x}}&y={{y}}&v={version}&accessKey={access_key}"
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -108,11 +108,21 @@ impl ServerHandle {
     }
 
     pub fn add_xyz_layer(&self, url_template: String, display_name: String) -> u32 {
+        self.add_xyz_layer_with_kind(url_template, display_name, "xyz")
+    }
+
+    pub fn add_xyz_layer_with_kind(&self, url_template: String, display_name: String, kind: &str) -> u32 {
         let id = self.next_id();
+        let kind_static = match kind {
+            "wmts" => "wmts",
+            "apple" => "apple",
+            "bing" => "bing",
+            _ => "xyz",
+        };
 
         let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         layers.push(Layer {
-            id, name: display_name, bbox: WMS_BBOX, kind: "xyz", visible: true, opacity: 1.0,
+            id, name: display_name, bbox: WMS_BBOX, kind: kind_static, visible: true, opacity: 1.0,
             source: LayerSource::Xyz { url_template },
         });
         drop(layers);
@@ -185,6 +195,18 @@ impl ServerHandle {
         layers.push(layer);
         drop(layers);
         self.clear_cache();
+    }
+
+    pub fn update_xyz_url(&self, id: u32, url_template: String) {
+        let mut layers = self.state.layers.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(layer) = layers.iter_mut().find(|l| l.id == id)
+            && let LayerSource::Xyz { url_template: ref mut tpl } = layer.source
+        {
+            *tpl = url_template;
+        }
+        drop(layers);
+        self.clear_cache();
+        self.evict_remote_cache(id);
     }
 
     pub fn rename_layer(&self, id: u32, name: String) {
