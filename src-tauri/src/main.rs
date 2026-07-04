@@ -3,6 +3,7 @@
 mod arcgis;
 mod blueprint;
 mod import;
+mod mbtiles;
 mod overlay;
 mod overpass;
 mod settings;
@@ -151,6 +152,7 @@ fn main() {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
+            app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
             Ok(())
@@ -194,6 +196,7 @@ fn main() {
             overlay::fetch_arcgis_services,
             overlay::add_arcgis_layer,
             overlay::add_xyz_layer,
+            overlay::add_mbtiles_layer,
             overlay::update_apple_urls,
             overlay::fetch_wmts_layers,
             overlay::move_layer,
@@ -202,6 +205,9 @@ fn main() {
             overlay::set_layer_visible,
             overlay::set_layer_opacity,
             overlay::get_overlay_status,
+            mbtiles::count_tiles,
+            mbtiles::start_tile_download,
+            mbtiles::cancel_tile_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

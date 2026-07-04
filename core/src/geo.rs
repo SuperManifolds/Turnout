@@ -145,6 +145,31 @@ pub fn apple_tile_url(access_key: &str, version: &str, satellite: bool) -> Strin
     }
 }
 
+/// Convert lat/lon to slippy map tile coordinates at zoom level `z`.
+#[must_use]
+pub fn latlon_to_tile_xy(lat: f64, lon: f64, z: u8) -> (u32, u32) {
+    let n = f64::from(1u32 << z);
+    let x = ((lon + 180.0) / 360.0 * n).floor() as u32;
+    let lat_rad = lat.to_radians();
+    let y = ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * n).floor() as u32;
+    let max = (1u32 << z) - 1;
+    (x.min(max), y.min(max))
+}
+
+/// Count the total number of tiles covering a bbox across zoom levels `z_min..=z_max`.
+#[must_use]
+pub fn count_tiles_in_bbox(south: f64, west: f64, north: f64, east: f64, z_min: u8, z_max: u8) -> u64 {
+    let mut total = 0u64;
+    for z in z_min..=z_max {
+        let (x_min, y_min) = latlon_to_tile_xy(north, west, z);
+        let (x_max, y_max) = latlon_to_tile_xy(south, east, z);
+        let cols = u64::from(x_max - x_min + 1);
+        let rows = u64::from(y_max - y_min + 1);
+        total += cols * rows;
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +198,23 @@ mod tests {
         let (px, py) = latlon_to_tile_pixel(0.0, 0.0, 1, 1, 1);
         assert!((px - 0.0).abs() < 1.0);
         assert!((py - 0.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_latlon_to_tile_xy() {
+        let (x, y) = latlon_to_tile_xy(0.0, 0.0, 0);
+        assert_eq!((x, y), (0, 0));
+        let (x, y) = latlon_to_tile_xy(0.0, 0.0, 1);
+        assert_eq!((x, y), (1, 1));
+        let (x, y) = latlon_to_tile_xy(51.5, -0.1, 10);
+        assert_eq!((x, y), (511, 340));
+    }
+
+    #[test]
+    fn test_count_tiles_in_bbox() {
+        assert_eq!(count_tiles_in_bbox(-85.0, -180.0, 85.0, 180.0, 0, 0), 1);
+        let count = count_tiles_in_bbox(51.4, -0.2, 51.6, 0.1, 10, 10);
+        assert!(count > 0 && count < 100);
     }
 
     #[test]

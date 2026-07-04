@@ -51,6 +51,7 @@ enum SavedSource {
     Wmts { xyz_url: String },
     Apple { xyz_url: String },
     Bing { xyz_url: String },
+    MbTiles { path: String },
 }
 
 #[derive(Serialize, Clone)]
@@ -63,6 +64,7 @@ pub struct LayerInfo {
     pub opacity: f32,
     pub bbox: [f64; 4],
     pub has_errors: bool,
+    pub source_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -108,7 +110,7 @@ pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
     let path = app
         .dialog()
         .file()
-        .add_filter("Overlay files", &["kmz", "kml", "shp", "geojson", "json"])
+        .add_filter("Overlay files", &["kmz", "kml", "shp", "geojson", "json", "mbtiles"])
         .blocking_pick_file()?;
     Some(path.to_string())
 }
@@ -184,6 +186,19 @@ pub async fn add_overlay(
     path: String,
     group_id: Option<u32>,
 ) -> Result<OverlayStatus, String> {
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if ext == "mbtiles" {
+        let display_name = std::path::Path::new(&path)
+            .file_stem()
+            .map_or_else(|| "MBTiles".into(), |s| s.to_string_lossy().to_string());
+        return add_mbtiles_layer(app, path, display_name, group_id).await;
+    }
+
     let kind = kind_for_extension(&path);
     let mut data = parse_overlay_file(&path, kind)?;
 
@@ -284,6 +299,25 @@ pub async fn add_xyz_layer(
     let groups = state.groups.lock().unpoison();
     let group = find_group(&groups, group_id)?;
     group.handle.add_xyz_layer_with_kind(url_template, display_name, layer_kind);
+    let status = build_status(&groups);
+    drop(groups);
+    save_groups(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn add_mbtiles_layer(
+    app: tauri::AppHandle,
+    path: String,
+    display_name: String,
+    group_id: Option<u32>,
+) -> Result<OverlayStatus, String> {
+    let state = app.state::<OverlayState>();
+    ensure_group_exists(&state, &app, group_id).await?;
+
+    let groups = state.groups.lock().unpoison();
+    let group = find_group(&groups, group_id)?;
+    group.handle.add_mbtiles_layer(path, display_name)?;
     let status = build_status(&groups);
     drop(groups);
     save_groups(&app);
@@ -574,6 +608,12 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
         | SavedSource::Bing { xyz_url } => {
             handle.add_xyz_layer(xyz_url.clone(), layer.name.clone());
         }
+        SavedSource::MbTiles { path } => {
+            if let Err(e) = handle.add_mbtiles_layer(path.clone(), layer.name.clone()) {
+                eprintln!("Restore: failed to open MBTiles {path}: {e}");
+                return;
+            }
+        }
     }
 
     let layers = handle.state.layers.read().unpoison();
@@ -603,14 +643,25 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
                 name: g.name.clone(),
                 tile_url: format!("http://127.0.0.1:{}/{{z}}/{{x}}/{{y}}", g.handle.port),
                 tilejson_url: format!("http://127.0.0.1:{}/tilejson.json", g.handle.port),
-                layers: layers.iter().map(|l| LayerInfo {
-                    id: l.id,
-                    name: l.name.clone(),
-                    kind: l.kind,
-                    visible: l.visible,
-                    opacity: l.opacity,
-                    bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
-                    has_errors: errors.contains(&l.id),
+                layers: layers.iter().map(|l| {
+                    let source_url = match &l.source {
+                        LayerSource::Xyz { url_template } => Some(url_template.clone()),
+                        LayerSource::Wms { base_url, layer_name } => Some(format!(
+                            "{base_url}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={layer_name}\
+                             &SRS=EPSG:3857&FORMAT=image/png&WIDTH=256&HEIGHT=256&BBOX={{bbox}}"
+                        )),
+                        _ => None,
+                    };
+                    LayerInfo {
+                        id: l.id,
+                        name: l.name.clone(),
+                        kind: l.kind,
+                        visible: l.visible,
+                        opacity: l.opacity,
+                        bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
+                        has_errors: errors.contains(&l.id),
+                        source_url,
+                    }
                 }).collect(),
             }
         }).collect(),
@@ -649,6 +700,8 @@ fn save_groups(app: &tauri::AppHandle) {
                             _ => SavedSource::Xyz { xyz_url: url },
                         }
                     }
+                    (LayerSource::MbTiles { path, .. }, _) =>
+                        SavedSource::MbTiles { path: path.clone() },
                     _ => return None,
                 };
                 Some(SavedLayer {

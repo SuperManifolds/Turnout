@@ -395,6 +395,7 @@ pub fn Map(
         set_status.set("Navigate to an area, then click Select Area".into());
     };
 
+    let (show_tile_download, set_show_tile_download) = create_signal(false);
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
     let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 
@@ -429,11 +430,21 @@ pub fn Map(
                 </Show>
                 <Show when=move || bbox.get().is_some()>
                     <button class="primary" on:click=on_import_click disabled=move || over_limit.get() || cached_json.get_value().is_none()>"Import Tracks"</button>
+                    <button on:click=move |_| set_show_tile_download.update(|v| *v = !*v)>
+                        <i class="fa-solid fa-download"></i>
+                        " Download Tiles"
+                    </button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
                 <button on:click=move |_| set_drawer_open.update(|v| *v = !*v)>"Blueprints"</button>
             </nav>
+            <Show when=move || show_tile_download.get()>
+                <super::tile_download::TileDownload
+                    bbox=bbox
+                    on_close=Callback::new(move |()| set_show_tile_download.set(false))
+                />
+            </Show>
             <Show when=move || show_name_prompt.get()>
                 <super::NamePrompt
                     default_name="import".to_string()
