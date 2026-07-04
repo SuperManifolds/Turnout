@@ -52,7 +52,8 @@ pub fn TileDownload(
         {
             let status = crate::tauri::get_overlay_status().await;
             let mut layer_sources = vec![
-                TileSource { label: "OpenRailwayMap".into(), url: ORM_STANDARD.into() },
+                TileSource { label: "ORM Vector (Offline Cache)".into(), url: "orm-vector".into() },
+                TileSource { label: "OpenRailwayMap (Raster)".into(), url: ORM_STANDARD.into() },
             ];
             for group in &status.groups {
                 for layer in &group.layers {
@@ -123,11 +124,13 @@ pub fn TileDownload(
             set_error.set(Some("Select a source or enter a URL".into()));
             return;
         }
-        let has_xyz = url_val.contains("{z}") && url_val.contains("{x}") && url_val.contains("{y}");
-        let has_quadkey = url_val.contains("{q}");
-        if !has_xyz && !has_quadkey {
-            set_error.set(Some("URL must contain {z}/{x}/{y} or {q} placeholders".into()));
-            return;
+        if url_val != "orm-vector" {
+            let has_xyz = url_val.contains("{z}") && url_val.contains("{x}") && url_val.contains("{y}");
+            let has_quadkey = url_val.contains("{q}");
+            if !has_xyz && !has_quadkey {
+                set_error.set(Some("URL must contain {z}/{x}/{y} or {q} placeholders".into()));
+                return;
+            }
         }
         let count = tile_count.get_untracked();
         if count > MAX_TILE_COUNT {
@@ -153,14 +156,21 @@ pub fn TileDownload(
         let z_hi = z_max.get_untracked();
 
         spawn_local(async move {
-            match crate::tauri::start_tile_download(&url_val, &name_val, s, w, n, e, z_lo, z_hi).await {
-                Ok(path) => {
-                    match crate::tauri::add_mbtiles_layer(&path, &name_val, None).await {
-                        Ok(_) => set_done_message.set(Some("Saved and added as layer".into())),
-                        Err(_) => set_done_message.set(Some(format!("Saved to {path}"))),
-                    }
+            if url_val == "orm-vector" {
+                match crate::tauri::download_orm_tiles(s, w, n, e, z_lo, z_hi).await {
+                    Ok(path) => set_done_message.set(Some(format!("ORM offline cache saved to {path}"))),
+                    Err(e) => set_error.set(Some(e)),
                 }
-                Err(e) => set_error.set(Some(e)),
+            } else {
+                match crate::tauri::start_tile_download(&url_val, &name_val, s, w, n, e, z_lo, z_hi).await {
+                    Ok(path) => {
+                        match crate::tauri::add_mbtiles_layer(&path, &name_val, None).await {
+                            Ok(_) => set_done_message.set(Some("Saved and added as layer".into())),
+                            Err(_) => set_done_message.set(Some(format!("Saved to {path}"))),
+                        }
+                    }
+                    Err(e) => set_error.set(Some(e)),
+                }
             }
             set_downloading.set(false);
         });

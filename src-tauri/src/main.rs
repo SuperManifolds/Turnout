@@ -4,6 +4,8 @@ mod arcgis;
 mod blueprint;
 mod import;
 mod mbtiles;
+mod orm_offline;
+mod orm_tiles;
 mod overlay;
 mod overpass;
 mod settings;
@@ -155,6 +157,10 @@ fn main() {
             app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
+            match orm_tiles::start_blocking() {
+                Ok(h) => std::mem::forget(h),
+                Err(e) => eprintln!("ORM tiles failed: {e}"),
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -208,6 +214,7 @@ fn main() {
             mbtiles::count_tiles,
             mbtiles::start_tile_download,
             mbtiles::cancel_tile_download,
+            orm_offline::download_orm_tiles,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

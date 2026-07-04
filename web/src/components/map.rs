@@ -2,7 +2,7 @@ use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, In
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
+const ORM_DEFAULT_STYLE: &str = "standard";
 const MAX_BBOX_AREA_DEG2: f64 = 1.0;
 const BBOX_COLOR: &str = "#4a9eff";
 const BBOX_ERROR_COLOR: &str = "#d32f2f";
@@ -29,6 +29,7 @@ extern "C" {
     fn map_on_mouseup(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_query_features(lng: f64, lat: f64, layer_id: &str) -> JsValue;
     fn map_set_bbox_color(color: &str);
+    fn map_set_orm_style(style_name: &str);
 }
 
 // Interaction modes
@@ -167,8 +168,7 @@ pub fn Map(
         map_init(element);
 
         let on_load = Closure::new(move || {
-            map_add_raster_source("orm", ORM_TILES, "\u{00a9} OpenRailwayMap");
-            map_add_raster_layer("orm-layer", "orm", 0.7);
+            map_set_orm_style(ORM_DEFAULT_STYLE);
             map_add_preview_layer();
             map_add_geojson_source("bbox");
             map_add_fill_layer("bbox-fill", "bbox", BBOX_COLOR, 0.15);

@@ -661,3 +661,18 @@ pub async fn cancel_tile_download() -> Result<(), String> {
     invoke("cancel_tile_download", &JsValue::NULL).await?;
     Ok(())
 }
+
+pub async fn download_orm_tiles(
+    south: f64, west: f64, north: f64, east: f64,
+    z_min: u8, z_max: u8,
+) -> Result<String, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "south", &JsValue::from_f64(south))?;
+    js_set(&args, "west", &JsValue::from_f64(west))?;
+    js_set(&args, "north", &JsValue::from_f64(north))?;
+    js_set(&args, "east", &JsValue::from_f64(east))?;
+    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
+    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
+    let result = invoke("download_orm_tiles", &args).await?;
+    result.as_string().ok_or_else(|| "unexpected response".into())
+}
