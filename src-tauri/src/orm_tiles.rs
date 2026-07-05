@@ -1,20 +1,23 @@
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use lru::LruCache;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tower_http::cors::CorsLayer;
 
 use crate::tile_server::UnpoisonExt;
 
 const PREFERRED_PORT: u16 = 17854;
 const TILE_CACHE_CAPACITY: usize = 8192;
+const WORKER_COUNT: usize = 4;
 const STYLES: &[(&str, &str)] = &[
     ("standard", include_str!("../resources/orm/standard.json")),
     ("speed", include_str!("../resources/orm/speed.json")),
@@ -30,18 +33,18 @@ fn style_json(name: &str) -> &'static str {
 }
 
 struct RenderRequest {
-    style: String,
+    style: Arc<str>,
     z: u8,
     x: u32,
     y: u32,
-    tx: oneshot::Sender<Option<Vec<u8>>>,
+    tx: oneshot::Sender<Option<Bytes>>,
 }
 
-type TileCache = LruCache<(String, u8, u32, u32), Vec<u8>>;
+type TileCache = LruCache<(Arc<str>, u8, u32, u32), Bytes>;
 
 struct OrmTileState {
     cache: Mutex<TileCache>,
-    render_tx: mpsc::Sender<RenderRequest>,
+    dispatch_tx: std::sync::mpsc::Sender<RenderRequest>,
 }
 
 pub struct OrmHandle {
@@ -49,29 +52,34 @@ pub struct OrmHandle {
 }
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
-    let (render_tx, render_rx) = mpsc::channel::<RenderRequest>(256);
-    let render_rx = std::sync::Arc::new(tokio::sync::Mutex::new(render_rx));
+    let (dispatch_tx, dispatch_rx) = std::sync::mpsc::channel::<RenderRequest>();
+    let dispatch_rx = Arc::new(Mutex::new(dispatch_rx));
 
-    // Spawn render worker on a dedicated thread
-    // Note: maplibre_native is !Send — each renderer must stay on its thread
-    // Using a single worker since Metal may require main-thread-like context
-    let rx_clone = std::sync::Arc::clone(&render_rx);
-    std::thread::Builder::new()
-        .name("orm-render".into())
-        .spawn(move || {
-            render_worker(0, rx_clone);
-        })?;
+    let cache_dir = dirs_next::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("turnout")
+        .join("orm_cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
 
-    let state = std::sync::Arc::new(OrmTileState {
+    for i in 0..WORKER_COUNT {
+        let rx = Arc::clone(&dispatch_rx);
+        let cache_path = cache_dir.join(format!("worker_{i}.db"));
+        std::thread::Builder::new()
+            .name(format!("orm-render-{i}"))
+            .spawn(move || {
+                render_worker(i, rx, &cache_path);
+            })?;
+    }
+
+    let state = Arc::new(OrmTileState {
         cache: Mutex::new(LruCache::new(
             NonZeroUsize::new(TILE_CACHE_CAPACITY).expect("nonzero"),
         )),
-        render_tx,
+        dispatch_tx,
     });
 
-    // Start HTTP server on a tokio runtime
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let state2 = std::sync::Arc::clone(&state);
+    let state2 = Arc::clone(&state);
 
     std::thread::Builder::new()
         .name("orm-http".into())
@@ -87,7 +95,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 }
 
 async fn run_server(
-    state: std::sync::Arc<OrmTileState>,
+    state: Arc<OrmTileState>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let listener = match TcpListener::bind(format!("127.0.0.1:{PREFERRED_PORT}")).await {
@@ -101,10 +109,12 @@ async fn run_server(
         },
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    eprintln!("ORM tile renderer at http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}");
+    eprintln!("ORM tile renderer at http://127.0.0.1:{port}/{{style}}/{{z}}/{{y}}/{{x}}.png");
 
     let router = Router::new()
-        .route("/{style}/{z}/{x}/{y}", get(serve_tile))
+        .route("/tilejson.json", get(serve_tilejson))
+        .route("/{style}/tilejson.json", get(serve_style_tilejson))
+        .route("/{style}/{z}/{y}/{x_png}", get(serve_tile))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -117,98 +127,176 @@ async fn run_server(
 #[allow(clippy::needless_pass_by_value)]
 fn render_worker(
     id: usize,
-    rx: std::sync::Arc<tokio::sync::Mutex<mpsc::Receiver<RenderRequest>>>,
+    rx: Arc<Mutex<std::sync::mpsc::Receiver<RenderRequest>>>,
+    cache_path: &std::path::Path,
 ) {
-    use maplibre_native::{ImageRendererBuilder, CameraUpdate, LatLng};
-    use std::collections::HashMap;
+    let cache_path = cache_path.to_path_buf();
+    let rx_clone = Arc::clone(&rx);
+
+    loop {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            render_worker_inner(id, &rx_clone, &cache_path);
+        }));
+        match result {
+            Ok(()) => {
+                eprintln!("[ORM worker {id}] Exited cleanly");
+                break;
+            }
+            Err(e) => {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                eprintln!("[ORM worker {id}] PANIC: {msg} — restarting...");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+fn render_worker_inner(
+    id: usize,
+    rx: &Arc<Mutex<std::sync::mpsc::Receiver<RenderRequest>>>,
+    cache_path: &std::path::Path,
+) {
+    use maplibre_native::{ImageRendererBuilder, ResourceOptions};
     use std::num::NonZeroU32;
 
     eprintln!("[ORM worker {id}] Starting...");
 
-    let size = NonZeroU32::new(512).expect("nonzero");
-    let mut renderers: HashMap<String, maplibre_native::ImageRenderer<maplibre_native::Static>> = HashMap::new();
+    let tile_size = NonZeroU32::new(512).expect("nonzero");
+    let cache_path = cache_path.to_path_buf();
+    let mut render_count: u64 = 0;
+    let mut renderer: Option<maplibre_native::ImageRenderer<maplibre_native::Tile>> = None;
+    let mut current_style: Option<Arc<str>> = None;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("worker runtime");
+    loop {
+        eprintln!("[ORM worker {id}] Waiting for request...");
+        let req = {
+            let rx = rx.lock().unpoison();
+            match rx.recv() {
+                Ok(req) => req,
+                Err(_) => return,
+            }
+        };
+        eprintln!("[ORM worker {id}] Got request z={} x={} y={} style={}", req.z, req.x, req.y, req.style);
 
-    rt.block_on(async {
-        loop {
-            let req = {
-                let mut rx = rx.lock().await;
-                rx.recv().await
-            };
-            let Some(req) = req else { break };
+        if current_style.as_ref() != Some(&req.style) || renderer.is_none() {
+            eprintln!("[ORM worker {id}] Loading style '{}'...", req.style);
+            let resource_opts = ResourceOptions::default()
+                .with_cache_path(cache_path.clone());
+            let mut r = ImageRendererBuilder::new()
+                .with_size(tile_size, tile_size)
+                .with_resource_options(resource_opts)
+                .build_tile_renderer();
+            r.load_style_from_json_str(style_json(&req.style));
+            eprintln!("[ORM worker {id}] Style '{}' loaded", req.style);
+            renderer = Some(r);
+            current_style = Some(Arc::clone(&req.style));
+        }
 
-            // Get or create renderer for this style
-            let renderer = renderers.entry(req.style.clone()).or_insert_with(|| {
-                eprintln!("[ORM worker {id}] Loading style '{}'...", req.style);
-                let mut r = ImageRendererBuilder::new()
-                    .with_size(size, size)
-                    .build_static_renderer();
-                r.load_style_from_json_str(style_json(&req.style));
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                eprintln!("[ORM worker {id}] Style '{}' ready", req.style);
-                r
-            });
+        let r = renderer.as_mut().expect("just created");
+        let start = Instant::now();
 
-            let (west, south, east, north) = turnout_core::geo::tile_bounds(u32::from(req.z), req.x, req.y);
-            let center_lat = (south + north) / 2.0;
-            let center_lon = (west + east) / 2.0;
+        let (rz, rx_coord, ry) = if req.z > 19 {
+            let dz = req.z - 19;
+            (19, req.x >> dz, req.y >> dz)
+        } else {
+            (req.z, req.x, req.y)
+        };
 
-            let camera = CameraUpdate::new()
-                .center(LatLng { lat: center_lat, lng: center_lon })
-                .zoom(f64::from(req.z));
-
-            match renderer.render_static(&camera) {
-                Ok(image) => {
-                    let img = image.as_image();
-                    let mut png_buf = Vec::new();
-                    let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
-                    if img.write_with_encoder(encoder).is_ok() {
-                        let _ = req.tx.send(Some(png_buf));
-                    } else {
-                        let _ = req.tx.send(None);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[ORM worker {id}] Render error z={} x={} y={}: {e}", req.z, req.x, req.y);
+        match r.render_tile(rz, rx_coord, ry) {
+            Ok(image) => {
+                let render_ms = start.elapsed().as_millis();
+                let img = image.as_image();
+                let mut png_buf = Vec::with_capacity(48 * 1024);
+                let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                    &mut png_buf,
+                    image::codecs::png::CompressionType::Fast,
+                    image::codecs::png::FilterType::NoFilter,
+                );
+                if img.write_with_encoder(encoder).is_ok() {
+                    let _ = req.tx.send(Some(Bytes::from(png_buf)));
+                } else {
                     let _ = req.tx.send(None);
                 }
+                render_count += 1;
+                if render_count.is_multiple_of(50) || render_ms > 2000 {
+                    eprintln!("[ORM worker {id}] Rendered {render_count} tiles (last: {render_ms}ms)");
+                }
+            }
+            Err(e) => {
+                eprintln!("[ORM worker {id}] Failed z={rz} x={rx_coord} y={ry}: {e} ({}ms)", start.elapsed().as_millis());
+                let _ = req.tx.send(None);
+                renderer = None;
+                current_style = None;
             }
         }
+    }
+}
+
+async fn serve_tilejson(
+    State(_state): State<Arc<OrmTileState>>,
+) -> impl IntoResponse {
+    serve_tilejson_for("standard")
+}
+
+async fn serve_style_tilejson(
+    Path(style): Path<String>,
+    State(_state): State<Arc<OrmTileState>>,
+) -> impl IntoResponse {
+    serve_tilejson_for(&style)
+}
+
+fn serve_tilejson_for(style: &str) -> (StatusCode, [(&'static str, &'static str); 1], String) {
+    let json = serde_json::json!({
+        "tilejson": "3.0.0",
+        "name": format!("OpenRailwayMap {style}"),
+        "tiles": [format!("http://127.0.0.1:{PREFERRED_PORT}/{style}/{{z}}/{{y}}/{{x}}.png")],
+        "minzoom": 0,
+        "maxzoom": 19,
+        "format": "png",
+        "bounds": [-180.0, -85.051_129, 180.0, 85.051_129],
     });
+    (StatusCode::OK, [("content-type", "application/json")], serde_json::to_string(&json).unwrap_or_default())
 }
 
 async fn serve_tile(
-    Path((style, z, x, y)): Path<(String, u8, u32, u32)>,
-    State(state): State<std::sync::Arc<OrmTileState>>,
-) -> impl IntoResponse {
-    let cache_key = (style.clone(), z, x, y);
+    Path((style, z, y, x_png)): Path<(String, u8, u32, String)>,
+    State(state): State<Arc<OrmTileState>>,
+) -> (StatusCode, [(&'static str, &'static str); 1], Bytes) {
+    let style: Arc<str> = Arc::from(style.as_str());
+    let x: u32 = x_png.strip_suffix(".png").unwrap_or(&x_png)
+        .parse().unwrap_or(0);
+
     {
         let mut cache = state.cache.lock().unpoison();
-        if let Some(png) = cache.get(&cache_key) {
+        if let Some(png) = cache.get(&(Arc::clone(&style), z, x, y)) {
             return (StatusCode::OK, [("content-type", "image/png")], png.clone());
         }
     }
 
     let (tx, rx) = oneshot::channel();
-    if state.render_tx.send(RenderRequest { style: style.clone(), z, x, y, tx }).await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, [("content-type", "text/plain")], b"render queue full".to_vec());
+    if state.dispatch_tx.send(RenderRequest {
+        style: Arc::clone(&style), z, x, y, tx
+    }).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, [("content-type", "text/plain")], Bytes::from_static(b"workers unavailable"));
     }
 
-    // Wait for result
     match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
         Ok(Ok(Some(png))) => {
-            state.cache.lock().unpoison().put(cache_key, png.clone());
+            state.cache.lock().unpoison().put((style, z, x, y), png.clone());
             (StatusCode::OK, [("content-type", "image/png")], png)
         }
         Ok(Ok(None)) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, [("content-type", "text/plain")], b"render failed".to_vec())
+            (StatusCode::INTERNAL_SERVER_ERROR, [("content-type", "text/plain")], Bytes::from_static(b"render failed"))
         }
         _ => {
-            (StatusCode::GATEWAY_TIMEOUT, [("content-type", "text/plain")], b"render timeout".to_vec())
+            eprintln!("[ORM http] TIMEOUT z={z} x={x} y={y}");
+            (StatusCode::GATEWAY_TIMEOUT, [("content-type", "text/plain")], Bytes::from_static(b"render timeout"))
         }
     }
 }

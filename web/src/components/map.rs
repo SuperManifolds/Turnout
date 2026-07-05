@@ -168,13 +168,21 @@ pub fn Map(
         map_init(element);
 
         let on_load = Closure::new(move || {
-            map_set_orm_style(ORM_DEFAULT_STYLE);
             map_add_preview_layer();
             map_add_geojson_source("bbox");
             map_add_fill_layer("bbox-fill", "bbox", BBOX_COLOR, 0.15);
             map_add_line_layer("bbox-outline", "bbox", BBOX_COLOR, 2.0);
             map_add_geojson_source("handles");
             map_add_circle_layer("handles-layer", "handles", HANDLE_COLOR, HANDLE_RADIUS);
+            // Defer ORM style load slightly — MapLibre needs to complete its
+            // first render cycle before raster tile sources trigger fetching
+            let cb = Closure::once(move || { map_set_orm_style(ORM_DEFAULT_STYLE); });
+            if let Some(win) = web_sys::window() {
+                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(), 500,
+                );
+            }
+            cb.forget();
         });
         map_on_load(&on_load);
         on_load.forget();

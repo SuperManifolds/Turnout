@@ -8,10 +8,12 @@ extern "C" {
 
 const ORM_STYLES: &[(&str, &str)] = &[
     ("standard", "Infrastructure"),
-    ("maxspeed", "Speed"),
+    ("speed", "Speed"),
     ("signals", "Signals"),
     ("electrification", "Electrification"),
-    ("gauge", "Gauge"),
+    ("track", "Track"),
+    ("operator", "Operator"),
+    ("route", "Route"),
 ];
 
 #[component]

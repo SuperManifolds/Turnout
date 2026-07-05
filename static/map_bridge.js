@@ -107,11 +107,8 @@ window.map_set_theme = function(theme) {
 };
 
 function update_orm_paint() {
-    // Vector ORM layers handle their own styling via the style JSON
-    // Re-apply the current ORM style on theme change
-    if (_orm_current_style) {
-        map_set_orm_style(_orm_current_style);
-    }
+    // Raster ORM layer doesn't need theme-specific adjustments
+    // since maplibre-native renders with the light theme style
 }
 
 window.map_add_raster_layer = function(id, source, opacity) {
@@ -132,65 +129,35 @@ var _orm_current_style = null;
 window.map_set_orm_style = function(style_name) {
     if (!_map) return;
 
-    // Remove previous ORM vector layers and sources
-    _orm_layer_ids.forEach(function(id) {
-        if (_map.getLayer(id)) _map.removeLayer(id);
-    });
-    _orm_source_ids.forEach(function(id) {
-        if (_map.getSource(id)) _map.removeSource(id);
-    });
-    // Also remove legacy raster ORM layer/source
+    // Remove previous ORM layer/source
     if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
     if (_map.getSource("orm")) _map.removeSource("orm");
-
-    _orm_layer_ids = [];
-    _orm_source_ids = [];
     _orm_current_style = style_name;
 
-    fetch("https://openrailwaymap.app/style/" + style_name + ".json")
-        .then(function(r) { return r.json(); })
-        .then(function(ormStyle) {
-            if (_orm_current_style !== style_name) return;
-
-            var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
-            var baseUrl = "https://openrailwaymap.app";
-
-            // Add sources
-            for (var srcName in ormStyle.sources) {
-                var src = ormStyle.sources[srcName];
-                if (src.type === "geojson") continue;
-                var ormSrcId = "orm-" + srcName;
-
-                var srcDef = JSON.parse(JSON.stringify(src));
-                if (srcDef.url && srcDef.url.startsWith("/")) srcDef.url = baseUrl + srcDef.url;
-                if (srcDef.tiles) {
-                    srcDef.tiles = srcDef.tiles.map(function(t) {
-                        return t.startsWith("/") ? baseUrl + t : t;
-                    });
-                }
-                try {
-                    _map.addSource(ormSrcId, srcDef);
-                    _orm_source_ids.push(ormSrcId);
-                } catch (e) { /* skip unsupported sources */ }
-            }
-
-            // Add layers
-            for (var i = 0; i < ormStyle.layers.length; i++) {
-                var layer = ormStyle.layers[i];
-                if (!layer.source) continue;
-                var layerDef = JSON.parse(JSON.stringify(layer));
-                layerDef.id = "orm-" + layer.id;
-                layerDef.source = "orm-" + layer.source;
-                if (!_map.getSource(layerDef.source)) continue;
-                try {
-                    _map.addLayer(layerDef, beforeLayer);
-                    _orm_layer_ids.push(layerDef.id);
-                } catch (e) { /* skip unsupported layers */ }
-            }
-        })
-        .catch(function(e) {
-            console.error("[ORM] Failed to load style:", e);
+    try {
+        _map.addSource("orm", {
+            type: "raster",
+            tiles: ["http://127.0.0.1:17854/" + style_name + "/{z}/{y}/{x}.png"],
+            tileSize: 512,
+            attribution: "&copy; OpenRailwayMap",
         });
+        var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
+        _map.addLayer({
+            id: "orm-layer",
+            type: "raster",
+            source: "orm",
+            paint: { "raster-opacity": 0.85 },
+        }, beforeLayer);
+        // Force tile loading by triggering a repaint
+        _map.triggerRepaint();
+    } catch (e) {
+        console.error("[ORM] Failed to set style:", e);
+        // Retry after a short delay
+        setTimeout(function() {
+            console.log("[ORM] Retrying style '" + style_name + "'...");
+            map_set_orm_style(style_name);
+        }, 1000);
+    }
 };
 
 window.map_add_geojson_source = function(id) {

@@ -165,6 +165,16 @@ for layer in style["layers"]:
         layer["filter"] = resolve_expr(layer["filter"])
     resolved_layers.append(layer)
 
+# Resolve text-font expressions to static fallback values.
+# maplibre-native interprets expression operator names (e.g. "case") as font
+# names, causing 404 font requests that hang the renderer on macOS.
+for layer in resolved_layers:
+    tf = layer.get("layout", {}).get("text-font")
+    if isinstance(tf, list) and len(tf) > 0 and isinstance(tf[0], str) and tf[0] in ("case", "match", "coalesce", "step"):
+        layer["layout"]["text-font"] = tf[-1] if isinstance(tf[-1], list) and tf[-1][0] == "literal" else ["OpenRailwayMap-Bold"]
+        if isinstance(layer["layout"]["text-font"], list) and layer["layout"]["text-font"][0] == "literal":
+            layer["layout"]["text-font"] = layer["layout"]["text-font"][1]
+
 # Remove layers that resolve to display:none
 final_layers = []
 for layer in resolved_layers:
