@@ -21,6 +21,41 @@ pub struct DownloadProgress {
     pub bytes: AtomicU64,
     pub cancelled: AtomicBool,
     pub throttled: AtomicBool,
+    pub paused: AtomicBool,
+}
+
+impl DownloadProgress {
+    /// Constructs a fresh progress tracker with all flags cleared.
+    pub fn new() -> Self {
+        Self {
+            total: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            cancelled: AtomicBool::new(false),
+            throttled: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+        }
+    }
+
+    /// Blocks while the download is paused, returning `false` if it was cancelled
+    /// (so the caller should stop). Polls rather than parks so a resume takes effect
+    /// promptly without a dedicated notifier.
+    pub async fn wait_while_paused(&self) -> bool {
+        while self.paused.load(Ordering::Relaxed) {
+            if self.cancelled.load(Ordering::Relaxed) {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        !self.cancelled.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for DownloadProgress {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -203,7 +238,7 @@ pub async fn download_tiles(
     let mut throttle_delay = std::time::Duration::ZERO;
 
     for (chunk_idx, chunk) in tiles.chunks(CONCURRENT_REQUESTS).enumerate() {
-        if progress.cancelled.load(Ordering::Relaxed) {
+        if !progress.wait_while_paused().await {
             return Err("Download cancelled".into());
         }
 
@@ -313,14 +348,7 @@ pub async fn start_tile_download(
         .ok_or("No save location selected")?
         .to_string();
 
-    let progress = Arc::new(DownloadProgress {
-        total: AtomicU64::new(0),
-        completed: AtomicU64::new(0),
-        failed: AtomicU64::new(0),
-        bytes: AtomicU64::new(0),
-        cancelled: AtomicBool::new(false),
-        throttled: AtomicBool::new(false),
-    });
+    let progress = Arc::new(DownloadProgress::new());
 
     {
         let state = app.state::<DownloadState>();
@@ -347,6 +375,17 @@ pub fn cancel_tile_download(app: tauri::AppHandle) {
     let state = app.state::<DownloadState>();
     if let Some(progress) = state.active.lock().unpoison().as_ref() {
         progress.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Pauses (`true`) or resumes (`false`) the active download. The download loop
+/// stops issuing requests while paused and continues in place on resume.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn set_tile_download_paused(app: tauri::AppHandle, paused: bool) {
+    let state = app.state::<DownloadState>();
+    if let Some(progress) = state.active.lock().unpoison().as_ref() {
+        progress.paused.store(paused, Ordering::Relaxed);
     }
 }
 

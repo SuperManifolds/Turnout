@@ -662,6 +662,12 @@ pub async fn cancel_tile_download() -> Result<(), String> {
     Ok(())
 }
 
+pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "paused", &JsValue::from_bool(paused))?;
+    invoke("set_tile_download_paused", &args).await.map(|_| ())
+}
+
 pub async fn download_orm_tiles(
     south: f64, west: f64, north: f64, east: f64,
     z_min: u8, z_max: u8,
@@ -675,4 +681,13 @@ pub async fn download_orm_tiles(
     js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
     let result = invoke("download_orm_tiles", &args).await?;
     result.as_string().ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    match dir {
+        Some(d) => js_set(&args, "dir", &d.into())?,
+        None => js_set(&args, "dir", &JsValue::NULL)?,
+    }
+    invoke("set_orm_offline", &args).await.map(|_| ())
 }

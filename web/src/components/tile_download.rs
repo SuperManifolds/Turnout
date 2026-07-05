@@ -20,6 +20,22 @@ fn format_duration(secs: f64) -> String {
 }
 const AVG_TILE_KB: f64 = 5.0;
 const TILES_PER_SEC: f64 = 120.0;
+/// Vector download is throttled (6 concurrent, 200 ms batch floor) and each MVT
+/// tile carries all ORM layers, so both size and rate differ from raster.
+const ORM_VECTOR_URL: &str = "orm-vector";
+/// `OpenRailwayMap`'s sub-z7 line endpoints hang server-side, so vector offline
+/// downloads start at z7 (kept in sync with `ORM_MIN_ZOOM` in the backend).
+const ORM_VECTOR_MIN_ZOOM: u8 = 7;
+const VECTOR_AVG_TILE_KB: f64 = 14.0;
+/// One composite request per tile over an HTTP/1.1 pool, streamed 64 concurrent.
+/// Throughput is latency-bound and scales with concurrency; measured 250-550
+/// tiles/s on a low-latency link, held conservative here for higher-latency ones.
+const VECTOR_TILES_PER_SEC: f64 = 150.0;
+/// Sprites (8) + glyph ranges (4 fonts × 256) fetched once per download.
+const VECTOR_RESOURCE_REQUESTS: f64 = 1032.0;
+/// Approximate on-disk payload of the glyph + sprite resources (~3.4 MB × 4 fonts
+/// of full-coverage glyph PBFs, plus sprite sheets).
+const VECTOR_RESOURCE_MB: f64 = 14.0;
 
 #[derive(Clone)]
 struct TileSource {
@@ -40,6 +56,7 @@ pub fn TileDownload(
     let (z_max, set_z_max) = create_signal(DEFAULT_Z_MAX);
     let (tile_count, set_tile_count) = create_signal(0u64);
     let (downloading, set_downloading) = create_signal(false);
+    let (paused, set_paused) = create_signal(false);
     let (progress_completed, set_progress_completed) = create_signal(0u64);
     let (progress_total, set_progress_total) = create_signal(0u64);
     let (progress_failed, set_progress_failed) = create_signal(0u64);
@@ -47,6 +64,8 @@ pub fn TileDownload(
     let (error, set_error) = create_signal::<Option<String>>(None);
     let (done_message, set_done_message) = create_signal::<Option<String>>(None);
     let (download_start_ms, set_download_start_ms) = create_signal(0.0f64);
+    let (offline_active, set_offline_active) = create_signal(false);
+    let (offline_path, set_offline_path) = create_signal::<Option<String>>(None);
 
     spawn_local(async move {
         {
@@ -77,12 +96,20 @@ pub fn TileDownload(
         }
     };
 
+    let effective_z_min = move || {
+        if resolved_url() == ORM_VECTOR_URL {
+            z_min.get().max(ORM_VECTOR_MIN_ZOOM)
+        } else {
+            z_min.get()
+        }
+    };
+
     create_effect(move |_| {
         let Some((s, w, n, e)) = bbox.get() else {
             set_tile_count.set(0);
             return;
         };
-        let z_lo = z_min.get();
+        let z_lo = effective_z_min();
         let z_hi = z_max.get();
         spawn_local(async move {
             match crate::tauri::count_tiles(s, w, n, e, z_lo, z_hi).await {
@@ -145,6 +172,7 @@ pub fn TileDownload(
         set_error.set(None);
         set_done_message.set(None);
         set_downloading.set(true);
+        set_paused.set(false);
         set_progress_completed.set(0);
         set_progress_total.set(0);
         set_progress_failed.set(0);
@@ -152,13 +180,20 @@ pub fn TileDownload(
 
         let Some((s, w, n, e)) = bbox.get_untracked() else { return };
         let name_val = name.get_untracked();
-        let z_lo = z_min.get_untracked();
+        let z_lo = effective_z_min();
         let z_hi = z_max.get_untracked();
 
         spawn_local(async move {
             if url_val == "orm-vector" {
                 match crate::tauri::download_orm_tiles(s, w, n, e, z_lo, z_hi).await {
-                    Ok(path) => set_done_message.set(Some(format!("ORM offline cache saved to {path}"))),
+                    Ok(path) => match crate::tauri::set_orm_offline(Some(&path)).await {
+                        Ok(()) => {
+                            set_offline_active.set(true);
+                            set_offline_path.set(Some(path.clone()));
+                            set_done_message.set(Some(format!("ORM offline mode active: {path}")));
+                        }
+                        Err(e) => set_error.set(Some(format!("Downloaded but failed to activate offline mode: {e}"))),
+                    },
                     Err(e) => set_error.set(Some(e)),
                 }
             } else {
@@ -177,13 +212,33 @@ pub fn TileDownload(
     };
 
     let on_cancel = move |_| {
+        set_paused.set(false);
         spawn_local(async move {
             let _ = crate::tauri::cancel_tile_download().await;
         });
     };
 
+    let on_toggle_pause = move |_| {
+        let next = !paused.get_untracked();
+        set_paused.set(next);
+        spawn_local(async move {
+            let _ = crate::tauri::set_tile_download_paused(next).await;
+        });
+    };
+
+    let on_disable_offline = move |_| {
+        spawn_local(async move {
+            if crate::tauri::set_orm_offline(None).await.is_ok() {
+                set_offline_active.set(false);
+                set_offline_path.set(None);
+                set_done_message.set(Some("ORM offline mode disabled".into()));
+            }
+        });
+    };
+
     let format_summary = move || {
         let count = tile_count.get();
+        let is_vector = resolved_url() == ORM_VECTOR_URL;
         let tiles = if count > 1_000_000 {
             format!("{:.1}M tiles", count as f64 / 1_000_000.0)
         } else if count > 1_000 {
@@ -192,14 +247,19 @@ pub fn TileDownload(
             format!("{count} tiles")
         };
 
-        let size_mb = count as f64 * AVG_TILE_KB / 1024.0;
+        let (avg_kb, per_sec, extra_mb, extra_reqs) = if is_vector {
+            (VECTOR_AVG_TILE_KB, VECTOR_TILES_PER_SEC, VECTOR_RESOURCE_MB, VECTOR_RESOURCE_REQUESTS)
+        } else {
+            (AVG_TILE_KB, TILES_PER_SEC, 0.0, 0.0)
+        };
+
+        let size_mb = count as f64 * avg_kb / 1024.0 + extra_mb;
         let size = if size_mb > 1024.0 {
-            let gb = size_mb / 1024.0;
-            format!("{gb:.1} GB")
+            format!("{:.1} GB", size_mb / 1024.0)
         } else {
             format!("{size_mb:.0} MB")
         };
-        let time = format_duration(count as f64 / TILES_PER_SEC);
+        let time = format_duration((count as f64 + extra_reqs) / per_sec);
         format!("{tiles} · ~{size} · ~{time}")
     };
 
@@ -256,6 +316,9 @@ pub fn TileDownload(
                         let srcs = sources.get_untracked();
                         if let Some(src) = srcs.get(idx) {
                             set_name.set(src.label.replace(" / ", "_").replace(' ', "_").to_lowercase());
+                            if src.url == ORM_VECTOR_URL && z_min.get_untracked() < ORM_VECTOR_MIN_ZOOM {
+                                set_z_min.set(ORM_VECTOR_MIN_ZOOM);
+                            }
                         }
                     }
                 }>
@@ -320,14 +383,30 @@ pub fn TileDownload(
             {move || error.get().map(|e| view! { <p class="error-text">{e}</p> })}
             {move || done_message.get().map(|m| view! { <p class="success-text">{m}</p> })}
 
+            {move || offline_active.get().then(|| view! {
+                <section class="offline-active">
+                    <p>
+                        <i class="fa-solid fa-circle-check"></i>
+                        " Offline ORM rendering active"
+                        {move || offline_path.get().map(|p| view! { <small>{p}</small> })}
+                    </p>
+                    <button on:click=on_disable_offline>"Disable Offline Mode"</button>
+                </section>
+            })}
+
             {move || if downloading.get() {
                 Some(view! {
                     <div class="download-progress">
                         <div class="progress-bar">
                             <div class="progress-fill" style=progress_pct></div>
                         </div>
-                        <p>{progress_text}</p>
-                        <button on:click=on_cancel>"Cancel"</button>
+                        <p>{move || if paused.get() { "Paused".to_string() } else { progress_text() }}</p>
+                        <div class="progress-actions">
+                            <button on:click=on_toggle_pause>
+                                {move || if paused.get() { "Resume" } else { "Pause" }}
+                            </button>
+                            <button on:click=on_cancel>"Cancel"</button>
+                        </div>
                     </div>
                 })
             } else {

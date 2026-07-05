@@ -158,7 +158,7 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
             match orm_tiles::start_blocking() {
-                Ok(h) => std::mem::forget(h),
+                Ok(h) => { app.manage(h); }
                 Err(e) => eprintln!("ORM tiles failed: {e}"),
             }
             Ok(())
@@ -214,7 +214,9 @@ fn main() {
             mbtiles::count_tiles,
             mbtiles::start_tile_download,
             mbtiles::cancel_tile_download,
+            mbtiles::set_tile_download_paused,
             orm_offline::download_orm_tiles,
+            orm_tiles::set_orm_offline,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

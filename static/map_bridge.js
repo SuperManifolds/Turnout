@@ -149,6 +149,9 @@ window.map_set_orm_style = function(style_name) {
             source: "orm",
             paint: { "raster-opacity": 0.85 },
         }, beforeLayer);
+        // Register with preserve_custom_layers so theme changes keep the overlay
+        _orm_source_ids = ["orm"];
+        _orm_layer_ids = ["orm-layer"];
         // Force tile loading by triggering a repaint
         _map.triggerRepaint();
     } catch (e) {
