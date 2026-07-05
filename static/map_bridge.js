@@ -139,6 +139,7 @@ window.map_set_orm_style = function(style_name) {
             type: "raster",
             tiles: ["http://127.0.0.1:17854/" + style_name + "/{z}/{y}/{x}.png"],
             tileSize: 512,
+            maxzoom: 19,
             attribution: "&copy; OpenRailwayMap",
         });
         var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;

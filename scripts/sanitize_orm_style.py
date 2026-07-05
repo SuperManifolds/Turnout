@@ -12,6 +12,7 @@ Resolves:
 import json
 import sys
 import copy
+import urllib.request
 
 INPUT = "/tmp/orm_standard.json"
 OUTPUT = "/tmp/orm_standard_sanitized.json"
@@ -30,6 +31,18 @@ GLOBAL_STATE_DEFAULTS = {
 }
 
 BASE_URL = "https://openrailwaymap.app"
+
+_tilejson_cache: dict = {}
+
+
+def fetch_tilejson(url: str) -> dict:
+    """Fetch TileJSON from url, with in-process caching."""
+    if url not in _tilejson_cache:
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/8.7.1"})
+        with urllib.request.urlopen(req) as resp:
+            _tilejson_cache[url] = json.loads(resp.read())
+    return _tilejson_cache[url]
+
 
 def resolve_expr(expr):
     """Recursively resolve unsupported expressions to static values."""
@@ -133,8 +146,18 @@ with open(INPUT) as f:
 
 # Resolve source URLs
 for name, src in style.get("sources", {}).items():
-    if "url" in src and src["url"].startswith("/"):
-        src["url"] = BASE_URL + src["url"]
+    url = src.get("url", "")
+    if url.startswith(BASE_URL + "/"):
+        # Inline TileJSON discovery: replace url with tiles/minzoom/maxzoom
+        tj = fetch_tilejson(url)
+        del src["url"]
+        src["tiles"] = [(BASE_URL + t if t.startswith("/") else t) for t in tj["tiles"]]
+        if "minzoom" in tj:
+            src["minzoom"] = tj["minzoom"]
+        if "maxzoom" in tj:
+            src["maxzoom"] = tj["maxzoom"]
+    elif url.startswith("/"):
+        src["url"] = BASE_URL + url
     if "tiles" in src:
         src["tiles"] = [
             (BASE_URL + t if t.startswith("/") else t) for t in src["tiles"]
