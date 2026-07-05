@@ -20,9 +20,21 @@ use tower_http::cors::CorsLayer;
 use crate::tile_server::UnpoisonExt;
 
 const PREFERRED_PORT: u16 = 17854;
-const TILE_CACHE_CAPACITY: usize = 2048;
-const WORKER_COUNT: usize = 4;
+const TILE_CACHE_CAPACITY: usize = 4096;
+const WORKER_COUNT: usize = 6;
 const ENCODER_COUNT: usize = 2;
+/// HTTP request-handling threads. Kept modest — handlers are lightweight (lock,
+/// enqueue, await); rendering happens on the dedicated worker threads.
+const HTTP_WORKER_THREADS: usize = 4;
+/// Max pending real (client-driven) render requests. On overflow the oldest is
+/// dropped: with LIFO dispatch the front is the stalest, i.e. tiles panned away
+/// from, so this keeps the queue focused on the current viewport.
+const MAIN_QUEUE_CAP: usize = 64;
+/// Max pending speculative neighbour renders. Drained only when the main queue is
+/// empty (a pan pause), so they never delay a real request.
+const PREFETCH_QUEUE_CAP: usize = 128;
+/// mbgl ambient cache size for fetched MVT tiles (online revisits avoid re-fetch).
+const MBGL_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const TILE_SIZE: u32 = 512;
 const MAX_NATIVE_ZOOM: u8 = 19;
 const RENDER_TIMEOUT_SECS: u64 = 30;
@@ -98,10 +110,18 @@ fn extract_panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
     "unknown panic".to_string()
 }
 
-/// Coalesces in-flight render requests. Workers block on `cv`/`queue`; the HTTP
+/// Two LIFO queues drained newest-first. `main` holds client-driven requests;
+/// `prefetch` holds speculative neighbour tiles and is only drained when `main` is
+/// empty. Both are bounded (see the `*_QUEUE_CAP` constants).
+struct Queues {
+    main: VecDeque<Key>,
+    prefetch: VecDeque<Key>,
+}
+
+/// Coalesces in-flight render requests. Workers block on `cv`/`queues`; the HTTP
 /// handler pushes keys to the back and workers pop from the back (LIFO).
 struct Dispatch {
-    queue: Mutex<VecDeque<Key>>,
+    queues: Mutex<Queues>,
     waiters: Mutex<HashMap<Key, Vec<oneshot::Sender<Option<Bytes>>>>>,
     cv: Condvar,
 }
@@ -150,7 +170,7 @@ impl OrmHandle {
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
     let dispatch = Arc::new(Dispatch {
-        queue: Mutex::new(VecDeque::new()),
+        queues: Mutex::new(Queues { main: VecDeque::new(), prefetch: VecDeque::new() }),
         waiters: Mutex::new(HashMap::new()),
         cv: Condvar::new(),
     });
@@ -230,11 +250,12 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         let cache_path = shared_cache_path.clone();
         let encode_tx = encode_tx.clone();
         let shared = Arc::clone(&shared);
+        let cache = Arc::clone(&cache);
         std::thread::Builder::new()
             .name(format!("orm-render-{i}"))
             .spawn(move || loop {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    render_worker_inner(i, &dispatch, &cache_path, &encode_tx, &shared);
+                    render_worker_inner(i, &dispatch, &cache, &cache_path, &encode_tx, &shared);
                 }));
                 match result {
                     Ok(()) => {
@@ -262,7 +283,8 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
     std::thread::Builder::new()
         .name("orm-http".into())
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(HTTP_WORKER_THREADS)
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
@@ -310,7 +332,9 @@ fn build_renderer(
     use std::num::NonZeroU32;
 
     let tile_size = NonZeroU32::new(TILE_SIZE).expect("nonzero");
-    let resource_opts = ResourceOptions::default().with_cache_path(cache_path.to_path_buf());
+    let resource_opts = ResourceOptions::default()
+        .with_cache_path(cache_path.to_path_buf())
+        .with_maximum_cache_size(MBGL_CACHE_BYTES);
     let mut r = ImageRendererBuilder::new()
         .with_size(tile_size, tile_size)
         .with_resource_options(resource_opts)
@@ -350,13 +374,52 @@ fn offline_style_source(dir: &std::path::Path, style: &str, bound_port: u16) -> 
     Ok(raw.replace(OFFLINE_TILES_PLACEHOLDER, &base))
 }
 
-fn pop_key_blocking(dispatch: &Dispatch) -> Key {
-    let mut queue = dispatch.queue.lock().unpoison();
+/// Blocks until a key is available, returning `(key, is_prefetch)`. Real requests
+/// (`main`, newest-first) take priority over speculative prefetches.
+fn pop_key_blocking(dispatch: &Dispatch) -> (Key, bool) {
+    let mut q = dispatch.queues.lock().unpoison();
     loop {
-        if let Some(k) = queue.pop_back() {
-            return k;
+        if let Some(k) = q.main.pop_back() {
+            return (k, false);
         }
-        queue = dispatch.cv.wait(queue).unpoison();
+        if let Some(k) = q.prefetch.pop_back() {
+            return (k, true);
+        }
+        q = dispatch.cv.wait(q).unpoison();
+    }
+}
+
+/// Queues the 8 tiles surrounding `key` for speculative rendering, skipping any
+/// already cached or already awaited. Prefetch entries carry no waiters; they only
+/// warm the cache so a subsequent pan resolves from it. Bounded to `PREFETCH_QUEUE_CAP`.
+fn enqueue_prefetch_ring(
+    q: &mut Queues,
+    waiters: &HashMap<Key, Vec<oneshot::Sender<Option<Bytes>>>>,
+    cache: &Mutex<TileCache>,
+    key: &Key,
+) {
+    let (style, z, x, y) = (&key.0, key.1, key.2, key.3);
+    let max = i64::from(1u32 << z);
+    let cache_guard = cache.lock().unpoison();
+    for dy in -1i64..=1 {
+        for dx in -1i64..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let (nx, ny) = (i64::from(x) + dx, i64::from(y) + dy);
+            if nx < 0 || ny < 0 || nx >= max || ny >= max {
+                continue;
+            }
+            let nkey: Key = (Arc::clone(style), z, nx as u32, ny as u32);
+            if cache_guard.contains(&nkey) || waiters.contains_key(&nkey) {
+                continue;
+            }
+            q.prefetch.push_back(nkey);
+        }
+    }
+    drop(cache_guard);
+    while q.prefetch.len() > PREFETCH_QUEUE_CAP {
+        q.prefetch.pop_front();
     }
 }
 
@@ -372,6 +435,7 @@ fn fail_waiters(dispatch: &Dispatch, key: &Key) {
 fn render_worker_inner(
     id: usize,
     dispatch: &Dispatch,
+    cache: &Arc<Mutex<TileCache>>,
     cache_path: &std::path::Path,
     encode_tx: &std::sync::mpsc::Sender<(Key, RawImage, u64)>,
     shared: &OrmShared,
@@ -389,7 +453,7 @@ fn render_worker_inner(
     eprintln!("[ORM worker {id}] Pre-warmed 'standard' style");
 
     loop {
-        let key = pop_key_blocking(dispatch);
+        let (key, is_prefetch) = pop_key_blocking(dispatch);
         let style = Arc::clone(&key.0);
         let (z, x, y) = (key.1, key.2, key.3);
 
@@ -401,8 +465,21 @@ fn render_worker_inner(
             current_gen = generation;
         }
 
-        // Skip the render if every waiting client has already disconnected.
-        {
+        // Already rendered (a duplicate queue entry, or produced by another worker /
+        // an earlier prefetch): serve any waiters from cache and move on.
+        if let Some(png) = cache.lock().unpoison().get(&key).cloned() {
+            let senders = dispatch.waiters.lock().unpoison().remove(&key);
+            if let Some(senders) = senders {
+                for tx in senders {
+                    let _ = tx.send(Some(png.clone()));
+                }
+            }
+            continue;
+        }
+
+        // A real request whose clients have all disconnected is skipped. Prefetch
+        // keys have no waiters and are rendered speculatively.
+        if !is_prefetch {
             let mut waiters = dispatch.waiters.lock().unpoison();
             match waiters.get(&key) {
                 None => continue,
@@ -563,7 +640,7 @@ async fn serve_tile(
 
     let (tx, rx) = oneshot::channel();
     {
-        // Lock order: waiters → cache (consistent with encoder completion).
+        // Lock order: waiters → queues → cache (consistent with encoder completion).
         let mut waiters = state.dispatch.waiters.lock().unpoison();
         // Double-check under the waiters lock to close the race with a just-finished encoder.
         if let Some(png) = state.cache.lock().unpoison().get(&key).cloned() {
@@ -573,8 +650,25 @@ async fn serve_tile(
             senders.push(tx);
         } else {
             waiters.insert(key.clone(), vec![tx]);
-            state.dispatch.queue.lock().unpoison().push_back(key.clone());
-            state.dispatch.cv.notify_one();
+            let mut q = state.dispatch.queues.lock().unpoison();
+            q.main.push_back(key.clone());
+            // Bound the main queue: drop the stalest (front) request and resolve its
+            // waiters so the client retries rather than waiting out the timeout.
+            if q.main.len() > MAIN_QUEUE_CAP
+                && let Some(stale) = q.main.pop_front()
+                && let Some(senders) = waiters.remove(&stale)
+            {
+                for s in senders {
+                    let _ = s.send(None);
+                }
+            }
+            // Only prefetch once the workers have caught up, so it never competes
+            // with real requests during an active pan.
+            if q.main.len() <= WORKER_COUNT {
+                enqueue_prefetch_ring(&mut q, &waiters, &state.cache, &key);
+            }
+            drop(q);
+            state.dispatch.cv.notify_all();
         }
     }
 
