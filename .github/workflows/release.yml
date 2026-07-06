@@ -82,7 +82,14 @@ jobs:
         if: startsWith(matrix.platform, 'linux')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev xdg-utils
+          # Second line: maplibre-native core build deps (compiled from source by maplibre_native's build.rs)
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev xdg-utils \
+            cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev
+
+      # maplibre-native's darwin cmake path builds with the Ninja generator.
+      - name: Install build tools (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: which ninja || brew install ninja
 
       - name: Install Trunk
         run: which trunk || cargo install trunk --locked

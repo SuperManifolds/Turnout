@@ -24,7 +24,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+          # Second line: maplibre-native core build deps (compiled from source by maplibre_native's build.rs)
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -53,7 +55,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+          # Second line: maplibre-native core build deps (compiled from source by maplibre_native's build.rs)
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev
 
       - name: Cache Cargo
         uses: actions/cache@v4

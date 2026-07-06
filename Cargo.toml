@@ -2,6 +2,12 @@
 members = ["core", "cli", "web", "src-tauri"]
 resolver = "3"
 
+# Dependencies stay optimized in dev builds — the PNG encoder sits on the tile
+# hot path and is unusably slow at opt-level 0. Workspace crates keep the
+# default 0 for fast incremental compiles.
+[profile.dev.package."*"]
+opt-level = 2
+
 [workspace.lints.clippy]
 complexity = "warn"
 perf = "warn"
