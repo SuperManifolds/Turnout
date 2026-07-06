@@ -20,8 +20,9 @@ fn format_duration(secs: f64) -> String {
 }
 const AVG_TILE_KB: f64 = 5.0;
 const TILES_PER_SEC: f64 = 120.0;
-/// Vector download is throttled (6 concurrent, 200 ms batch floor) and each MVT
-/// tile carries all ORM layers, so both size and rate differ from raster.
+/// Vector download streams 64 concurrent HTTP/1.1 fetches with no pacing floor, and
+/// each MVT tile carries all in-range ORM layers, so both size and rate differ from
+/// raster.
 const ORM_VECTOR_URL: &str = "orm-vector";
 /// `OpenRailwayMap`'s sub-z7 line endpoints hang server-side, so vector offline
 /// downloads start at z7 (kept in sync with `ORM_MIN_ZOOM` in the backend).

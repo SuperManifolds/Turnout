@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use rusqlite::Connection;
@@ -64,17 +66,29 @@ const CONCURRENT_REQUESTS: usize = 64;
 /// only because it included the dead `*_railway_line_low` layers, which zoom-gating
 /// now excludes; the healthy z7+ layers compose fine in one request.
 const MAX_LAYERS_PER_REQUEST: usize = 32;
-/// Number of tiles processed per merge/insert/progress batch. Requests within a
-/// batch stream through a `CONCURRENT_REQUESTS`-wide window continuously; a larger
-/// batch keeps that window full across more tiles between the store/progress
-/// barriers (bounds in-flight memory and sets progress-update granularity). Kept
-/// well above `CONCURRENT_REQUESTS` so the window-drain at each batch tail is a
-/// small fraction of the batch.
-const TILE_BATCH_SIZE: usize = 512;
+/// Tiles the writer thread accumulates before committing a transaction. A commit
+/// also fires once `WRITER_COMMIT_INTERVAL_MS` elapses so a slow trickle still
+/// flushes promptly. Kept well above `CONCURRENT_REQUESTS` so a full window's worth
+/// of stores amortizes into one journal flush.
+const WRITER_COMMIT_TILES: usize = 512;
+const WRITER_COMMIT_INTERVAL_MS: u64 = 1_000;
+/// Bound on tiles queued to the writer thread, back-pressuring the fetch stream if
+/// sqlite falls behind so in-flight memory stays bounded without a batch barrier.
+const WRITER_QUEUE_CAP: usize = 2_048;
+/// Progress is emitted from the fetch loop on whichever of these comes first, so the
+/// UI advances smoothly instead of jumping once per transaction.
+const PROGRESS_EMIT_TILES: usize = 64;
+const PROGRESS_EMIT_INTERVAL_MS: u64 = 250;
 const MAX_RETRIES: u32 = 5;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
 const MAX_RETRY_DELAY_MS: u64 = 10_000;
 const HTTP_TIMEOUT_SECS: u64 = 15;
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+/// Shared 429 backoff bounds. A throttled response bumps a delay every request
+/// consults before sending; sustained success decays it back toward zero.
+const THROTTLE_MIN_MS: u64 = 2_000;
+const THROTTLE_MAX_MS: u64 = 30_000;
+const THROTTLE_FLOOR_MS: u64 = 100;
 
 /// Download ORM vector tiles + resources for offline use
 pub async fn download_orm_offline(
@@ -97,7 +111,8 @@ pub async fn download_orm_offline(
     // than HTTP/2 multiplexing over a single connection (measured ~1.5x faster, and
     // the gap widens with latency).
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .user_agent("Turnout/0.2.0 (+https://github.com/SuperManifolds/Turnout)")
         .http1_only()
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
@@ -106,9 +121,13 @@ pub async fn download_orm_offline(
 
     let z_min = z_min.max(ORM_MIN_ZOOM);
     let mut tiles: Vec<(u8, u32, u32)> = Vec::new();
+    // Per-zoom tile bbox `(z, x_min, x_max, y_min, y_max)`, retained so the resume
+    // scan can query only this job's tile range instead of the whole archive.
+    let mut zoom_ranges: Vec<(u8, u32, u32, u32, u32)> = Vec::new();
     for z in z_min..=z_max {
         let (x_min, y_min) = latlon_to_tile_xy(north, west, z);
         let (x_max, y_max) = latlon_to_tile_xy(south, east, z);
+        zoom_ranges.push((z, x_min, x_max, y_min, y_max));
         for x in x_min..=x_max {
             for y in y_min..=y_max {
                 tiles.push((z, x, y));
@@ -139,7 +158,13 @@ pub async fn download_orm_offline(
     // Resume support: drop tiles already stored (e.g. from an aborted run). They
     // still count toward `total`, so pre-credit them as completed to keep the bar
     // honest. `map.tile_row` is TMS, so compare against each tile's flipped row.
-    let existing = existing_tile_rows(&conn);
+    // The scan is scoped to this job's tile range and run off the async thread.
+    let (conn, existing) = tokio::task::spawn_blocking(move || {
+        let existing = existing_tile_rows(&conn, &zoom_ranges);
+        (conn, existing)
+    })
+    .await
+    .map_err(|e| format!("Resume scan failed: {e}"))?;
     if !existing.is_empty() {
         let before = tiles.len();
         tiles.retain(|&(z, x, y)| !existing.contains(&(z, x, (1u32 << z) - 1 - y)));
@@ -156,60 +181,160 @@ pub async fn download_orm_offline(
         .map(|z| (z, zoom_group_plan(z, z_max, &ranges)))
         .collect();
 
-    let conn = std::sync::Mutex::new(conn);
+    let throttle = Arc::new(Throttle::new());
 
-    for batch in tiles.chunks(TILE_BATCH_SIZE) {
-        if !progress.wait_while_paused().await {
-            return Err("Download cancelled".into());
+    // A dedicated writer thread owns the connection and groups incoming tiles into
+    // transactions, so sqlite commits overlap fetching instead of stalling the
+    // request window at a per-batch barrier.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<StoreItem>(WRITER_QUEUE_CAP);
+    let writer_progress = Arc::clone(&progress);
+    let writer = std::thread::spawn(move || run_writer(conn, &rx, &writer_progress));
+
+    // Tiles whose zoom has no applicable layers are never fetched; credit them so
+    // the bar reaches `total`.
+    for &(z, x, y) in &tiles {
+        if plans.get(&z).is_none_or(Vec::is_empty) {
+            let _ = tx.send(StoreItem { z, x, y, groups: Vec::new() });
         }
+    }
 
-        // One request unit per (tile, layer group). `results[ti][gi]` collects the
-        // fetch outcome so each tile's groups can be concatenated in order.
-        let mut units: Vec<(usize, usize, String)> = Vec::new();
-        let mut results: Vec<Vec<Option<FetchResult>>> = Vec::with_capacity(batch.len());
-        for (ti, &(z, x, y)) in batch.iter().enumerate() {
-            let groups = plans.get(&z).map(Vec::as_slice).unwrap_or_default();
-            results.push((0..groups.len()).map(|_| None).collect());
-            for (gi, group) in groups.iter().enumerate() {
-                units.push((ti, gi, format!("{ORM_BASE}/{group}/{z}/{x}/{y}")));
+    // One request unit per (tile, layer group). Results stream back out of order;
+    // multi-group tiles are held in `partial` until all their groups arrive, then
+    // handed to the writer. At z7+ every tile is a single group and skips buffering.
+    let units: Vec<(usize, usize, String)> = tiles
+        .iter()
+        .enumerate()
+        .flat_map(|(ti, &(z, x, y))| {
+            plans
+                .get(&z)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+                .map(move |(gi, group)| (ti, gi, format!("{ORM_BASE}/{group}/{z}/{x}/{y}")))
+        })
+        .collect();
+
+    // Keep `CONCURRENT_REQUESTS` fetches continuously in flight. The pause gate lives
+    // inside each request future, so a pause stops issuing new requests promptly while
+    // in-flight ones drain; a slow tile occupies one slot rather than stalling a batch.
+    let mut stream = futures::stream::iter(units)
+        .map(|(ti, gi, url)| {
+            let client = client.clone();
+            let throttle = Arc::clone(&throttle);
+            let progress = Arc::clone(&progress);
+            async move {
+                progress.wait_while_paused().await;
+                (ti, gi, fetch_with_retry(&client, &url, &throttle).await)
             }
-        }
+        })
+        .buffer_unordered(CONCURRENT_REQUESTS);
 
-        // Keep `CONCURRENT_REQUESTS` fetches continuously in flight across the whole
-        // batch. Unlike a per-chunk `join_all` barrier, a slow tile only occupies one
-        // slot instead of stalling the other 23 while they wait for the slowest.
-        let mut stream = futures::stream::iter(units)
-            .map(|(ti, gi, url)| {
-                let client = client.clone();
-                async move { (ti, gi, fetch_with_retry(&client, &url).await) }
-            })
-            .buffer_unordered(CONCURRENT_REQUESTS);
-        while let Some((ti, gi, result)) = stream.next().await {
-            results[ti][gi] = Some(result);
-            if progress.cancelled.load(Ordering::Relaxed) {
-                return Err("Download cancelled".into());
+    let mut partial: HashMap<usize, Vec<Option<FetchResult>>> = HashMap::new();
+    let mut since_emit = 0usize;
+    let mut last_emit = Instant::now();
+    let cancelled = loop {
+        let Some((ti, gi, result)) = stream.next().await else { break false };
+        if progress.cancelled.load(Ordering::Relaxed) {
+            break true;
+        }
+        let (z, x, y) = tiles[ti];
+        let group_count = plans.get(&z).map_or(0, Vec::len);
+        let done = if group_count <= 1 {
+            Some(vec![Some(result)])
+        } else {
+            let slot = partial.entry(ti).or_insert_with(|| (0..group_count).map(|_| None).collect());
+            slot[gi] = Some(result);
+            if slot.iter().all(Option::is_some) {
+                partial.remove(&ti)
+            } else {
+                None
             }
+        };
+        if let Some(groups) = done {
+            if tx.send(StoreItem { z, x, y, groups }).is_err() {
+                break true;
+            }
+            since_emit += 1;
         }
-        drop(stream);
-
+        if since_emit >= PROGRESS_EMIT_TILES
+            || last_emit.elapsed() >= Duration::from_millis(PROGRESS_EMIT_INTERVAL_MS)
         {
-            // One transaction per batch: a single journal flush instead of one per
-            // INSERT, which otherwise dominates on slow (`F_FULLFSYNC`) volumes.
-            let conn = conn.lock().unpoison();
-            let _ = conn.execute_batch("BEGIN");
-            for (ti, &(z, x, y)) in batch.iter().enumerate() {
-                store_tile(&conn, &progress, z, x, y, &results[ti]);
-            }
-            let _ = conn.execute_batch("COMMIT");
+            emit_progress(&app, &progress);
+            since_emit = 0;
+            last_emit = Instant::now();
         }
+    };
 
-        emit_progress(&app, &progress);
+    // Stop fetching, then close the channel so the writer flushes its open transaction.
+    drop(stream);
+    drop(tx);
+    let conn = writer.join().map_err(|_| "Tile writer thread panicked".to_string())?;
+    finalize_vector_mbtiles(&conn).map_err(|e| format!("Failed to finalize MBTiles: {e}"))?;
+    emit_progress(&app, &progress);
+
+    if cancelled {
+        return Err("Download cancelled".into());
     }
 
     // Phase 3: Generate self-contained offline styles pointing at local resources
     generate_offline_styles(&dir)?;
 
     Ok(dir)
+}
+
+/// A completed tile handed to the writer thread. `groups` are the per-layer-group
+/// fetch outcomes in request order; empty means the tile had no applicable layers.
+struct StoreItem {
+    z: u8,
+    x: u32,
+    y: u32,
+    groups: Vec<Option<FetchResult>>,
+}
+
+/// Owns the connection and drains stored tiles into transactions, committing every
+/// `WRITER_COMMIT_TILES` tiles or `WRITER_COMMIT_INTERVAL_MS`, whichever comes first,
+/// so a single journal flush amortizes many inserts. Returns the connection so the
+/// caller can finalize it.
+fn run_writer(
+    conn: Connection,
+    rx: &std::sync::mpsc::Receiver<StoreItem>,
+    progress: &DownloadProgress,
+) -> Connection {
+    let interval = Duration::from_millis(WRITER_COMMIT_INTERVAL_MS);
+    let mut in_txn = false;
+    let mut since_commit = 0usize;
+    let mut txn_start = Instant::now();
+    loop {
+        match rx.recv_timeout(interval) {
+            Ok(item) => {
+                if !in_txn {
+                    let _ = conn.execute_batch("BEGIN");
+                    in_txn = true;
+                    txn_start = Instant::now();
+                }
+                store_tile(&conn, progress, item.z, item.x, item.y, &item.groups);
+                since_commit += 1;
+                if since_commit >= WRITER_COMMIT_TILES || txn_start.elapsed() >= interval {
+                    let _ = conn.execute_batch("COMMIT");
+                    in_txn = false;
+                    since_commit = 0;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if in_txn {
+                    let _ = conn.execute_batch("COMMIT");
+                    in_txn = false;
+                    since_commit = 0;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if in_txn {
+        let _ = conn.execute_batch("COMMIT");
+    }
+    conn
 }
 
 const FONTS: &[&str] =
@@ -420,14 +545,16 @@ fn store_tile(
     if !blob.is_empty() {
         let tms_y = (1u32 << z) - 1 - y;
         let hash = tile_hash(&blob);
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO images (tile_id, tile_data) VALUES (?1, ?2)",
-            rusqlite::params![hash, blob],
-        );
-        let _ = conn.execute(
+        if let Ok(mut stmt) =
+            conn.prepare_cached("INSERT OR IGNORE INTO images (tile_id, tile_data) VALUES (?1, ?2)")
+        {
+            let _ = stmt.execute(rusqlite::params![hash, blob]);
+        }
+        if let Ok(mut stmt) = conn.prepare_cached(
             "INSERT OR REPLACE INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![z, x, tms_y, hash],
-        );
+        ) {
+            let _ = stmt.execute(rusqlite::params![z, x, tms_y, hash]);
+        }
         progress.bytes.fetch_add(blob.len() as u64, Ordering::Relaxed);
     }
     progress.completed.fetch_add(1, Ordering::Relaxed);
@@ -482,20 +609,30 @@ fn rewrite_layers(style: &mut Value, replaced: &HashSet<String>, dropped: &HashS
     }
 }
 
-/// Reads the `(zoom, column, TMS row)` keys of every already-stored tile so a
-/// resumed download can skip them. Returns an empty set on any query error (fresh
-/// or unreadable db) — the download then simply re-fetches everything.
-fn existing_tile_rows(conn: &Connection) -> HashSet<(u8, u32, u32)> {
+/// Reads the `(zoom, column, TMS row)` keys of already-stored tiles that fall inside
+/// this job's per-zoom tile range so a resumed download can skip them. Scoping the
+/// query to the current bbox avoids scanning the whole `map` table. `map.tile_row` is
+/// TMS, so each range's y bounds are flipped to `[(1<<z)-1-y_max, (1<<z)-1-y_min]`.
+/// Returns an empty set on any query error (fresh or unreadable db) — the download
+/// then simply re-fetches everything.
+fn existing_tile_rows(conn: &Connection, ranges: &[(u8, u32, u32, u32, u32)]) -> HashSet<(u8, u32, u32)> {
     let mut set = HashSet::new();
-    let Ok(mut stmt) = conn.prepare("SELECT zoom_level, tile_column, tile_row FROM map") else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT zoom_level, tile_column, tile_row FROM map
+         WHERE zoom_level = ?1 AND tile_column BETWEEN ?2 AND ?3 AND tile_row BETWEEN ?4 AND ?5",
+    ) else {
         return set;
     };
-    let Ok(rows) = stmt.query_map([], |r| {
-        Ok((r.get::<_, u8>(0)?, r.get::<_, u32>(1)?, r.get::<_, u32>(2)?))
-    }) else {
-        return set;
-    };
-    set.extend(rows.flatten());
+    for &(z, x_min, x_max, y_min, y_max) in ranges {
+        let tms_lo = (1u32 << z) - 1 - y_max;
+        let tms_hi = (1u32 << z) - 1 - y_min;
+        let Ok(rows) = stmt.query_map(rusqlite::params![z, x_min, x_max, tms_lo, tms_hi], |r| {
+            Ok((r.get::<_, u8>(0)?, r.get::<_, u32>(1)?, r.get::<_, u32>(2)?))
+        }) else {
+            continue;
+        };
+        set.extend(rows.flatten());
+    }
     set
 }
 
@@ -506,6 +643,9 @@ fn create_vector_mbtiles(
     z_max: u8,
 ) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
+    // WAL + relaxed sync lets the writer commit without an fsync per transaction;
+    // `finalize_vector_mbtiles` checkpoints and reverts to a self-contained file.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS images (
             tile_id TEXT NOT NULL PRIMARY KEY,
@@ -548,6 +688,13 @@ fn create_vector_mbtiles(
     Ok(conn)
 }
 
+/// Checkpoints the WAL into the main db and reverts to a rollback journal so the
+/// finished `.mbtiles` is a single self-contained file with no `-wal`/`-shm`
+/// sidecars — read-only consumers open it without needing shared-memory access.
+fn finalize_vector_mbtiles(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+}
+
 fn tile_hash(data: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -569,32 +716,88 @@ enum FetchResult {
     Throttled,
 }
 
-async fn fetch_with_retry(client: &reqwest::Client, url: &str) -> FetchResult {
-    let mut delay = std::time::Duration::from_millis(INITIAL_RETRY_DELAY_MS);
+/// Shared, adaptive 429 backoff consulted by every request. A single throttled
+/// response slows the whole fetch window instead of each slot sleeping in isolation
+/// (which silently collapses concurrency); sustained success decays the delay back
+/// toward zero. Decay is wall-clock gated so a burst of quick successes can't undo a
+/// throttle before the server has recovered.
+struct Throttle {
+    start: Instant,
+    delay_ms: AtomicU64,
+    decay_after_ms: AtomicU64,
+}
+
+impl Throttle {
+    fn new() -> Self {
+        Self { start: Instant::now(), delay_ms: AtomicU64::new(0), decay_after_ms: AtomicU64::new(0) }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    /// Sleeps the current shared delay before a request is sent.
+    async fn wait(&self) {
+        let delay = self.delay_ms.load(Ordering::Relaxed);
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+    }
+
+    /// Raises the shared delay on a 429, honoring the server's `retry-after` as a
+    /// floor and holding it for at least that long before any decay.
+    fn on_throttled(&self, retry_after_secs: u64) {
+        let current = self.delay_ms.load(Ordering::Relaxed);
+        let bumped = (current.max(THROTTLE_MIN_MS) * 2)
+            .max(retry_after_secs.saturating_mul(1_000))
+            .min(THROTTLE_MAX_MS);
+        self.delay_ms.store(bumped, Ordering::Relaxed);
+        self.decay_after_ms.store(self.elapsed_ms() + bumped, Ordering::Relaxed);
+    }
+
+    /// Decays the shared delay once the hold window has elapsed, so throughput ramps
+    /// back up after the server stops throttling.
+    fn on_success(&self) {
+        let current = self.delay_ms.load(Ordering::Relaxed);
+        if current == 0 || self.elapsed_ms() < self.decay_after_ms.load(Ordering::Relaxed) {
+            return;
+        }
+        let next = current / 2;
+        let next = if next < THROTTLE_FLOOR_MS { 0 } else { next };
+        self.delay_ms.store(next, Ordering::Relaxed);
+        self.decay_after_ms.store(self.elapsed_ms() + next.max(THROTTLE_FLOOR_MS), Ordering::Relaxed);
+    }
+}
+
+async fn fetch_with_retry(client: &reqwest::Client, url: &str, throttle: &Throttle) -> FetchResult {
+    let mut delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
     for attempt in 0..=MAX_RETRIES {
+        throttle.wait().await;
         match client.get(url).send().await {
             Ok(resp) if resp.status().is_success() => {
+                throttle.on_success();
                 return resp.bytes().await
                     .map_or(FetchResult::Failed, |b| FetchResult::Ok(b.to_vec()));
             }
             Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                throttle.on_success();
                 return FetchResult::NotFound;
             }
             Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                let retry_after = resp.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(5);
+                throttle.on_throttled(retry_after);
                 if attempt < MAX_RETRIES {
-                    let retry_after = resp.headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(5);
-                    tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
                     continue;
                 }
                 return FetchResult::Throttled;
             }
             _ if attempt < MAX_RETRIES => {
                 tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(std::time::Duration::from_millis(MAX_RETRY_DELAY_MS));
+                delay = (delay * 2).min(Duration::from_millis(MAX_RETRY_DELAY_MS));
             }
             _ => return FetchResult::Failed,
         }
