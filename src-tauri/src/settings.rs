@@ -14,6 +14,12 @@ pub struct Settings {
     pub apple_map_version: Option<String>,
     #[serde(default)]
     pub apple_sat_version: Option<String>,
+    #[serde(default = "default_true")]
+    pub apple_auto_refresh: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -25,6 +31,7 @@ impl Default for Settings {
             apple_access_key: None,
             apple_map_version: None,
             apple_sat_version: None,
+            apple_auto_refresh: true,
         }
     }
 }
@@ -48,6 +55,9 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .and_then(|v| v.as_str().map(String::from)),
         apple_sat_version: store.get("apple_sat_version")
             .and_then(|v| v.as_str().map(String::from)),
+        apple_auto_refresh: store.get("apple_auto_refresh")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
     }
 }
 
@@ -67,6 +77,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
     store.set("apple_access_key", serde_json::json!(settings.apple_access_key));
     store.set("apple_map_version", serde_json::json!(settings.apple_map_version));
     store.set("apple_sat_version", serde_json::json!(settings.apple_sat_version));
+    store.set("apple_auto_refresh", serde_json::json!(settings.apple_auto_refresh));
     store.save().map_err(|e| e.to_string())?;
     let _ = app.emit("settings-changed", &settings);
     Ok(())

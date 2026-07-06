@@ -1,0 +1,271 @@
+//! Automatic Apple Maps tile authorization.
+//!
+//! Apple's map/satellite tiles require a short-lived `accessKey` plus a per-source
+//! version (`v=`), both of which expire (~30 min). Rather than have the user paste
+//! them by hand, this module reproduces what Apple's `MapKit` JS does on the web:
+//!
+//! 1. `GET https://duckduckgo.com/local.js?get_mk_token=1` → a `MapKit` JWT (`DuckDuckGo`
+//!    hands this token to `MapKit` JS as the authorization token).
+//! 2. `GET https://cdn.apple-mapkit.com/ma/bootstrap` with `Authorization: Bearer <jwt>`
+//!    → JSON carrying the session `accessKey`, `expiresInSeconds`, and a `tileSources`
+//!    list whose `standard` and `satellite` entries embed the `v=` version for each.
+//!
+//! The credentials are applied to every live Apple overlay and persisted to settings,
+//! and a background task re-runs the flow shortly before each token expires so tiles
+//! never fail on a stale key.
+
+use std::time::Duration;
+
+use serde::Deserialize;
+use tauri::Emitter;
+use tauri_plugin_store::StoreExt;
+
+use crate::overlay::apply_apple_credentials;
+use crate::settings;
+
+const TOKEN_URL: &str = "https://duckduckgo.com/local.js?get_mk_token=1";
+const BOOTSTRAP_URL: &str =
+    "https://cdn.apple-mapkit.com/ma/bootstrap?apiVersion=2&mkjsVersion=5.78.158&poi=1";
+const ORIGIN: &str = "https://duckduckgo.com";
+const REFERER: &str = "https://duckduckgo.com/";
+/// A desktop-browser UA; the token endpoint gates on a browser-like agent.
+const USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+/// Refresh this long before the reported expiry, absorbing clock skew and the round
+/// trip so a request never goes out with an already-dead key.
+const REFRESH_LEAD: Duration = Duration::from_secs(120);
+/// Floor on the wait between refreshes, guarding against a tiny/zero `expiresInSeconds`.
+const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+/// Backoff after a failed refresh before retrying.
+const RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const SETTINGS_STORE: &str = "settings.json";
+
+/// Credentials extracted from an Apple `MapKit` bootstrap response.
+pub struct AppleCredentials {
+    pub access_key: String,
+    pub map_version: String,
+    pub sat_version: String,
+    pub expires_in: Duration,
+}
+
+#[derive(Deserialize)]
+struct Bootstrap {
+    #[serde(rename = "accessKey")]
+    access_key: String,
+    #[serde(rename = "expiresInSeconds")]
+    expires_in_seconds: Option<u64>,
+    #[serde(rename = "tileSources")]
+    tile_sources: Vec<TileSource>,
+}
+
+#[derive(Deserialize)]
+struct TileSource {
+    #[serde(rename = "tileSource")]
+    name: String,
+    path: String,
+}
+
+/// Runs the token → bootstrap flow and returns the parsed credentials.
+pub async fn fetch_credentials() -> Result<AppleCredentials, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+
+    let token = client
+        .get(TOKEN_URL)
+        .header(reqwest::header::REFERER, REFERER)
+        .send()
+        .await
+        .map_err(|e| format!("token request: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("token status: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("token body: {e}"))?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("token endpoint returned an empty token".into());
+    }
+
+    let body = client
+        .get(BOOTSTRAP_URL)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(reqwest::header::ORIGIN, ORIGIN)
+        .send()
+        .await
+        .map_err(|e| format!("bootstrap request: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("bootstrap status: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("bootstrap body: {e}"))?;
+    let bootstrap: Bootstrap =
+        serde_json::from_str(&body).map_err(|e| format!("bootstrap parse: {e}"))?;
+
+    let map_version = version_for(&bootstrap.tile_sources, "standard")
+        .ok_or("bootstrap missing standard tile version")?;
+    let sat_version = version_for(&bootstrap.tile_sources, "satellite")
+        .ok_or("bootstrap missing satellite tile version")?;
+
+    Ok(AppleCredentials {
+        access_key: encode_access_key(&bootstrap.access_key),
+        map_version,
+        sat_version,
+        expires_in: Duration::from_secs(bootstrap.expires_in_seconds.unwrap_or(1800)),
+    })
+}
+
+/// Percent-encodes the query-unsafe characters in Apple's access key. The key is a
+/// base64 signature (`_`-delimited), so only `/`, `+`, and `=` need escaping —
+/// leaving them raw corrupts the query string and Apple returns 403. This matches
+/// the pre-encoded form the manual-paste path receives (copied from a tile URL).
+fn encode_access_key(raw: &str) -> String {
+    raw.replace('%', "%25")
+        .replace('/', "%2F")
+        .replace('+', "%2B")
+        .replace('=', "%3D")
+}
+
+/// Extracts the `v=` value from the named tile source's URL template.
+fn version_for(sources: &[TileSource], name: &str) -> Option<String> {
+    let path = &sources.iter().find(|s| s.name == name)?.path;
+    parse_query_value(path, "v")
+}
+
+/// Reads a query parameter value out of a URL or path (no percent-decoding needed
+/// for the numeric version values Apple returns).
+fn parse_query_value(url: &str, key: &str) -> Option<String> {
+    let query = url.split('?').nth(1)?;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// Applies credentials to live overlays and persists them to the settings store so
+/// newly added Apple layers and the next launch pick them up.
+fn apply_and_persist(app: &tauri::AppHandle, creds: &AppleCredentials) {
+    apply_apple_credentials(
+        app,
+        &creds.access_key,
+        Some(&creds.map_version),
+        Some(&creds.sat_version),
+    );
+
+    if let Ok(store) = app.store(SETTINGS_STORE) {
+        store.set("apple_access_key", serde_json::json!(creds.access_key));
+        store.set("apple_map_version", serde_json::json!(creds.map_version));
+        store.set("apple_sat_version", serde_json::json!(creds.sat_version));
+        let _ = store.save();
+    }
+
+    let _ = app.emit(
+        "apple-token-refreshed",
+        serde_json::json!({
+            "accessKey": creds.access_key,
+            "mapVersion": creds.map_version,
+            "satVersion": creds.sat_version,
+        }),
+    );
+}
+
+/// Fetches fresh credentials on demand (the "Refresh now" button).
+#[tauri::command]
+pub async fn refresh_apple_token(app: tauri::AppHandle) -> Result<(), String> {
+    let creds = fetch_credentials().await?;
+    apply_and_persist(&app, &creds);
+    Ok(())
+}
+
+/// Spawns the background refresher: fetch, apply, then sleep until just before the
+/// token expires and repeat. Failed attempts retry on a short backoff. Honors the
+/// `apple_auto_refresh` setting on each cycle so toggling it off pauses the loop.
+pub fn spawn_auto_refresh(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if !settings::load(&app).apple_auto_refresh {
+                tokio::time::sleep(RETRY_INTERVAL).await;
+                continue;
+            }
+
+            let wait = match fetch_credentials().await {
+                Ok(creds) => {
+                    let lifetime = creds.expires_in;
+                    apply_and_persist(&app, &creds);
+                    lifetime.saturating_sub(REFRESH_LEAD).max(MIN_REFRESH_INTERVAL)
+                }
+                Err(e) => {
+                    eprintln!("[apple-token] refresh failed: {e}");
+                    RETRY_INTERVAL
+                }
+            };
+            tokio::time::sleep(wait).await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STANDARD_PATH: &str = "/ti/tile?style=0&size={{tileSizeIndex}}&x={{x}}&y={{y}}&z={{z}}&scale={{resolution}}&lang={{lang}}&v=2607052&poi={{poi}}&accessKey=abc";
+    const SATELLITE_PATH: &str = "/tile?style=7&size={{tileSizeIndex}}&scale={{resolution}}&z={{z}}&x={{x}}&y={{y}}&v=10411&accessKey=abc";
+
+    fn sources() -> Vec<TileSource> {
+        vec![
+            TileSource { name: "standard".into(), path: STANDARD_PATH.into() },
+            TileSource { name: "hybrid-overlay".into(), path: "/ti/tile?style=46&v=2607052".into() },
+            TileSource { name: "satellite".into(), path: SATELLITE_PATH.into() },
+        ]
+    }
+
+    #[test]
+    fn extracts_distinct_map_and_satellite_versions() {
+        let s = sources();
+        assert_eq!(version_for(&s, "standard").as_deref(), Some("2607052"));
+        assert_eq!(version_for(&s, "satellite").as_deref(), Some("10411"));
+    }
+
+    #[test]
+    fn missing_source_yields_none() {
+        assert_eq!(version_for(&sources(), "terrain"), None);
+    }
+
+    #[test]
+    fn encodes_query_unsafe_access_key_chars() {
+        let raw = "1783358862_2373249116464053255_/_reCby2SN1rmytNcjUdwCJw/JNgPvpe47B3WmpS9+yRo=";
+        let encoded = encode_access_key(raw);
+        assert!(!encoded.contains('/') && !encoded.contains('+') && !encoded.contains('='));
+        assert_eq!(
+            encoded,
+            "1783358862_2373249116464053255_%2F_reCby2SN1rmytNcjUdwCJw%2FJNgPvpe47B3WmpS9%2ByRo%3D"
+        );
+    }
+
+    #[test]
+    fn parse_query_value_handles_absent_and_present_keys() {
+        assert_eq!(parse_query_value("/tile?a=1&v=42&b=2", "v").as_deref(), Some("42"));
+        assert_eq!(parse_query_value("/tile?a=1", "v"), None);
+        assert_eq!(parse_query_value("/tile", "v"), None);
+    }
+
+    #[test]
+    fn parses_bootstrap_json() {
+        let json = serde_json::json!({
+            "accessKey": "1783358355_1303046746466142155_/_sig",
+            "expiresInSeconds": 1800,
+            "tileSources": [
+                { "tileSource": "standard", "path": STANDARD_PATH },
+                { "tileSource": "satellite", "path": SATELLITE_PATH },
+            ]
+        });
+        let boot: Bootstrap = serde_json::from_value(json).expect("valid bootstrap json");
+        assert_eq!(boot.access_key, "1783358355_1303046746466142155_/_sig");
+        assert_eq!(boot.expires_in_seconds, Some(1800));
+        assert_eq!(version_for(&boot.tile_sources, "standard").as_deref(), Some("2607052"));
+        assert_eq!(version_for(&boot.tile_sources, "satellite").as_deref(), Some("10411"));
+    }
+}

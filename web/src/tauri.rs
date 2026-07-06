@@ -354,6 +354,10 @@ pub async fn update_apple_urls(access_key: &str, map_version: Option<&str>, sat_
         })
 }
 
+pub async fn refresh_apple_token() -> Result<(), String> {
+    invoke("refresh_apple_token", &JsValue::NULL).await.map(|_| ())
+}
+
 pub async fn pick_kmz_file() -> Option<String> {
     let result = invoke("pick_kmz_file", &JsValue::NULL).await.ok()?;
     result.as_string()

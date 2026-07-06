@@ -811,6 +811,18 @@ button {
         margin: 0;
     }
 
+    .hint {
+        font-size: var(--font-size-sm);
+        color: var(--color-text-secondary);
+        margin: 0;
+    }
+
+    .settings-row {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+    }
+
     label {
         cursor: pointer;
         font-size: var(--font-size-sm);
