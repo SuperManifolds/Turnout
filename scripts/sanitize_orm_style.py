@@ -327,6 +327,22 @@ def split_data_dasharray(layers):
     return result
 
 
+def prune_unreferenced_sources(style):
+    """Drop sources that no surviving layer references.
+
+    ORM ships each style with the union of every source across all styles, but a
+    single style's layers only draw from a handful. maplibre-native parses every
+    declared source per renderer build, so the unreferenced ones are pure cost.
+    """
+    referenced = {
+        layer["source"] for layer in style["layers"] if "source" in layer
+    }
+    sources = style.get("sources", {})
+    style["sources"] = {
+        name: src for name, src in sources.items() if name in referenced
+    }
+
+
 def apply_native_compat(style):
     """Apply all maplibre-native expression compatibility transforms in place."""
     for layer in style["layers"]:
@@ -346,6 +362,7 @@ def apply_native_compat(style):
     style["layers"] = evaluate_visibility_expressions(
         split_data_dasharray(style["layers"])
     )
+    prune_unreferenced_sources(style)
 
 
 def resolve_expr(expr):
