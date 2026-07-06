@@ -1,5 +1,17 @@
 // Thin wrappers around MapLibre GL JS API — all logic lives in Rust.
 
+const MAX_PARALLEL_IMAGE_REQUESTS = 32;
+
+// Raise the shared raster fetch ceiling (default 16) so the 6 ORM render workers
+// stay fed. Set once at load, before any map is created.
+if (typeof maplibregl !== "undefined") {
+    if (typeof maplibregl.setMaxParallelImageRequests === "function") {
+        maplibregl.setMaxParallelImageRequests(MAX_PARALLEL_IMAGE_REQUESTS);
+    } else {
+        maplibregl.maxParallelImageRequests = MAX_PARALLEL_IMAGE_REQUESTS;
+    }
+}
+
 let _map = null;
 let _map_loaded = false;
 let _dynamic_source_ids = new Set();
@@ -125,9 +137,16 @@ window.map_add_raster_layer = function(id, source, opacity) {
 var _orm_source_ids = [];
 var _orm_layer_ids = [];
 var _orm_current_style = null;
+var _orm_port = null;
+
+// Publish the ORM tile server's actual bound port before any ORM source is added.
+window.map_set_orm_port = function(port) {
+    _orm_port = port;
+};
 
 window.map_set_orm_style = function(style_name) {
     if (!_map) return;
+    if (_orm_port === null) return;
 
     // Remove previous ORM layer/source
     if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
@@ -137,7 +156,7 @@ window.map_set_orm_style = function(style_name) {
     try {
         _map.addSource("orm", {
             type: "raster",
-            tiles: ["http://127.0.0.1:17854/" + style_name + "/{z}/{y}/{x}.png"],
+            tiles: ["http://127.0.0.1:" + _orm_port + "/" + style_name + "/{z}/{y}/{x}.png"],
             tileSize: 512,
             maxzoom: 19,
             attribution: "&copy; OpenRailwayMap",

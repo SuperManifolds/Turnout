@@ -683,6 +683,11 @@ pub async fn download_orm_tiles(
     result.as_string().ok_or_else(|| "unexpected response".into())
 }
 
+pub async fn get_orm_port() -> Result<u16, String> {
+    let result = invoke("get_orm_port", &JsValue::NULL).await?;
+    result.as_f64().map(|v| v as u16).ok_or_else(|| "unexpected response".into())
+}
+
 pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
     let args = js_sys::Object::new();
     match dir {

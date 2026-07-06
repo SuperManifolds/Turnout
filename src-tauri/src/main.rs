@@ -4,6 +4,7 @@ mod arcgis;
 mod blueprint;
 mod import;
 mod mbtiles;
+mod orm_net;
 mod orm_offline;
 mod orm_tiles;
 mod overlay;
@@ -217,6 +218,7 @@ fn main() {
             mbtiles::set_tile_download_paused,
             orm_offline::download_orm_tiles,
             orm_tiles::set_orm_offline,
+            orm_tiles::get_orm_port,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

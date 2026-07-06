@@ -30,6 +30,7 @@ extern "C" {
     fn map_query_features(lng: f64, lat: f64, layer_id: &str) -> JsValue;
     fn map_set_bbox_color(color: &str);
     fn map_set_orm_style(style_name: &str);
+    fn map_set_orm_port(port: u16);
 }
 
 // Interaction modes
@@ -175,8 +176,17 @@ pub fn Map(
             map_add_geojson_source("handles");
             map_add_circle_layer("handles-layer", "handles", HANDLE_COLOR, HANDLE_RADIUS);
             // Defer ORM style load slightly — MapLibre needs to complete its
-            // first render cycle before raster tile sources trigger fetching
-            let cb = Closure::once(move || { map_set_orm_style(ORM_DEFAULT_STYLE); });
+            // first render cycle before raster tile sources trigger fetching.
+            // Resolve the tile server's actual bound port first; every ORM tile
+            // URL is built from it.
+            let cb = Closure::once(move || {
+                spawn_local(async move {
+                    if let Ok(port) = crate::tauri::get_orm_port().await {
+                        map_set_orm_port(port);
+                        map_set_orm_style(ORM_DEFAULT_STYLE);
+                    }
+                });
+            });
             if let Some(win) = web_sys::window() {
                 let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
                     cb.as_ref().unchecked_ref(), 500,

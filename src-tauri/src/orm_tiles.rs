@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
@@ -6,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Instant;
 
 use axum::Router;
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -41,8 +42,14 @@ const RENDER_TIMEOUT_SECS: u64 = 30;
 const STATS_INTERVAL: u64 = 50;
 const WORKER_RESTART_DELAY_SECS: u64 = 1;
 const CACHE_CONTROL: &str = "public, max-age=3600";
-const OFFLINE_TILES_PLACEHOLDER: &str = "{{OFFLINE_TILES_URL}}";
 const OFFLINE_MBTILES_FILE: &str = "tiles.mbtiles";
+/// Number of independently locked PNG cache shards. Requests are spread across
+/// shards by key hash so lookups and inserts rarely contend on a single lock.
+const CACHE_STRIPES: usize = 8;
+/// Poll interval and attempt count for `get_orm_port` while the server binds on
+/// its background runtime. 40 × 50ms = 2s, comfortably longer than bind latency.
+const PORT_WAIT_INTERVAL_MS: u64 = 50;
+const PORT_WAIT_ATTEMPTS: u32 = 40;
 /// Upper bound for requested zoom; guards the bit shifts in overzoom and TMS
 /// row-flip math against absurd zoom values in request paths.
 const MAX_REQUEST_ZOOM: u8 = 22;
@@ -60,6 +67,54 @@ pub(crate) const STYLES: &[(&str, &str)] = &[
 type Key = (Arc<str>, u8, u32, u32);
 type TileCache = LruCache<Key, Bytes>;
 type RawImage = ImageBuffer<Rgba<u8>, Vec<u8>>;
+type Waiters = HashMap<Key, Vec<oneshot::Sender<TileResult>>>;
+
+/// Outcome delivered to a tile request's waiters. `Evicted` is distinct from
+/// `Failed` so the HTTP layer can answer 204 (revisit re-requests) rather than
+/// 500 (which GL JS never retries) when a queued request is dropped on overflow.
+#[derive(Clone)]
+enum TileResult {
+    Png(Bytes),
+    Evicted,
+    Failed,
+}
+
+/// A hash-striped PNG cache. Each stripe is an independently locked LRU holding a
+/// `TILE_CACHE_CAPACITY / CACHE_STRIPES` slice of the total capacity. A key always
+/// maps to one stripe, so no operation ever needs to hold two stripe locks.
+struct StripedCache {
+    stripes: Vec<Mutex<TileCache>>,
+}
+
+impl StripedCache {
+    fn new(total_capacity: usize) -> Self {
+        let per_stripe = (total_capacity / CACHE_STRIPES).max(1);
+        let cap = NonZeroUsize::new(per_stripe).expect("nonzero");
+        let stripes = (0..CACHE_STRIPES).map(|_| Mutex::new(LruCache::new(cap))).collect();
+        Self { stripes }
+    }
+
+    fn stripe(&self, key: &Key) -> &Mutex<TileCache> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        let idx = (hasher.finish() as usize) % CACHE_STRIPES;
+        &self.stripes[idx]
+    }
+
+    fn get(&self, key: &Key) -> Option<Bytes> {
+        self.stripe(key).lock().unpoison().get(key).cloned()
+    }
+
+    fn contains(&self, key: &Key) -> bool {
+        self.stripe(key).lock().unpoison().contains(key)
+    }
+
+    fn clear(&self) {
+        for stripe in &self.stripes {
+            stripe.lock().unpoison().clear();
+        }
+    }
+}
 
 fn canonical_style(name: &str) -> Arc<str> {
     if STYLES.iter().any(|(n, _)| *n == name) {
@@ -122,7 +177,7 @@ struct Queues {
 /// handler pushes keys to the back and workers pop from the back (LIFO).
 struct Dispatch {
     queues: Mutex<Queues>,
-    waiters: Mutex<HashMap<Key, Vec<oneshot::Sender<Option<Bytes>>>>>,
+    waiters: Mutex<Waiters>,
     cv: Condvar,
 }
 
@@ -136,17 +191,15 @@ struct OrmShared {
 }
 
 struct OrmTileState {
-    cache: Arc<Mutex<TileCache>>,
+    cache: Arc<StripedCache>,
     dispatch: Arc<Dispatch>,
     shared: Arc<OrmShared>,
-    /// Lazily opened, path-keyed read-only connection to the offline MVT store.
-    mbtiles_conn: Mutex<Option<(PathBuf, rusqlite::Connection)>>,
 }
 
 pub struct OrmHandle {
     _shutdown_tx: watch::Sender<bool>,
     shared: Arc<OrmShared>,
-    cache: Arc<Mutex<TileCache>>,
+    cache: Arc<StripedCache>,
 }
 
 impl OrmHandle {
@@ -159,12 +212,12 @@ impl OrmHandle {
     /// re-populate the cache with a stale tile (the encoder drops such inserts).
     pub fn set_offline_dir(&self, dir: Option<PathBuf>) {
         *self.shared.offline_dir.write().unpoison() = dir;
-        // Bump and clear under the cache lock so the pair is serialized against the
-        // encoder's compare-then-insert: an in-flight encode either inserts before
-        // this clear (and is then wiped) or observes the new generation and skips.
-        let mut cache = self.cache.lock().unpoison();
+        // Bump before clearing so the pair is serialized against the encoder's
+        // compare-then-insert (which loads the generation under its stripe lock):
+        // an in-flight encode either inserts before this clear reaches its stripe
+        // (and is then wiped) or observes the new generation and skips.
         self.shared.generation.fetch_add(1, Ordering::SeqCst);
-        cache.clear();
+        self.cache.clear();
     }
 }
 
@@ -187,10 +240,20 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         .join("orm_cache");
     let _ = std::fs::create_dir_all(&cache_dir);
     let shared_cache_path = cache_dir.join("shared.db");
+    enable_wal(&shared_cache_path);
 
-    let cache: Arc<Mutex<TileCache>> = Arc::new(Mutex::new(LruCache::new(
-        NonZeroUsize::new(TILE_CACHE_CAPACITY).expect("nonzero"),
-    )));
+    // The runtime serves HTTP and hosts the shared network file source the render
+    // workers' mbgl instances fetch through, so it must exist — and the source must
+    // be registered — before the first worker can build a renderer.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(HTTP_WORKER_THREADS)
+        .enable_all()
+        .build()?;
+    if let Err(e) = crate::orm_net::register(rt.handle().clone()) {
+        eprintln!("ORM tiles: shared network source unavailable ({e}); using mbgl default");
+    }
+
+    let cache: Arc<StripedCache> = Arc::new(StripedCache::new(TILE_CACHE_CAPACITY));
 
     let (encode_tx, encode_rx) = std::sync::mpsc::channel::<(Key, RawImage, u64)>();
     let encode_rx = Arc::new(Mutex::new(encode_rx));
@@ -217,21 +280,22 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
                     image::codecs::png::CompressionType::Fast,
                     image::codecs::png::FilterType::NoFilter,
                 );
-                let result: Option<Bytes> = if raw.write_with_encoder(encoder).is_ok() {
-                    Some(Bytes::from(png_buf))
+                let outcome = if raw.write_with_encoder(encoder).is_ok() {
+                    TileResult::Png(Bytes::from(png_buf))
                 } else {
-                    None
+                    TileResult::Failed
                 };
 
-                // Lock order: waiters → cache (matches serve_tile double-check order).
+                // Lock order: waiters → cache stripe (matches serve_tile double-check order).
                 let mut waiters = dispatch.waiters.lock().unpoison();
-                // Compare the render's generation and insert under the cache lock so
-                // a concurrent offline toggle (which bumps + clears under the same
-                // lock) can never let a stale tile survive the clear.
-                if let Some(ref png) = result {
-                    let mut cache = cache.lock().unpoison();
+                // Compare the render's generation and insert under the stripe lock so
+                // a concurrent offline toggle (which bumps then clears every stripe)
+                // can never let a stale tile survive the clear.
+                if let TileResult::Png(ref png) = outcome {
+                    let stripe = cache.stripe(&key);
+                    let mut stripe = stripe.lock().unpoison();
                     if generation == shared.generation.load(Ordering::SeqCst) {
-                        cache.put(key.clone(), png.clone());
+                        stripe.put(key.clone(), png.clone());
                     }
                 }
                 let senders = waiters.remove(&key);
@@ -239,7 +303,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 
                 if let Some(senders) = senders {
                     for tx in senders {
-                        let _ = tx.send(result.clone());
+                        let _ = tx.send(outcome.clone());
                     }
                 }
             })?;
@@ -275,7 +339,6 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         cache: Arc::clone(&cache),
         dispatch,
         shared: Arc::clone(&shared),
-        mbtiles_conn: Mutex::new(None),
     });
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -283,11 +346,6 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
     std::thread::Builder::new()
         .name("orm-http".into())
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(HTTP_WORKER_THREADS)
-                .enable_all()
-                .build()
-                .expect("tokio runtime");
             rt.block_on(run_server(state2, shutdown_rx));
         })?;
 
@@ -312,7 +370,6 @@ async fn run_server(state: Arc<OrmTileState>, mut shutdown_rx: watch::Receiver<b
     let router = Router::new()
         .route("/tilejson.json", get(serve_tilejson))
         .route("/{style}/tilejson.json", get(serve_style_tilejson))
-        .route("/offline/{z}/{x}/{y}", get(serve_offline_tile))
         .route("/{style}/{z}/{y}/{x_png}", get(serve_tile))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -321,6 +378,21 @@ async fn run_server(state: Arc<OrmTileState>, mut shutdown_rx: watch::Receiver<b
         .with_graceful_shutdown(async move { let _ = shutdown_rx.changed().await; })
         .await
         .ok();
+}
+
+/// Switches the shared mbgl ambient cache to WAL so the render workers'
+/// concurrent reads and writes don't serialize on a rollback journal. WAL is a
+/// persistent, file-level sqlite property; setting it once before any renderer
+/// opens the database covers every worker. Purely an optimization — on failure
+/// the cache still works in its default journal mode.
+fn enable_wal(path: &std::path::Path) {
+    let mode: Result<String, _> = rusqlite::Connection::open(path)
+        .and_then(|conn| conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0)));
+    match mode {
+        Ok(mode) if mode.eq_ignore_ascii_case("wal") => {}
+        Ok(mode) => eprintln!("ORM tiles: ambient cache journal_mode is '{mode}', not WAL"),
+        Err(e) => eprintln!("ORM tiles: could not enable WAL on ambient cache: {e}"),
+    }
 }
 
 fn build_renderer(
@@ -343,16 +415,15 @@ fn build_renderer(
     r
 }
 
-/// Returns the style JSON to load: the on-disk offline variant (with the tiles-URL
-/// placeholder substituted for the local `/offline` endpoint) when offline mode is
-/// active and readable, otherwise the embedded style.
+/// Returns the style JSON to load: the on-disk offline variant when offline mode is
+/// active and readable, otherwise the embedded style. Offline styles reference their
+/// tiles via an `mbtiles://<abs path>` source url that mbgl reads directly.
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
         return style_json(style).to_string();
     };
-    let port = shared.bound_port.load(Ordering::SeqCst);
-    match offline_style_source(&dir, style, port) {
+    match offline_style_source(&dir, style) {
         Ok(source) => source,
         Err(e) => {
             eprintln!("[ORM] offline style '{style}' unavailable ({e}); using embedded style");
@@ -361,17 +432,10 @@ fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     }
 }
 
-/// Reads `<dir>/styles/{style}_offline.json` and substitutes every
-/// `{{OFFLINE_TILES_URL}}` placeholder with the local offline tile endpoint.
-///
-/// Styles referencing their tiles via an `mbtiles://<abs path>` source url contain
-/// no placeholder, so the substitution is a no-op and the style loads unchanged —
-/// both offline tile-url forms are handled by this single path.
-fn offline_style_source(dir: &std::path::Path, style: &str, bound_port: u16) -> std::io::Result<String> {
+/// Reads `<dir>/styles/{style}_offline.json`.
+fn offline_style_source(dir: &std::path::Path, style: &str) -> std::io::Result<String> {
     let path = dir.join("styles").join(format!("{style}_offline.json"));
-    let raw = std::fs::read_to_string(path)?;
-    let base = format!("http://127.0.0.1:{bound_port}/offline");
-    Ok(raw.replace(OFFLINE_TILES_PLACEHOLDER, &base))
+    std::fs::read_to_string(path)
 }
 
 /// Blocks until a key is available, returning `(key, is_prefetch)`. Real requests
@@ -389,18 +453,24 @@ fn pop_key_blocking(dispatch: &Dispatch) -> (Key, bool) {
     }
 }
 
+/// Non-blocking variant of `pop_key_blocking`: returns `None` when both queues are
+/// empty so the caller can do idle work (style warming) before parking.
+fn try_pop_key(dispatch: &Dispatch) -> Option<(Key, bool)> {
+    let mut q = dispatch.queues.lock().unpoison();
+    if let Some(k) = q.main.pop_back() {
+        return Some((k, false));
+    }
+    q.prefetch.pop_back().map(|k| (k, true))
+}
+
 /// Queues the 8 tiles surrounding `key` for speculative rendering, skipping any
-/// already cached or already awaited. Prefetch entries carry no waiters; they only
-/// warm the cache so a subsequent pan resolves from it. Bounded to `PREFETCH_QUEUE_CAP`.
-fn enqueue_prefetch_ring(
-    q: &mut Queues,
-    waiters: &HashMap<Key, Vec<oneshot::Sender<Option<Bytes>>>>,
-    cache: &Mutex<TileCache>,
-    key: &Key,
-) {
+/// already cached, already awaited, or already queued. Prefetch entries carry no
+/// waiters; they only warm the cache so a subsequent pan resolves from it. Bounded
+/// to `PREFETCH_QUEUE_CAP`. Returns how many keys were enqueued.
+fn enqueue_prefetch_ring(q: &mut Queues, waiters: &Waiters, cache: &StripedCache, key: &Key) -> usize {
     let (style, z, x, y) = (&key.0, key.1, key.2, key.3);
     let max = i64::from(1u32 << z);
-    let cache_guard = cache.lock().unpoison();
+    let mut added = 0;
     for dy in -1i64..=1 {
         for dx in -1i64..=1 {
             if dx == 0 && dy == 0 {
@@ -411,31 +481,67 @@ fn enqueue_prefetch_ring(
                 continue;
             }
             let nkey: Key = (Arc::clone(style), z, nx as u32, ny as u32);
-            if cache_guard.contains(&nkey) || waiters.contains_key(&nkey) {
+            if cache.contains(&nkey) || waiters.contains_key(&nkey) || q.prefetch.contains(&nkey) {
                 continue;
             }
             q.prefetch.push_back(nkey);
+            added += 1;
         }
     }
-    drop(cache_guard);
     while q.prefetch.len() > PREFETCH_QUEUE_CAP {
         q.prefetch.pop_front();
     }
+    added
+}
+
+/// Drops queued prefetch entries whose style or zoom no longer matches the current
+/// request. During a zoom animation the previous zoom's ring is dead weight.
+fn drop_stale_prefetch(q: &mut Queues, style: &Arc<str>, z: u8) {
+    q.prefetch.retain(|(pstyle, pz, ..)| pstyle == style && *pz == z);
 }
 
 fn fail_waiters(dispatch: &Dispatch, key: &Key) {
     let senders = dispatch.waiters.lock().unpoison().remove(key);
     if let Some(senders) = senders {
         for tx in senders {
-            let _ = tx.send(None);
+            let _ = tx.send(TileResult::Failed);
         }
     }
+}
+
+/// Rebuilds every renderer when a generation bump (offline toggle) is observed.
+fn refresh_generation(
+    renderers: &mut HashMap<Arc<str>, maplibre_native::ImageRenderer<maplibre_native::Tile>>,
+    shared: &OrmShared,
+    current_gen: &mut u64,
+) {
+    let generation = shared.generation.load(Ordering::SeqCst);
+    if generation != *current_gen {
+        renderers.clear();
+        *current_gen = generation;
+    }
+}
+
+/// Builds one not-yet-built style renderer (styles in list order, `standard` first)
+/// for the current generation. Returns `false` when every style is already built.
+fn warm_one_style(
+    renderers: &mut HashMap<Arc<str>, maplibre_native::ImageRenderer<maplibre_native::Tile>>,
+    cache_path: &std::path::Path,
+    shared: &OrmShared,
+) -> bool {
+    for (name, _) in STYLES {
+        if !renderers.contains_key(*name) {
+            renderers.insert(Arc::from(*name), build_renderer(cache_path, name, shared));
+            return true;
+        }
+    }
+    false
 }
 
 fn render_worker_inner(
     id: usize,
     dispatch: &Dispatch,
-    cache: &Arc<Mutex<TileCache>>,
+    cache: &Arc<StripedCache>,
     cache_path: &std::path::Path,
     encode_tx: &std::sync::mpsc::Sender<(Key, RawImage, u64)>,
     shared: &OrmShared,
@@ -447,31 +553,33 @@ fn render_worker_inner(
     let mut render_count: u64 = 0;
     let mut current_gen = shared.generation.load(Ordering::SeqCst);
 
-    // Pre-warm standard renderer so the first pan doesn't pay the style-load cost.
-    let standard: Arc<str> = Arc::from("standard");
-    renderers.insert(Arc::clone(&standard), build_renderer(cache_path, "standard", shared));
-    eprintln!("[ORM worker {id}] Pre-warmed 'standard' style");
-
     loop {
-        let (key, is_prefetch) = pop_key_blocking(dispatch);
+        // When both queues are empty, warm one unbuilt style (all 7 over successive
+        // idle passes, `standard` first) then re-check so a real request never waits
+        // behind a style build. Park only once every style for this generation is built.
+        let (key, is_prefetch) = if let Some(k) = try_pop_key(dispatch) {
+            k
+        } else {
+            refresh_generation(&mut renderers, shared, &mut current_gen);
+            if warm_one_style(&mut renderers, cache_path, shared) {
+                continue;
+            }
+            pop_key_blocking(dispatch)
+        };
         let style = Arc::clone(&key.0);
         let (z, x, y) = (key.1, key.2, key.3);
 
         // An offline-mode toggle bumps the generation; drop every renderer so they
         // rebuild lazily against the current style source.
-        let generation = shared.generation.load(Ordering::SeqCst);
-        if generation != current_gen {
-            renderers.clear();
-            current_gen = generation;
-        }
+        refresh_generation(&mut renderers, shared, &mut current_gen);
 
         // Already rendered (a duplicate queue entry, or produced by another worker /
         // an earlier prefetch): serve any waiters from cache and move on.
-        if let Some(png) = cache.lock().unpoison().get(&key).cloned() {
+        if let Some(png) = cache.get(&key) {
             let senders = dispatch.waiters.lock().unpoison().remove(&key);
             if let Some(senders) = senders {
                 for tx in senders {
-                    let _ = tx.send(Some(png.clone()));
+                    let _ = tx.send(TileResult::Png(png.clone()));
                 }
             }
             continue;
@@ -511,7 +619,7 @@ fn render_worker_inner(
                 let raw = if z > MAX_NATIVE_ZOOM {
                     crop_and_upscale(image.as_image(), z, x, y)
                 } else {
-                    image.as_image().clone()
+                    image.into_inner()
                 };
                 if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > 2000 {
                     eprintln!(
@@ -532,94 +640,28 @@ fn render_worker_inner(
     }
 }
 
-async fn serve_tilejson(State(_state): State<Arc<OrmTileState>>) -> impl IntoResponse {
-    serve_tilejson_for("standard")
+async fn serve_tilejson(State(state): State<Arc<OrmTileState>>) -> impl IntoResponse {
+    serve_tilejson_for("standard", state.shared.bound_port.load(Ordering::SeqCst))
 }
 
 async fn serve_style_tilejson(
     Path(style): Path<String>,
-    State(_state): State<Arc<OrmTileState>>,
+    State(state): State<Arc<OrmTileState>>,
 ) -> impl IntoResponse {
-    serve_tilejson_for(&style)
+    serve_tilejson_for(&style, state.shared.bound_port.load(Ordering::SeqCst))
 }
 
-fn serve_tilejson_for(style: &str) -> (StatusCode, [(&'static str, &'static str); 1], String) {
+fn serve_tilejson_for(style: &str, port: u16) -> (StatusCode, [(&'static str, &'static str); 1], String) {
     let json = serde_json::json!({
         "tilejson": "3.0.0",
         "name": format!("OpenRailwayMap {style}"),
-        "tiles": [format!("http://127.0.0.1:{PREFERRED_PORT}/{style}/{{z}}/{{y}}/{{x}}.png")],
+        "tiles": [format!("http://127.0.0.1:{port}/{style}/{{z}}/{{y}}/{{x}}.png")],
         "minzoom": 0,
         "maxzoom": 19,
         "format": "png",
         "bounds": [-180.0, -85.051_129, 180.0, 85.051_129],
     });
     (StatusCode::OK, [("content-type", "application/json")], serde_json::to_string(&json).unwrap_or_default())
-}
-
-/// Serves an offline MVT tile from `<offline dir>/tiles.mbtiles`.
-///
-/// The store uses TMS row indexing (matching `tile_server`), so the XYZ `y` is
-/// flipped before the lookup. Returns 404 when offline mode is disabled or the
-/// tile is absent. gzip-compressed blobs are advertised via `content-encoding`.
-async fn serve_offline_tile(
-    Path((z, x, y)): Path<(u8, u32, u32)>,
-    State(state): State<Arc<OrmTileState>>,
-) -> Response {
-    if z > MAX_REQUEST_ZOOM {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(dir) = state.shared.offline_dir.read().unpoison().clone() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let mbtiles_path = dir.join(OFFLINE_MBTILES_FILE);
-    let tms_y = (1u32 << z).saturating_sub(1).saturating_sub(y);
-
-    let blob = read_offline_tile(&state.mbtiles_conn, &mbtiles_path, z, x, tms_y);
-    let Some(blob) = blob else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/x-protobuf");
-    if blob.starts_with(&[0x1f, 0x8b]) {
-        builder = builder.header("content-encoding", "gzip");
-    }
-    builder.body(Body::from(blob)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-/// Reads a single MVT blob using a cached, path-keyed read-only connection. The
-/// connection is reopened whenever the offline directory (hence path) changes.
-/// The query is synchronous but sub-millisecond, so briefly holding the mutex on
-/// the current-thread runtime is acceptable.
-fn read_offline_tile(
-    conn_cell: &Mutex<Option<(PathBuf, rusqlite::Connection)>>,
-    mbtiles_path: &std::path::Path,
-    z: u8,
-    x: u32,
-    tms_y: u32,
-) -> Option<Vec<u8>> {
-    let mut guard = conn_cell.lock().unpoison();
-    let needs_open = guard.as_ref().is_none_or(|(path, _)| path != mbtiles_path);
-    if needs_open {
-        match rusqlite::Connection::open_with_flags(
-            mbtiles_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            Ok(conn) => *guard = Some((mbtiles_path.to_path_buf(), conn)),
-            Err(e) => {
-                eprintln!("[ORM offline] open {} failed: {e}", mbtiles_path.display());
-                return None;
-            }
-        }
-    }
-    let (_, conn) = guard.as_ref()?;
-    conn.query_row(
-        "SELECT tile_data FROM tiles WHERE zoom_level = ?1 AND tile_column = ?2 AND tile_row = ?3",
-        rusqlite::params![z, x, tms_y],
-        |row| row.get(0),
-    )
-    .ok()
 }
 
 async fn serve_tile(
@@ -634,16 +676,16 @@ async fn serve_tile(
     let key: Key = (Arc::clone(&style), z, x, y);
 
     // Fast path: check cache before acquiring the waiters lock.
-    if let Some(png) = state.cache.lock().unpoison().get(&key).cloned() {
+    if let Some(png) = state.cache.get(&key) {
         return ok_tile(png);
     }
 
     let (tx, rx) = oneshot::channel();
     {
-        // Lock order: waiters → queues → cache (consistent with encoder completion).
+        // Lock order: waiters → queues → cache stripe (consistent with encoder completion).
         let mut waiters = state.dispatch.waiters.lock().unpoison();
         // Double-check under the waiters lock to close the race with a just-finished encoder.
-        if let Some(png) = state.cache.lock().unpoison().get(&key).cloned() {
+        if let Some(png) = state.cache.get(&key) {
             return ok_tile(png);
         }
         if let Some(senders) = waiters.get_mut(&key) {
@@ -651,30 +693,41 @@ async fn serve_tile(
         } else {
             waiters.insert(key.clone(), vec![tx]);
             let mut q = state.dispatch.queues.lock().unpoison();
+            // A real request for (style, z) makes any queued prefetch for a different
+            // style or zoom dead weight — drop it before enqueuing this request.
+            drop_stale_prefetch(&mut q, &style, z);
             q.main.push_back(key.clone());
             // Bound the main queue: drop the stalest (front) request and resolve its
-            // waiters so the client retries rather than waiting out the timeout.
+            // waiters as `Evicted` so the client retries rather than waiting out the timeout.
             if q.main.len() > MAIN_QUEUE_CAP
                 && let Some(stale) = q.main.pop_front()
                 && let Some(senders) = waiters.remove(&stale)
             {
                 for s in senders {
-                    let _ = s.send(None);
+                    let _ = s.send(TileResult::Evicted);
                 }
             }
             // Only prefetch once the workers have caught up, so it never competes
             // with real requests during an active pan.
-            if q.main.len() <= WORKER_COUNT {
-                enqueue_prefetch_ring(&mut q, &waiters, &state.cache, &key);
-            }
+            let prefetched = if q.main.len() <= WORKER_COUNT {
+                enqueue_prefetch_ring(&mut q, &waiters, &state.cache, &key)
+            } else {
+                0
+            };
             drop(q);
-            state.dispatch.cv.notify_all();
+            // Wake one worker per newly enqueued key (main + prefetch), capped at the
+            // worker count, instead of stampeding all workers on every request.
+            let wake = (1 + prefetched).min(WORKER_COUNT);
+            for _ in 0..wake {
+                state.dispatch.cv.notify_one();
+            }
         }
     }
 
     match tokio::time::timeout(std::time::Duration::from_secs(RENDER_TIMEOUT_SECS), rx).await {
-        Ok(Ok(Some(png))) => ok_tile(png),
-        Ok(Ok(None)) => error_tile(StatusCode::INTERNAL_SERVER_ERROR, b"render failed"),
+        Ok(Ok(TileResult::Png(png))) => ok_tile(png),
+        Ok(Ok(TileResult::Evicted)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(TileResult::Failed)) => error_tile(StatusCode::INTERNAL_SERVER_ERROR, b"render failed"),
         _ => {
             eprintln!("[ORM http] TIMEOUT z={z} x={x} y={y}");
             error_tile(StatusCode::GATEWAY_TIMEOUT, b"render timeout")
@@ -711,4 +764,19 @@ pub async fn set_orm_offline(
     }
     handle.set_offline_dir(dir);
     Ok(())
+}
+
+/// Returns the port the ORM tile server actually bound to. The server binds on a
+/// background runtime, so this polls the shared value (published at bind time)
+/// until it is set rather than assuming `PREFERRED_PORT`.
+#[tauri::command]
+pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> Result<u16, String> {
+    for _ in 0..PORT_WAIT_ATTEMPTS {
+        let port = handle.shared.bound_port.load(Ordering::SeqCst);
+        if port != 0 {
+            return Ok(port);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(PORT_WAIT_INTERVAL_MS)).await;
+    }
+    Err("ORM tile server not bound".into())
 }
