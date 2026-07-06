@@ -146,6 +146,17 @@ fn main() {
     #[cfg(target_os = "linux")]
     unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
 
+    // Size mbgl's shared background pool (vector tile layout for all ORM render
+    // workers) to the machine instead of its 4-thread default, which is the tile
+    // throughput ceiling. Half the logical cores, capped at 8 — more showed no
+    // gain in benchmarks. An explicit MLN_BACKGROUND_THREADS wins.
+    // SAFETY: Called at the very start of main, before any threads are spawned.
+    if std::env::var_os("MLN_BACKGROUND_THREADS").is_none() {
+        let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+        let threads = (cores / 2).clamp(4, 8);
+        unsafe { std::env::set_var("MLN_BACKGROUND_THREADS", threads.to_string()) };
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
