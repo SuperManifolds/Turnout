@@ -373,45 +373,44 @@ pub fn AppSettings() -> impl IntoView {
                     </button>
                     <span class="hint">{move || apple_refresh_status.get()}</span>
                 </div>
-                <label>
-                    "Access Key"
-                    <input
-                        type="text"
-                        placeholder="Access key"
-                        prop:disabled=move || apple_auto.get()
-                        prop:value=move || apple_key.get().unwrap_or_default()
-                        on:input=move |ev| {
-                            let v = leptos::event_target_value(&ev);
-                            set_apple_key.set(if v.is_empty() { None } else { Some(v) });
-                        }
-                    />
-                </label>
-                <label>
-                    "Map version"
-                    <input
-                        type="text"
-                        placeholder="v= from map tiles"
-                        prop:disabled=move || apple_auto.get()
-                        prop:value=move || apple_map_ver.get().unwrap_or_default()
-                        on:input=move |ev| {
-                            let v = leptos::event_target_value(&ev);
-                            set_apple_map_ver.set(if v.is_empty() { None } else { Some(v) });
-                        }
-                    />
-                </label>
-                <label>
-                    "Satellite version"
-                    <input
-                        type="text"
-                        placeholder="v= from satellite tiles"
-                        prop:disabled=move || apple_auto.get()
-                        prop:value=move || apple_sat_ver.get().unwrap_or_default()
-                        on:input=move |ev| {
-                            let v = leptos::event_target_value(&ev);
-                            set_apple_sat_ver.set(if v.is_empty() { None } else { Some(v) });
-                        }
-                    />
-                </label>
+                {move || (!apple_auto.get()).then(|| view! {
+                    <label>
+                        "Access Key"
+                        <input
+                            type="text"
+                            placeholder="Access key"
+                            prop:value=move || apple_key.get().unwrap_or_default()
+                            on:input=move |ev| {
+                                let v = leptos::event_target_value(&ev);
+                                set_apple_key.set(if v.is_empty() { None } else { Some(v) });
+                            }
+                        />
+                    </label>
+                    <label>
+                        "Map version"
+                        <input
+                            type="text"
+                            placeholder="v= from map tiles"
+                            prop:value=move || apple_map_ver.get().unwrap_or_default()
+                            on:input=move |ev| {
+                                let v = leptos::event_target_value(&ev);
+                                set_apple_map_ver.set(if v.is_empty() { None } else { Some(v) });
+                            }
+                        />
+                    </label>
+                    <label>
+                        "Satellite version"
+                        <input
+                            type="text"
+                            placeholder="v= from satellite tiles"
+                            prop:value=move || apple_sat_ver.get().unwrap_or_default()
+                            on:input=move |ev| {
+                                let v = leptos::event_target_value(&ev);
+                                set_apple_sat_ver.set(if v.is_empty() { None } else { Some(v) });
+                            }
+                        />
+                    </label>
+                })}
             </fieldset>
 
             <fieldset>
