@@ -111,6 +111,9 @@ pub struct TileState {
     next_id: Mutex<u32>,
     port: u16,
     http: reqwest::Client,
+    /// Path-keyed read-only `MBTiles` connections, reused across tile requests to
+    /// avoid reopening the `SQLite` file on every fetch.
+    mbtiles_conns: Mutex<HashMap<String, Arc<Mutex<rusqlite::Connection>>>>,
 }
 
 pub struct ServerHandle {
@@ -371,6 +374,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default(),
+        mbtiles_conns: Mutex::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -439,15 +443,26 @@ fn decoded_to_pixmap(decoded: &DecodedTile) -> Option<Pixmap> {
     Pixmap::from_vec(data.clone(), tiny_skia::IntSize::from_wh(*w, *h)?)
 }
 
-fn read_mbtiles_tile(path: &str, z: u8, x: u32, tms_y: u32, max_zoom: u8) -> Option<Pixmap> {
+/// Returns a shared, cached read-only connection for `path`, opening it on first use.
+fn mbtiles_conn(state: &TileState, path: &str) -> Option<Arc<Mutex<rusqlite::Connection>>> {
+    let mut conns = state.mbtiles_conns.lock().unpoison();
+    if let Some(conn) = conns.get(path) {
+        return Some(Arc::clone(conn));
+    }
     let conn = rusqlite::Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ).ok()?;
+    let arc = Arc::new(Mutex::new(conn));
+    conns.insert(path.to_string(), Arc::clone(&arc));
+    Some(arc)
+}
+
+fn read_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32, max_zoom: u8) -> Option<Pixmap> {
     if z <= max_zoom {
-        return query_mbtiles_tile(&conn, z, x, tms_y);
+        return query_mbtiles_tile(conn, z, x, tms_y);
     }
-    overzoom_mbtiles_tile(&conn, z, x, tms_y, max_zoom)
+    overzoom_mbtiles_tile(conn, z, x, tms_y, max_zoom)
 }
 
 fn query_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32) -> Option<Pixmap> {
@@ -475,15 +490,9 @@ fn overzoom_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32,
     let src_x = sub_x * region_size;
     let src_y = sub_y * region_size;
 
-    let cropped = image::RgbaImage::from_fn(region_size, region_size, |px, py| {
-        let sx = (src_x + px).min(TILE_SIZE - 1);
-        let sy = (src_y + py).min(TILE_SIZE - 1);
-        let idx = (sy * TILE_SIZE + sx) as usize * 4;
-        let d = parent_pm.data();
-        image::Rgba([d[idx], d[idx + 1], d[idx + 2], d[idx + 3]])
-    });
-
-    let upscaled = image::imageops::resize(&cropped, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle);
+    let parent_img = image::RgbaImage::from_raw(TILE_SIZE, TILE_SIZE, parent_pm.data().to_vec())?;
+    let cropped = image::imageops::crop_imm(&parent_img, src_x, src_y, region_size, region_size);
+    let upscaled = image::imageops::resize(&*cropped, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle);
     let (w, h) = (upscaled.width(), upscaled.height());
     Pixmap::from_vec(upscaled.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
 }
@@ -671,7 +680,6 @@ async fn serve_tile(
     Path((z, x, y)): Path<(u8, u32, u32)>,
     State(state): State<Arc<TileState>>,
 ) -> impl IntoResponse {
-    eprintln!("tile request: z={z} x={x} y={y}");
     let max_coord = 1u32 << z.min(MAX_ZOOM);
     if z > MAX_ZOOM || x >= max_coord || y >= max_coord {
         return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], b"invalid tile coordinates".to_vec());
@@ -703,10 +711,13 @@ async fn serve_tile(
                         if let Some(pm) = decoded_to_pixmap(&cached) {
                             local.insert(l.id, pm);
                         }
-                    } else if let Some(pm) = read_mbtiles_tile(path, z, x, tms_y, *max_zoom) {
-                        let decoded = (pm.data().to_vec(), pm.width(), pm.height());
-                        put_remote_cached(&state, l.id, z, x, y, decoded);
-                        local.insert(l.id, pm);
+                    } else if let Some(conn) = mbtiles_conn(&state, path) {
+                        let pm = read_mbtiles_tile(&conn.lock().unpoison(), z, x, tms_y, *max_zoom);
+                        if let Some(pm) = pm {
+                            let decoded = (pm.data().to_vec(), pm.width(), pm.height());
+                            put_remote_cached(&state, l.id, z, x, y, decoded);
+                            local.insert(l.id, pm);
+                        }
                     }
                 }
                 LayerSource::Kmz { .. } => {}
