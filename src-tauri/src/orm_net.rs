@@ -27,6 +27,9 @@ const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Fallback freshness when the upstream response carries no cache metadata, so
 /// mbgl does not re-fetch unconditionally on every ambient-cache revalidation.
 const DEFAULT_EXPIRES_SECS: u64 = 3600;
+/// Backoff schedule for transient fetch failures (connection, 429, 5xx). One
+/// entry per retry; coalesced waiters share the retries with the fetch.
+const RETRY_BACKOFF_MS: &[u64] = &[200, 500, 1500];
 const USER_AGENT: &str = concat!("turnout/", env!("CARGO_PKG_VERSION"));
 
 struct OrmNetworkSource {
@@ -77,7 +80,24 @@ impl OrmNetworkSource {
         })
     }
 
+    /// Fetches with retries on transient failures. mbgl's built-in
+    /// `OnlineFileSource` (which this source replaces) retried failed requests
+    /// with backoff; without that, a single connection blip or 429 on any of a
+    /// tile's composite sources fails the whole tile render — in Tile mode
+    /// mbgl aborts the render, and the client shows a blank tile.
     async fn fetch(&self, request: &ResourceRequest) -> MlnResponse {
+        let mut response = self.fetch_once(request).await;
+        for delay_ms in RETRY_BACKOFF_MS {
+            if !is_transient(&response) {
+                return response;
+            }
+            tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
+            response = self.fetch_once(request).await;
+        }
+        response
+    }
+
+    async fn fetch_once(&self, request: &ResourceRequest) -> MlnResponse {
         let Ok(permit) = Arc::clone(&self.limiter).acquire_owned().await else {
             return MlnResponse::error(ErrorReason::Other, "fetch limiter closed");
         };
@@ -101,6 +121,18 @@ impl OrmNetworkSource {
         };
         into_mln_response(request, response).await
     }
+}
+
+/// Whether a response represents a failure worth retrying: rate limiting,
+/// server errors, and transport failures. Not-found and other client errors
+/// are final.
+fn is_transient(response: &MlnResponse) -> bool {
+    response.error.as_ref().is_some_and(|e| {
+        matches!(
+            e.reason,
+            ErrorReason::Connection | ErrorReason::RateLimit | ErrorReason::Server
+        )
+    })
 }
 
 async fn into_mln_response(

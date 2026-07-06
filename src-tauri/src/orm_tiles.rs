@@ -53,6 +53,9 @@ const PORT_WAIT_ATTEMPTS: u32 = 40;
 /// Upper bound for requested zoom; guards the bit shifts in overzoom and TMS
 /// row-flip math against absurd zoom values in request paths.
 const MAX_REQUEST_ZOOM: u8 = 22;
+/// Per-worker memory of recently failed keys, granting each tile one transparent
+/// requeue before its waiters get a hard failure.
+const FAILED_KEY_MEMORY: usize = 64;
 
 pub(crate) const STYLES: &[(&str, &str)] = &[
     ("standard", include_str!("../resources/orm/standard.json")),
@@ -552,6 +555,8 @@ fn render_worker_inner(
         HashMap::new();
     let mut render_count: u64 = 0;
     let mut current_gen = shared.generation.load(Ordering::SeqCst);
+    let mut failed_recently: LruCache<Key, ()> =
+        LruCache::new(NonZeroUsize::new(FAILED_KEY_MEMORY).expect("nonzero"));
 
     loop {
         // When both queues are empty, warm one unbuilt style (all 7 over successive
@@ -634,7 +639,18 @@ fn render_worker_inner(
                      {e} ({render_ms}ms)"
                 );
                 renderers.remove(style.as_ref());
-                fail_waiters(dispatch, &key);
+                // A render error aborts the whole tile (mbgl Tile mode is strict),
+                // and the webview never re-requests a tile it saw an error for —
+                // so grant each key one requeue before failing its waiters.
+                let first_failure = failed_recently.put(key.clone(), ()).is_none();
+                if !is_prefetch && first_failure {
+                    let mut q = dispatch.queues.lock().unpoison();
+                    q.main.push_back(key);
+                    drop(q);
+                    dispatch.cv.notify_one();
+                } else {
+                    fail_waiters(dispatch, &key);
+                }
             }
         }
     }
