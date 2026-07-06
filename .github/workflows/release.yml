@@ -91,6 +91,20 @@ jobs:
         if: startsWith(matrix.platform, 'macos')
         run: which ninja || brew install ninja
 
+      # maplibre-native's Windows cmake path needs an MSVC environment (its
+      # vendored-vcpkg toolchain keys off VCINSTALLDIR), Ninja, and long paths
+      # for the deep submodule tree inside the cargo git checkout.
+      - name: Set up MSVC environment (Windows)
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install build tools (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+
       - name: Install Trunk
         run: which trunk || cargo install trunk --locked
 
