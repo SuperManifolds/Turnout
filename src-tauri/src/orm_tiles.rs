@@ -366,7 +366,7 @@ async fn run_server(state: Arc<OrmTileState>, mut shutdown_rx: watch::Receiver<b
             }
         },
     };
-    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let port = listener.local_addr().map_or(0, |a| a.port());
     state.shared.bound_port.store(port, Ordering::SeqCst);
     eprintln!("ORM tile renderer at http://127.0.0.1:{port}/{{style}}/{{z}}/{{y}}/{{x}}.png");
 
