@@ -210,6 +210,57 @@ pub fn AppSettings() -> impl IntoView {
         save_timer.set_value(Some(handle));
     });
 
+    // Pull the current (auto-managed) Apple credentials from the store into the
+    // displayed signals. Called after a manual refresh and on the background
+    // refresher's event so the settings window always shows live values.
+    let sync_apple_from_store = move || {
+        spawn_local(async move {
+            let settings = load_settings().await;
+            set_apple_key.set(settings.apple_access_key);
+            set_apple_map_ver.set(settings.apple_map_version);
+            set_apple_sat_ver.set(settings.apple_sat_version);
+        });
+    };
+
+    let on_refresh_apple = move |_| {
+        set_apple_refresh_status.set("Refreshing…".to_string());
+        spawn_local(async move {
+            match crate::tauri::refresh_apple_token().await {
+                Ok(()) => {
+                    sync_apple_from_store();
+                    set_apple_refresh_status.set("Token refreshed".to_string());
+                }
+                Err(e) => set_apple_refresh_status.set(format!("Refresh failed: {e}")),
+            }
+        });
+    };
+
+    // React to the background refresher: pull fresh values on success, surface the
+    // error on repeated failure.
+    spawn_local(async move {
+        let Ok(tauri_obj) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
+        let Ok(event_mod) = js_sys::Reflect::get(&tauri_obj, &"event".into()) else { return };
+        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
+        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
+
+        let refreshed = Closure::wrap(Box::new(move |_: JsValue| {
+            sync_apple_from_store();
+            set_apple_refresh_status.set("Token refreshed".to_string());
+        }) as Box<dyn Fn(JsValue)>);
+        let _ = listen_fn.call2(&event_mod, &"apple-token-refreshed".into(), refreshed.as_ref().unchecked_ref());
+        refreshed.forget();
+
+        let failed = Closure::wrap(Box::new(move |event: JsValue| {
+            let msg = js_sys::Reflect::get(&event, &"payload".into())
+                .ok()
+                .and_then(|p| p.as_string())
+                .unwrap_or_else(|| "unknown error".to_string());
+            set_apple_refresh_status.set(format!("Auto-refresh failing: {msg}"));
+        }) as Box<dyn Fn(JsValue)>);
+        let _ = listen_fn.call2(&event_mod, &"apple-token-refresh-failed".into(), failed.as_ref().unchecked_ref());
+        failed.forget();
+    });
+
     let on_browse = move |_| {
         spawn_local(async move {
             if let Some(path) = crate::tauri::pick_folder().await {
@@ -354,21 +405,7 @@ pub fn AppSettings() -> impl IntoView {
                 </label>
                 <p class="hint">"Fetches a fresh Apple access key and tile versions before each one expires. Turn off to enter them manually."</p>
                 <div class="settings-row">
-                    <button type="button" on:click=move |_| {
-                        set_apple_refresh_status.set("Refreshing…".to_string());
-                        spawn_local(async move {
-                            match crate::tauri::refresh_apple_token().await {
-                                Ok(()) => {
-                                    let settings = load_settings().await;
-                                    set_apple_key.set(settings.apple_access_key);
-                                    set_apple_map_ver.set(settings.apple_map_version);
-                                    set_apple_sat_ver.set(settings.apple_sat_version);
-                                    set_apple_refresh_status.set("Token refreshed".to_string());
-                                }
-                                Err(e) => set_apple_refresh_status.set(format!("Refresh failed: {e}")),
-                            }
-                        });
-                    }>
+                    <button type="button" on:click=on_refresh_apple>
                         "Refresh now"
                     </button>
                     <span class="hint">{move || apple_refresh_status.get()}</span>

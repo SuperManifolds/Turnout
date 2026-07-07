@@ -174,6 +174,7 @@ fn main() {
                 Ok(h) => { app.manage(h); }
                 Err(e) => eprintln!("ORM tiles failed: {e}"),
             }
+            app.manage(apple_token::AppleRefresh::new());
             apple_token::spawn_auto_refresh(app.handle().clone());
             Ok(())
         })

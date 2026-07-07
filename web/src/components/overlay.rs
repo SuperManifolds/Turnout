@@ -143,7 +143,12 @@ pub fn OverlayDrawer(
             load_apple_creds();
         }) as Box<dyn Fn(wasm_bindgen::JsValue)>);
 
-        let _ = listen_fn.call2(&event_mod, &"settings-changed".into(), callback.as_ref().unchecked_ref());
+        // Reload creds both on a manual settings change and when the background
+        // token refresher stores a fresh key, so newly added Apple layers never
+        // pick up a stale access key.
+        for event in ["settings-changed", "apple-token-refreshed"] {
+            let _ = listen_fn.call2(&event_mod, &event.into(), callback.as_ref().unchecked_ref());
+        }
         callback.forget();
     });
 
