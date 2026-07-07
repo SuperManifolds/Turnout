@@ -92,6 +92,10 @@ fn App() -> impl IntoView {
 
     let (drawer_open, set_drawer_open) = create_signal(false);
     let (overlay_open, set_overlay_open) = create_signal(false);
+    // Shared ORM overlay state: the switcher owns the active mode, the overlay
+    // drawer owns visibility, and each reads the other's signal.
+    let (orm_style, set_orm_style) = create_signal("standard".to_string());
+    let (orm_visible, set_orm_visible) = create_signal(true);
 
     view! {
         <Show when=move || is_settings>
@@ -110,7 +114,11 @@ fn App() -> impl IntoView {
                         set_drawer_open=set_drawer_open
                     />
                     <components::Search />
-                    <components::LayerSwitcher />
+                    <components::LayerSwitcher
+                        orm_style=orm_style
+                        set_orm_style=set_orm_style
+                        orm_visible=orm_visible
+                    />
                     <button id="overlay-toggle" on:click=move |_| set_overlay_open.set(!overlay_open.get()) title="Overlays">
                         <i class="fa-solid fa-layer-group"></i>
                     </button>
@@ -133,6 +141,9 @@ fn App() -> impl IntoView {
                     <components::OverlayDrawer
                         open=overlay_open
                         set_open=set_overlay_open
+                        orm_style=orm_style
+                        orm_visible=orm_visible
+                        set_orm_visible=set_orm_visible
                     />
                     <components::BlueprintDrawer
                         open=drawer_open

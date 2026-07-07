@@ -132,6 +132,7 @@ window.map_add_raster_layer = function(id, source, opacity) {
         paint: { "raster-opacity": opacity },
     });
     update_orm_paint();
+    orm_to_top();
 };
 
 var _orm_source_ids = [];
@@ -161,13 +162,13 @@ window.map_set_orm_style = function(style_name) {
             maxzoom: 19,
             attribution: "&copy; OpenRailwayMap",
         });
-        var beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
+        // No beforeId: the ORM overlay renders on top of every other layer.
         _map.addLayer({
             id: "orm-layer",
             type: "raster",
             source: "orm",
             paint: { "raster-opacity": 0.85 },
-        }, beforeLayer);
+        });
         // Register with preserve_custom_layers so theme changes keep the overlay
         _orm_source_ids = ["orm"];
         _orm_layer_ids = ["orm-layer"];
@@ -182,6 +183,21 @@ window.map_set_orm_style = function(style_name) {
         }, 1000);
     }
 };
+
+// Removes the ORM overlay from the map without discarding the selected style.
+window.map_hide_orm = function() {
+    if (!_map) return;
+    if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
+    if (_map.getSource("orm")) _map.removeSource("orm");
+    _orm_source_ids = [];
+    _orm_layer_ids = [];
+};
+
+// Keeps the ORM overlay above every other layer. Called after any layer is
+// added, since MapLibre inserts new layers on top by default.
+function orm_to_top() {
+    if (_map && _map.getLayer("orm-layer")) _map.moveLayer("orm-layer");
+}
 
 window.map_add_geojson_source = function(id) {
     if (!_map) return;
@@ -199,6 +215,7 @@ window.map_add_fill_layer = function(id, source, color, opacity) {
         source: source,
         paint: { "fill-color": color, "fill-opacity": opacity },
     });
+    orm_to_top();
 };
 
 window.map_add_line_layer = function(id, source, color, width) {
@@ -209,6 +226,7 @@ window.map_add_line_layer = function(id, source, color, width) {
         source: source,
         paint: { "line-color": color, "line-width": width },
     });
+    orm_to_top();
 };
 
 window.map_set_geojson = function(source_id, geojson_str) {
@@ -261,6 +279,7 @@ window.map_add_circle_layer = function(id, source, color, radius) {
             "circle-stroke-width": 2,
         },
     });
+    orm_to_top();
 };
 
 window.map_add_preview_layer = function() {
@@ -294,6 +313,7 @@ window.map_add_preview_layer = function() {
             "line-opacity": 0.9
         }
     }, beforeLayer);
+    orm_to_top();
 };
 
 window.map_set_bbox_color = function(color) {
@@ -340,6 +360,7 @@ window.map_add_overlay_layer = function(id, url, opacity) {
     }, beforeLayer);
     _dynamic_source_ids.add(id);
     _dynamic_layer_ids.add(id + "-layer");
+    orm_to_top();
 };
 
 window.map_remove_overlay_layer = function(id) {

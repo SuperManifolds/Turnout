@@ -1,4 +1,4 @@
-use leptos::{wasm_bindgen, component, view, IntoView, create_signal, SignalSet, CollectView, SignalGet};
+use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, SignalSet, CollectView, SignalGet};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -17,13 +17,18 @@ const ORM_STYLES: &[(&str, &str)] = &[
 ];
 
 #[component]
-pub fn LayerSwitcher() -> impl IntoView {
-    let (active, set_active) = create_signal("standard".to_string());
-
+pub fn LayerSwitcher(
+    orm_style: ReadSignal<String>,
+    set_orm_style: WriteSignal<String>,
+    orm_visible: ReadSignal<bool>,
+) -> impl IntoView {
     let on_change = move |style: &str| {
-        let s = style.to_string();
-        set_active.set(s.clone());
-        map_set_orm_style(&s);
+        set_orm_style.set(style.to_string());
+        // Only push to the map when the overlay is shown; otherwise the choice
+        // takes effect when it is toggled back on from the layers list.
+        if orm_visible.get() {
+            map_set_orm_style(style);
+        }
     };
 
     view! {
@@ -33,7 +38,7 @@ pub fn LayerSwitcher() -> impl IntoView {
                 let id_click = id.to_string();
                 view! {
                     <button
-                        class:active=move || active.get() == id_active
+                        class:active=move || orm_style.get() == id_active
                         on:click=move |_| on_change(&id_click)
                     >
                         {label}
