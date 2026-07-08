@@ -34,16 +34,16 @@ const USER_AGENT: &str =
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Refresh this long before the reported expiry, absorbing clock skew and the round
 /// trip so a request never goes out with an already-dead key.
-const REFRESH_LEAD: Duration = Duration::from_secs(120);
+const REFRESH_LEAD: Duration = Duration::from_mins(2);
 /// Floor on the wait between refreshes, guarding against a tiny/zero `expiresInSeconds`.
-const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const MIN_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 /// First delay after a failed refresh; doubles each consecutive failure up to
 /// `MAX_RETRY_INTERVAL`.
 const BASE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
-const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(300);
+const MAX_RETRY_INTERVAL: Duration = Duration::from_mins(5);
 /// Poll interval while auto-refresh is disabled (only reached if the wake signal
 /// is missed).
-const DISABLED_POLL_INTERVAL: Duration = Duration::from_secs(300);
+const DISABLED_POLL_INTERVAL: Duration = Duration::from_mins(5);
 /// Consecutive failures before the frontend is notified so the UI can surface it.
 const FAILURE_NOTIFY_THRESHOLD: u32 = 3;
 const SETTINGS_STORE: &str = "settings.json";
