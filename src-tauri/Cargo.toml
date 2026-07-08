@@ -28,7 +28,7 @@ lru = "0.12"
 quick-xml = "0.37"
 tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
-maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "59b1b5e2bea0306d163c09711cfc6a9a8d3058a0", features = ["json", "tokio"] }
+maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "b83e39b0fb198931ae67aa5cb401b6d38d176e9b", features = ["json", "tokio"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
