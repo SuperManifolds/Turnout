@@ -3936,6 +3936,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orm-bench"
+version = "0.0.0"
+dependencies = [
+ "maplibre_native",
+ "serde_json",
+]
+
+[[package]]
 name = "osakit"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
