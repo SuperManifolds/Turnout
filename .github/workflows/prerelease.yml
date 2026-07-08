@@ -126,6 +126,11 @@ jobs:
         with:
           releaseId: ${{ needs.create-prerelease.outputs.release_id }}
           assetNamePattern: "[name]_[arch][_setup][ext]"
+          # Nightlies are unsigned test builds, so skip updater artifacts — their
+          # signature needs TAURI_SIGNING_PRIVATE_KEY (only the tagged release
+          # workflow has it), and the auto-updater tracks tagged releases, not
+          # this rolling pre-release.
+          args: '--config {"bundle":{"createUpdaterArtifacts":false}}'
 
   publish-prerelease:
     needs: [create-prerelease, build]
