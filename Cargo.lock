@@ -3320,7 +3320,7 @@ dependencies = [
 [[package]]
 name = "maplibre_native"
 version = "0.8.4"
-source = "git+https://github.com/SuperManifolds/maplibre-native-rs?rev=b83e39b0fb198931ae67aa5cb401b6d38d176e9b#b83e39b0fb198931ae67aa5cb401b6d38d176e9b"
+source = "git+https://github.com/SuperManifolds/maplibre-native-rs?rev=29f4464#29f4464998da8023b5ee5a3d40738082bb23431d"
 dependencies = [
  "cmake",
  "cxx",
@@ -3933,6 +3933,14 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "orm-bench"
+version = "0.0.0"
+dependencies = [
+ "maplibre_native",
+ "serde_json",
 ]
 
 [[package]]
