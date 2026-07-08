@@ -244,6 +244,18 @@ window.map_set_drag_pan = function(enabled) {
     else _map.dragPan.disable();
 };
 
+window.map_set_rotate = function(enabled) {
+    if (!_map) return;
+    if (enabled) {
+        _map.dragRotate.enable();
+        _map.touchZoomRotate.enableRotation();
+    } else {
+        _map.dragRotate.disable();
+        _map.touchZoomRotate.disableRotation();
+        _map.setBearing(0);
+    }
+};
+
 window.map_on_mousedown = function(callback) {
     if (_map) _map.on("mousedown", function(e) {
         callback(e.lngLat.lng, e.lngLat.lat);
