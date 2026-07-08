@@ -22,6 +22,7 @@ extern "C" {
     fn map_set_geojson(source_id: &str, geojson_str: &str);
     fn map_set_cursor(cursor: &str);
     fn map_set_drag_pan(enabled: bool);
+    fn map_set_rotate(enabled: bool);
     fn map_fly_to(lng: f64, lat: f64, zoom: f64);
     fn map_add_preview_layer();
     fn map_on_mousedown(callback: &Closure<dyn Fn(f64, f64)>);
@@ -399,6 +400,7 @@ pub fn Map(
         mode.set_value(Mode::Drawing);
         map_set_cursor("crosshair");
         map_set_drag_pan(false);
+        map_set_rotate(false);
     };
 
     let on_clear = move |_| {
@@ -410,6 +412,7 @@ pub fn Map(
         set_has_selection.set(false);
         set_available_types.set(vec![]);
         mode.set_value(Mode::Idle);
+        map_set_rotate(true);
         set_status.set("Navigate to an area, then click Select Area".into());
     };
 
