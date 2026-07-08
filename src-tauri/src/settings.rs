@@ -1,4 +1,4 @@
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
 const SETTINGS_STORE: &str = "settings.json";
@@ -8,12 +8,26 @@ pub struct Settings {
     pub mods_dir_override: Option<String>,
     pub check_for_updates: bool,
     pub map_theme: String,
+    #[serde(default = "default_overpass_timeout")]
+    pub overpass_timeout: u32,
+    #[serde(default)]
+    pub type_speed_overrides: std::collections::HashMap<String, u32>,
     #[serde(default)]
     pub apple_access_key: Option<String>,
     #[serde(default)]
     pub apple_map_version: Option<String>,
     #[serde(default)]
     pub apple_sat_version: Option<String>,
+    #[serde(default = "default_true")]
+    pub apple_auto_refresh: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_overpass_timeout() -> u32 {
+    60
 }
 
 impl Default for Settings {
@@ -22,9 +36,12 @@ impl Default for Settings {
             mods_dir_override: None,
             check_for_updates: true,
             map_theme: "system".to_string(),
+            overpass_timeout: 60,
+            type_speed_overrides: std::collections::HashMap::new(),
             apple_access_key: None,
             apple_map_version: None,
             apple_sat_version: None,
+            apple_auto_refresh: true,
         }
     }
 }
@@ -42,12 +59,21 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
         map_theme: store.get("map_theme")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| "system".to_string()),
+        overpass_timeout: store.get("overpass_timeout")
+            .and_then(|v| u32::try_from(v.as_u64()?).ok())
+            .unwrap_or(60),
+        type_speed_overrides: store.get("type_speed_overrides")
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         apple_access_key: store.get("apple_access_key")
             .and_then(|v| v.as_str().map(String::from)),
         apple_map_version: store.get("apple_map_version")
             .and_then(|v| v.as_str().map(String::from)),
         apple_sat_version: store.get("apple_sat_version")
             .and_then(|v| v.as_str().map(String::from)),
+        apple_auto_refresh: store.get("apple_auto_refresh")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
     }
 }
 
@@ -64,11 +90,24 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
     store.set("check_for_updates", serde_json::json!(settings.check_for_updates));
     store.set("map_theme", serde_json::json!(settings.map_theme));
-    store.set("apple_access_key", serde_json::json!(settings.apple_access_key));
-    store.set("apple_map_version", serde_json::json!(settings.apple_map_version));
-    store.set("apple_sat_version", serde_json::json!(settings.apple_sat_version));
+    store.set("overpass_timeout", serde_json::json!(settings.overpass_timeout));
+    store.set("type_speed_overrides", serde_json::json!(settings.type_speed_overrides));
+    store.set("apple_auto_refresh", serde_json::json!(settings.apple_auto_refresh));
+    // While auto-refresh owns the Apple credentials, leave them untouched so a
+    // manual save from the settings window (which may hold stale, auto-populated
+    // values) can't overwrite the fresher key the refresher just stored.
+    if !settings.apple_auto_refresh {
+        store.set("apple_access_key", serde_json::json!(settings.apple_access_key));
+        store.set("apple_map_version", serde_json::json!(settings.apple_map_version));
+        store.set("apple_sat_version", serde_json::json!(settings.apple_sat_version));
+    }
     store.save().map_err(|e| e.to_string())?;
     let _ = app.emit("settings-changed", &settings);
+    // Re-evaluate auto-refresh now (e.g. it was just re-enabled) instead of
+    // waiting out the loop's current sleep.
+    if let Some(refresh) = app.try_state::<crate::apple_token::AppleRefresh>() {
+        refresh.wake();
+    }
     Ok(())
 }
 

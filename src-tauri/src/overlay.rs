@@ -449,6 +449,18 @@ pub fn update_apple_urls(
     map_version: Option<String>,
     sat_version: Option<String>,
 ) -> OverlayStatus {
+    apply_apple_credentials(&app, &access_key, map_version.as_deref(), sat_version.as_deref())
+}
+
+/// Rewrites every live Apple layer's tile URL with a fresh access key and per-kind
+/// version, then persists the overlay set. Shared by the manual `update_apple_urls`
+/// command and the automatic token refresher.
+pub(crate) fn apply_apple_credentials(
+    app: &tauri::AppHandle,
+    access_key: &str,
+    map_version: Option<&str>,
+    sat_version: Option<&str>,
+) -> OverlayStatus {
     let state = app.state::<OverlayState>();
     let groups = state.groups.lock().unpoison();
     for group in groups.iter() {
@@ -463,15 +475,15 @@ pub fn update_apple_urls(
         drop(layers);
 
         for (id, is_sat) in apple_layers {
-            let ver = if is_sat { &sat_version } else { &map_version };
+            let ver = if is_sat { sat_version } else { map_version };
             let Some(ver) = ver else { continue };
-            let url = turnout_core::geo::apple_tile_url(&access_key, ver, is_sat);
+            let url = turnout_core::geo::apple_tile_url(access_key, ver, is_sat);
             group.handle.update_xyz_url(id, url);
         }
     }
     let status = build_status(&groups);
     drop(groups);
-    save_groups(&app);
+    save_groups(app);
     status
 }
 

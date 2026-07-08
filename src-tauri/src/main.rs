@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod apple_token;
 mod arcgis;
 mod blueprint;
 mod import;
@@ -173,6 +174,8 @@ fn main() {
                 Ok(h) => { app.manage(h); }
                 Err(e) => eprintln!("ORM tiles failed: {e}"),
             }
+            app.manage(apple_token::AppleRefresh::new());
+            apple_token::spawn_auto_refresh(app.handle().clone());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -216,6 +219,7 @@ fn main() {
             overlay::add_xyz_layer,
             overlay::add_mbtiles_layer,
             overlay::update_apple_urls,
+            apple_token::refresh_apple_token,
             overlay::fetch_wmts_layers,
             overlay::move_layer,
             overlay::remove_overlay,

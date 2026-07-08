@@ -17,9 +17,12 @@ pub struct Settings {
     pub apple_map_version: Option<String>,
     #[serde(default)]
     pub apple_sat_version: Option<String>,
+    #[serde(default = "default_true")]
+    pub apple_auto_refresh: bool,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
+fn default_true() -> bool { true }
 
 impl Default for Settings {
     fn default() -> Self {
@@ -32,6 +35,7 @@ impl Default for Settings {
             apple_access_key: None,
             apple_map_version: None,
             apple_sat_version: None,
+            apple_auto_refresh: true,
         }
     }
 }
@@ -132,6 +136,8 @@ pub fn AppSettings() -> impl IntoView {
     let (apple_key, set_apple_key) = create_signal::<Option<String>>(None);
     let (apple_map_ver, set_apple_map_ver) = create_signal::<Option<String>>(None);
     let (apple_sat_ver, set_apple_sat_ver) = create_signal::<Option<String>>(None);
+    let (apple_auto, set_apple_auto) = create_signal(true);
+    let (apple_refresh_status, set_apple_refresh_status) = create_signal(String::new());
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
     let (update_status, set_update_status) = create_signal(String::new());
@@ -149,6 +155,7 @@ pub fn AppSettings() -> impl IntoView {
             set_apple_key.set(settings.apple_access_key);
             set_apple_map_ver.set(settings.apple_map_version);
             set_apple_sat_ver.set(settings.apple_sat_version);
+            set_apple_auto.set(settings.apple_auto_refresh);
             set_loaded.set(true);
             fit_window_to_content();
 
@@ -171,6 +178,7 @@ pub fn AppSettings() -> impl IntoView {
         let ak = apple_key.get();
         let amv = apple_map_ver.get();
         let asv = apple_sat_ver.get();
+        let auto = apple_auto.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -186,6 +194,7 @@ pub fn AppSettings() -> impl IntoView {
                 apple_access_key: ak,
                 apple_map_version: amv,
                 apple_sat_version: asv,
+                apple_auto_refresh: auto,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -199,6 +208,57 @@ pub fn AppSettings() -> impl IntoView {
             ).unwrap_or(0);
         cb.forget();
         save_timer.set_value(Some(handle));
+    });
+
+    // Pull the current (auto-managed) Apple credentials from the store into the
+    // displayed signals. Called after a manual refresh and on the background
+    // refresher's event so the settings window always shows live values.
+    let sync_apple_from_store = move || {
+        spawn_local(async move {
+            let settings = load_settings().await;
+            set_apple_key.set(settings.apple_access_key);
+            set_apple_map_ver.set(settings.apple_map_version);
+            set_apple_sat_ver.set(settings.apple_sat_version);
+        });
+    };
+
+    let on_refresh_apple = move |_| {
+        set_apple_refresh_status.set("Refreshing…".to_string());
+        spawn_local(async move {
+            match crate::tauri::refresh_apple_token().await {
+                Ok(()) => {
+                    sync_apple_from_store();
+                    set_apple_refresh_status.set("Token refreshed".to_string());
+                }
+                Err(e) => set_apple_refresh_status.set(format!("Refresh failed: {e}")),
+            }
+        });
+    };
+
+    // React to the background refresher: pull fresh values on success, surface the
+    // error on repeated failure.
+    spawn_local(async move {
+        let Ok(tauri_obj) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
+        let Ok(event_mod) = js_sys::Reflect::get(&tauri_obj, &"event".into()) else { return };
+        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
+        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
+
+        let refreshed = Closure::wrap(Box::new(move |_: JsValue| {
+            sync_apple_from_store();
+            set_apple_refresh_status.set("Token refreshed".to_string());
+        }) as Box<dyn Fn(JsValue)>);
+        let _ = listen_fn.call2(&event_mod, &"apple-token-refreshed".into(), refreshed.as_ref().unchecked_ref());
+        refreshed.forget();
+
+        let failed = Closure::wrap(Box::new(move |event: JsValue| {
+            let msg = js_sys::Reflect::get(&event, &"payload".into())
+                .ok()
+                .and_then(|p| p.as_string())
+                .unwrap_or_else(|| "unknown error".to_string());
+            set_apple_refresh_status.set(format!("Auto-refresh failing: {msg}"));
+        }) as Box<dyn Fn(JsValue)>);
+        let _ = listen_fn.call2(&event_mod, &"apple-token-refresh-failed".into(), failed.as_ref().unchecked_ref());
+        failed.forget();
     });
 
     let on_browse = move |_| {
@@ -339,42 +399,55 @@ pub fn AppSettings() -> impl IntoView {
 
             <fieldset>
                 <legend>"Apple Maps"</legend>
-                <label>
-                    "Access Key"
-                    <input
-                        type="text"
-                        placeholder="Access key"
-                        prop:value=move || apple_key.get().unwrap_or_default()
-                        on:input=move |ev| {
-                            let v = leptos::event_target_value(&ev);
-                            set_apple_key.set(if v.is_empty() { None } else { Some(v) });
-                        }
-                    />
+                <label on:click=move |_| set_apple_auto.update(|v| *v = !*v)>
+                    <i class=move || if apple_auto.get() { "fa-solid fa-square-check" } else { "fa-regular fa-square" }></i>
+                    " Refresh access token automatically"
                 </label>
-                <label>
-                    "Map version"
-                    <input
-                        type="text"
-                        placeholder="v= from map tiles"
-                        prop:value=move || apple_map_ver.get().unwrap_or_default()
-                        on:input=move |ev| {
-                            let v = leptos::event_target_value(&ev);
-                            set_apple_map_ver.set(if v.is_empty() { None } else { Some(v) });
-                        }
-                    />
-                </label>
-                <label>
-                    "Satellite version"
-                    <input
-                        type="text"
-                        placeholder="v= from satellite tiles"
-                        prop:value=move || apple_sat_ver.get().unwrap_or_default()
-                        on:input=move |ev| {
-                            let v = leptos::event_target_value(&ev);
-                            set_apple_sat_ver.set(if v.is_empty() { None } else { Some(v) });
-                        }
-                    />
-                </label>
+                <p class="hint">"Fetches a fresh Apple access key and tile versions before each one expires. Turn off to enter them manually."</p>
+                <div class="settings-row">
+                    <button type="button" on:click=on_refresh_apple>
+                        "Refresh now"
+                    </button>
+                    <span class="hint">{move || apple_refresh_status.get()}</span>
+                </div>
+                {move || (!apple_auto.get()).then(|| view! {
+                    <label>
+                        "Access Key"
+                        <input
+                            type="text"
+                            placeholder="Access key"
+                            prop:value=move || apple_key.get().unwrap_or_default()
+                            on:input=move |ev| {
+                                let v = leptos::event_target_value(&ev);
+                                set_apple_key.set(if v.is_empty() { None } else { Some(v) });
+                            }
+                        />
+                    </label>
+                    <label>
+                        "Map version"
+                        <input
+                            type="text"
+                            placeholder="v= from map tiles"
+                            prop:value=move || apple_map_ver.get().unwrap_or_default()
+                            on:input=move |ev| {
+                                let v = leptos::event_target_value(&ev);
+                                set_apple_map_ver.set(if v.is_empty() { None } else { Some(v) });
+                            }
+                        />
+                    </label>
+                    <label>
+                        "Satellite version"
+                        <input
+                            type="text"
+                            placeholder="v= from satellite tiles"
+                            prop:value=move || apple_sat_ver.get().unwrap_or_default()
+                            on:input=move |ev| {
+                                let v = leptos::event_target_value(&ev);
+                                set_apple_sat_ver.set(if v.is_empty() { None } else { Some(v) });
+                            }
+                        />
+                    </label>
+                })}
             </fieldset>
 
             <fieldset>

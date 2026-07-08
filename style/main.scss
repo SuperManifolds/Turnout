@@ -804,11 +804,15 @@ button {
         }
     }
 
-    .path-display {
+    .path-display,
+    .hint {
         font-size: var(--font-size-sm);
         color: var(--color-text-secondary);
-        word-break: break-all;
         margin: 0;
+    }
+
+    .path-display {
+        word-break: break-all;
     }
 
     label {
@@ -834,10 +838,14 @@ button {
         &:focus { outline: none; border-color: var(--color-accent); }
     }
 
+    .settings-row,
     .speed-override-row {
         display: flex;
         align-items: center;
         gap: var(--spacing-sm);
+    }
+
+    .speed-override-row {
         margin-bottom: var(--spacing-xs);
 
         label {
