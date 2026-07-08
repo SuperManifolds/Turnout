@@ -8,6 +8,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # sccache caches compiled artifacts across runs so the maplibre-native C++ core
+  # (the dominant build cost) is not recompiled from scratch. It caches both the
+  # cmake C++ build (via MLN_CMAKE_CXX_LAUNCHER, which the fork forwards to cmake)
+  # and rustc (RUSTC_WRAPPER); incremental compilation is not cacheable so it is off.
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  MLN_CMAKE_CXX_LAUNCHER: sccache
 
 jobs:
   check:
@@ -21,6 +29,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -29,15 +40,14 @@ jobs:
             cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev \
             glslang-dev glslang-tools
 
-      - name: Cache Cargo
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-check-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - run: cargo check --all-targets
 
@@ -53,6 +63,9 @@ jobs:
           targets: wasm32-unknown-unknown
           components: clippy
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -61,15 +74,14 @@ jobs:
             cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev \
             glslang-dev glslang-tools
 
-      - name: Cache Cargo
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-clippy-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -87,6 +99,9 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -116,15 +131,14 @@ jobs:
           git config --system core.longpaths true
           if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
-      - name: Cache Cargo
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       # turnout-web is a wasm-only frontend crate (no host tests); it is
       # exercised by `trunk build` in the release workflow.
