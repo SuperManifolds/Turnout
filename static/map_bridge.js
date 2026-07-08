@@ -1,5 +1,17 @@
 // Thin wrappers around MapLibre GL JS API — all logic lives in Rust.
 
+const MAX_PARALLEL_IMAGE_REQUESTS = 32;
+
+// Raise the shared raster fetch ceiling (default 16) so the 6 ORM render workers
+// stay fed. Set once at load, before any map is created.
+if (typeof maplibregl !== "undefined") {
+    if (typeof maplibregl.setMaxParallelImageRequests === "function") {
+        maplibregl.setMaxParallelImageRequests(MAX_PARALLEL_IMAGE_REQUESTS);
+    } else {
+        maplibregl.maxParallelImageRequests = MAX_PARALLEL_IMAGE_REQUESTS;
+    }
+}
+
 let _map = null;
 let _map_loaded = false;
 let _dynamic_source_ids = new Set();
@@ -8,8 +20,8 @@ let _theme_override = "system"; // "system", "light", "dark"
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-const CUSTOM_SOURCE_IDS = ["orm", "preview", "bbox", "handles", "kmz-overlay"];
-const CUSTOM_LAYER_IDS = ["orm-layer", "preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer", "kmz-overlay-layer"];
+const CUSTOM_SOURCE_IDS = ["preview", "bbox", "handles", "kmz-overlay"];
+const CUSTOM_LAYER_IDS = ["preview-glow", "preview-layer", "bbox-fill", "bbox-outline", "handles-layer", "kmz-overlay-layer"];
 const PREVIEW_COLOR = "#0693FF";
 const PREVIEW_LINE_WIDTH = 4;
 const PREVIEW_GLOW_WIDTH = 8;
@@ -26,11 +38,11 @@ function get_preferred_style() {
 function preserve_custom_layers(prev, next) {
     if (!prev) return next;
     const sources = Object.assign({}, next.sources);
-    var allSourceIds = CUSTOM_SOURCE_IDS.concat(Array.from(_dynamic_source_ids));
+    var allSourceIds = CUSTOM_SOURCE_IDS.concat(Array.from(_dynamic_source_ids)).concat(_orm_source_ids);
     allSourceIds.forEach(function(id) {
         if (prev.sources[id]) sources[id] = prev.sources[id];
     });
-    var allLayerIds = CUSTOM_LAYER_IDS.concat(Array.from(_dynamic_layer_ids));
+    var allLayerIds = CUSTOM_LAYER_IDS.concat(Array.from(_dynamic_layer_ids)).concat(_orm_layer_ids);
     const customLayers = prev.layers.filter(function(l) {
         return allLayerIds.indexOf(l.id) >= 0;
     });
@@ -107,20 +119,8 @@ window.map_set_theme = function(theme) {
 };
 
 function update_orm_paint() {
-    if (!_map || !_map.getLayer("orm-layer")) return;
-    if (is_dark()) {
-        _map.setPaintProperty("orm-layer", "raster-brightness-max", 0.7);
-        _map.setPaintProperty("orm-layer", "raster-brightness-min", 0.25);
-        _map.setPaintProperty("orm-layer", "raster-contrast", 0.0);
-        _map.setPaintProperty("orm-layer", "raster-saturation", 0.3);
-        _map.setPaintProperty("orm-layer", "raster-opacity", 0.85);
-    } else {
-        _map.setPaintProperty("orm-layer", "raster-brightness-max", 1.0);
-        _map.setPaintProperty("orm-layer", "raster-brightness-min", 0.0);
-        _map.setPaintProperty("orm-layer", "raster-contrast", 0.0);
-        _map.setPaintProperty("orm-layer", "raster-saturation", 0.0);
-        _map.setPaintProperty("orm-layer", "raster-opacity", 0.7);
-    }
+    // Raster ORM layer doesn't need theme-specific adjustments
+    // since maplibre-native renders with the light theme style
 }
 
 window.map_add_raster_layer = function(id, source, opacity) {
@@ -132,29 +132,72 @@ window.map_add_raster_layer = function(id, source, opacity) {
         paint: { "raster-opacity": opacity },
     });
     update_orm_paint();
+    orm_to_top();
+};
+
+var _orm_source_ids = [];
+var _orm_layer_ids = [];
+var _orm_current_style = null;
+var _orm_port = null;
+
+// Publish the ORM tile server's actual bound port before any ORM source is added.
+window.map_set_orm_port = function(port) {
+    _orm_port = port;
 };
 
 window.map_set_orm_style = function(style_name) {
     if (!_map) return;
-    // Remove existing ORM layer and source, then re-add with new tiles
+    if (_orm_port === null) return;
+
+    // Remove previous ORM layer/source
     if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
     if (_map.getSource("orm")) _map.removeSource("orm");
-    _map.addSource("orm", {
-        type: "raster",
-        tiles: ["https://tiles.openrailwaymap.org/" + style_name + "/{z}/{x}/{y}.png"],
-        tileSize: 256,
-        attribution: "&copy; OpenRailwayMap",
-    });
-    // Insert below bbox layers so selection draws on top
-    const beforeLayer = _map.getLayer("bbox-fill") ? "bbox-fill" : undefined;
-    _map.addLayer({
-        id: "orm-layer",
-        type: "raster",
-        source: "orm",
-        paint: { "raster-opacity": 0.7 },
-    }, beforeLayer);
-    update_orm_paint();
+    _orm_current_style = style_name;
+
+    try {
+        _map.addSource("orm", {
+            type: "raster",
+            tiles: ["http://127.0.0.1:" + _orm_port + "/" + style_name + "/{z}/{y}/{x}.png"],
+            tileSize: 512,
+            maxzoom: 19,
+            attribution: "&copy; OpenRailwayMap",
+        });
+        // No beforeId: the ORM overlay renders on top of every other layer.
+        _map.addLayer({
+            id: "orm-layer",
+            type: "raster",
+            source: "orm",
+            paint: { "raster-opacity": 0.85 },
+        });
+        // Register with preserve_custom_layers so theme changes keep the overlay
+        _orm_source_ids = ["orm"];
+        _orm_layer_ids = ["orm-layer"];
+        // Force tile loading by triggering a repaint
+        _map.triggerRepaint();
+    } catch (e) {
+        console.error("[ORM] Failed to set style:", e);
+        // Retry after a short delay
+        setTimeout(function() {
+            console.log("[ORM] Retrying style '" + style_name + "'...");
+            map_set_orm_style(style_name);
+        }, 1000);
+    }
 };
+
+// Removes the ORM overlay from the map without discarding the selected style.
+window.map_hide_orm = function() {
+    if (!_map) return;
+    if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
+    if (_map.getSource("orm")) _map.removeSource("orm");
+    _orm_source_ids = [];
+    _orm_layer_ids = [];
+};
+
+// Keeps the ORM overlay above every other layer. Called after any layer is
+// added, since MapLibre inserts new layers on top by default.
+function orm_to_top() {
+    if (_map && _map.getLayer("orm-layer")) _map.moveLayer("orm-layer");
+}
 
 window.map_add_geojson_source = function(id) {
     if (!_map) return;
@@ -172,6 +215,7 @@ window.map_add_fill_layer = function(id, source, color, opacity) {
         source: source,
         paint: { "fill-color": color, "fill-opacity": opacity },
     });
+    orm_to_top();
 };
 
 window.map_add_line_layer = function(id, source, color, width) {
@@ -182,6 +226,7 @@ window.map_add_line_layer = function(id, source, color, width) {
         source: source,
         paint: { "line-color": color, "line-width": width },
     });
+    orm_to_top();
 };
 
 window.map_set_geojson = function(source_id, geojson_str) {
@@ -234,6 +279,7 @@ window.map_add_circle_layer = function(id, source, color, radius) {
             "circle-stroke-width": 2,
         },
     });
+    orm_to_top();
 };
 
 window.map_add_preview_layer = function() {
@@ -267,6 +313,7 @@ window.map_add_preview_layer = function() {
             "line-opacity": 0.9
         }
     }, beforeLayer);
+    orm_to_top();
 };
 
 window.map_set_bbox_color = function(color) {
@@ -313,6 +360,7 @@ window.map_add_overlay_layer = function(id, url, opacity) {
     }, beforeLayer);
     _dynamic_source_ids.add(id);
     _dynamic_layer_ids.add(id + "-layer");
+    orm_to_top();
 };
 
 window.map_remove_overlay_layer = function(id) {

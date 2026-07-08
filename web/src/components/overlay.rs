@@ -11,6 +11,21 @@ extern "C" {
     fn map_add_overlay_layer(id: &str, url: &str, opacity: f64);
     fn map_remove_overlay_layer(id: &str);
     fn map_fit_bounds(west: f64, south: f64, east: f64, north: f64);
+    fn map_set_orm_style(style_name: &str);
+    fn map_hide_orm();
+}
+
+/// Human-readable name for an ORM style id, for the built-in layer label.
+fn orm_mode_label(style: &str) -> &'static str {
+    match style {
+        "speed" => "Speed",
+        "signals" => "Signals",
+        "electrification" => "Electrification",
+        "track" => "Track",
+        "operator" => "Operator",
+        "route" => "Route",
+        _ => "Infrastructure",
+    }
 }
 
 fn source_id(group_id: u32) -> String {
@@ -67,11 +82,16 @@ struct ServiceEntry {
 pub fn OverlayDrawer(
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
+    orm_style: ReadSignal<String>,
+    orm_visible: ReadSignal<bool>,
+    set_orm_visible: WriteSignal<bool>,
 ) -> impl IntoView {
     let (status, set_status) = create_signal(tauri::OverlayStatus { groups: Vec::new() });
     let (loading, set_loading) = create_signal(false);
     let (toast, set_toast) = create_signal::<Option<String>>(None);
     let (copied_group, set_copied_group) = create_signal::<Option<u32>>(None);
+    let (orm_copied, set_orm_copied) = create_signal(false);
+    let (orm_port, set_orm_port) = create_signal::<Option<u16>>(None);
 
     let (active_form, set_active_form) = create_signal(ServiceForm::None);
     let (target_group, set_target_group) = create_signal::<Option<u32>>(None);
@@ -262,6 +282,42 @@ pub fn OverlayDrawer(
                 }),
             ).await;
             set_copied_group.set(None);
+        });
+    };
+
+    // Resolve the ORM tile server port once so the copy button can build endpoint
+    // URLs; the toggle itself works without it.
+    spawn_local(async move {
+        if let Ok(port) = tauri::get_orm_port().await {
+            set_orm_port.set(Some(port));
+        }
+    });
+
+    let on_toggle_orm = move |_| {
+        let visible = !orm_visible.get();
+        set_orm_visible.set(visible);
+        if visible {
+            map_set_orm_style(&orm_style.get());
+        } else {
+            map_hide_orm();
+        }
+    };
+
+    let on_copy_orm = move |_| {
+        let Some(port) = orm_port.get() else { return };
+        let url = format!("http://127.0.0.1:{port}/{}/tilejson.json", orm_style.get());
+        spawn_local(async move {
+            let Some(window) = web_sys::window() else { return };
+            let _ = wasm_bindgen_futures::JsFuture::from(
+                window.navigator().clipboard().write_text(&url),
+            ).await;
+            set_orm_copied.set(true);
+            let _ = wasm_bindgen_futures::JsFuture::from(
+                js_sys::Promise::new(&mut |resolve, _| {
+                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 2000);
+                }),
+            ).await;
+            set_orm_copied.set(false);
         });
     };
 
@@ -488,6 +544,25 @@ pub fn OverlayDrawer(
                 </Show>
 
                 <div class="groups-list">
+                    <section class="group-section">
+                        <ul class="group-layers">
+                            <li class="overlay-item">
+                                <button class="icon-btn visibility-toggle"
+                                    on:click=on_toggle_orm
+                                    title=move || if orm_visible.get() { "Hide" } else { "Show" }
+                                >
+                                    <i class=move || if orm_visible.get() { "fa-solid fa-eye" } else { "fa-solid fa-eye-slash" }></i>
+                                </button>
+                                <i class="fa-solid fa-train-tram overlay-icon"></i>
+                                <input class="layer-name" type="text" readonly=true
+                                    prop:value=move || format!("OpenRailwayMap \u{00b7} {}", orm_mode_label(&orm_style.get()))
+                                />
+                                <button class="icon-btn" title="Copy TileJSON URL" on:click=on_copy_orm>
+                                    <i class=move || if orm_copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
+                                </button>
+                            </li>
+                        </ul>
+                    </section>
                     {move || status.get().groups.iter().map(|g| {
                         let gid = g.id;
                         let gname = g.name.clone();

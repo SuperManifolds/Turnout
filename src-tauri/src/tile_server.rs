@@ -78,7 +78,7 @@ pub(crate) struct DecodedImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LayerKind {
-    Kmz, Shp, GeoJson, Wms, ArcGis, Xyz, Wmts, Apple, Bing, Image,
+    Kmz, Shp, GeoJson, Wms, ArcGis, Xyz, Wmts, Apple, Bing, Image, MbTiles,
 }
 
 pub enum LayerSource {
@@ -86,6 +86,7 @@ pub enum LayerSource {
     Wms { base_url: String, layer_name: String },
     ArcGis { base_url: String, service_name: String },
     Xyz { url_template: String },
+    MbTiles { path: String, max_zoom: u8 },
 }
 
 pub struct Layer {
@@ -110,6 +111,9 @@ pub struct TileState {
     next_id: Mutex<u32>,
     port: u16,
     http: reqwest::Client,
+    /// Path-keyed read-only `MBTiles` connections, reused across tile requests to
+    /// avoid reopening the `SQLite` file on every fetch.
+    mbtiles_conns: Mutex<HashMap<String, Arc<Mutex<rusqlite::Connection>>>>,
 }
 
 pub struct ServerHandle {
@@ -176,6 +180,37 @@ impl ServerHandle {
         drop(layers);
         self.clear_cache();
         id
+    }
+
+    pub fn add_mbtiles_layer(&self, path: String, display_name: String) -> Result<u32, String> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ).map_err(|e| format!("Failed to open MBTiles: {e}"))?;
+
+        let bbox = conn.query_row(
+            "SELECT value FROM metadata WHERE name = 'bounds'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).ok().and_then(|s| {
+            let parts: Vec<f64> = s.split(',').filter_map(|p| p.parse().ok()).collect();
+            if parts.len() == 4 { Some((parts[0], parts[1], parts[2], parts[3])) } else { None }
+        }).unwrap_or(WEB_MERCATOR_EXTENT);
+
+        let max_zoom = conn.query_row(
+            "SELECT MAX(zoom_level) FROM tiles", [],
+            |row| row.get::<_, u8>(0),
+        ).unwrap_or(22);
+
+        let id = self.next_id();
+        let mut layers = self.state.layers.write().unpoison();
+        layers.push(Layer {
+            id, name: display_name, bbox, kind: LayerKind::MbTiles, visible: true, opacity: 1.0,
+            source: LayerSource::MbTiles { path, max_zoom },
+        });
+        drop(layers);
+        self.clear_cache();
+        Ok(id)
     }
 
     pub fn remove_layer(&self, id: u32) -> bool {
@@ -339,6 +374,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default(),
+        mbtiles_conns: Mutex::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -407,6 +443,60 @@ fn decoded_to_pixmap(decoded: &DecodedTile) -> Option<Pixmap> {
     Pixmap::from_vec(data.clone(), tiny_skia::IntSize::from_wh(*w, *h)?)
 }
 
+/// Returns a shared, cached read-only connection for `path`, opening it on first use.
+fn mbtiles_conn(state: &TileState, path: &str) -> Option<Arc<Mutex<rusqlite::Connection>>> {
+    let mut conns = state.mbtiles_conns.lock().unpoison();
+    if let Some(conn) = conns.get(path) {
+        return Some(Arc::clone(conn));
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).ok()?;
+    let arc = Arc::new(Mutex::new(conn));
+    conns.insert(path.to_string(), Arc::clone(&arc));
+    Some(arc)
+}
+
+fn read_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32, max_zoom: u8) -> Option<Pixmap> {
+    if z <= max_zoom {
+        return query_mbtiles_tile(conn, z, x, tms_y);
+    }
+    overzoom_mbtiles_tile(conn, z, x, tms_y, max_zoom)
+}
+
+fn query_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32) -> Option<Pixmap> {
+    let data: Vec<u8> = conn.query_row(
+        "SELECT tile_data FROM tiles WHERE zoom_level = ?1 AND tile_column = ?2 AND tile_row = ?3",
+        rusqlite::params![z, x, tms_y],
+        |row| row.get(0),
+    ).ok()?;
+    let decoded = decode_remote_bytes(&data)?;
+    decoded_to_pixmap(&decoded)
+}
+
+fn overzoom_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32, max_zoom: u8) -> Option<Pixmap> {
+    let dz = z - max_zoom;
+    let y = (1u32 << z) - 1 - tms_y;
+    let parent_x = x >> dz;
+    let parent_y = y >> dz;
+    let parent_tms_y = (1u32 << max_zoom) - 1 - parent_y;
+    let parent_pm = query_mbtiles_tile(conn, max_zoom, parent_x, parent_tms_y)?;
+
+    let scale = 1u32 << dz;
+    let sub_x = x - (parent_x * scale);
+    let sub_y = y - (parent_y * scale);
+    let region_size = TILE_SIZE / scale;
+    let src_x = sub_x * region_size;
+    let src_y = sub_y * region_size;
+
+    let parent_img = image::RgbaImage::from_raw(TILE_SIZE, TILE_SIZE, parent_pm.data().to_vec())?;
+    let cropped = image::imageops::crop_imm(&parent_img, src_x, src_y, region_size, region_size);
+    let upscaled = image::imageops::resize(&*cropped, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle);
+    let (w, h) = (upscaled.width(), upscaled.height());
+    Pixmap::from_vec(upscaled.into_raw(), tiny_skia::IntSize::from_wh(w, h)?)
+}
+
 fn get_remote_cached(state: &TileState, layer_id: u32, z: u8, x: u32, y: u32) -> Option<DecodedTile> {
     let mut cache = state.remote_cache.lock().unpoison();
     cache.get(&(layer_id, z, x, y)).cloned()
@@ -471,7 +561,7 @@ async fn fetch_wms_tile(
     Some(resp.bytes().await.ok()?.to_vec())
 }
 
-fn xyz_to_quadkey(z: u32, x: u32, y: u32) -> String {
+pub(crate) fn xyz_to_quadkey(z: u32, x: u32, y: u32) -> String {
     let mut quadkey = String::with_capacity(z as usize);
     for i in (1..=z).rev() {
         let mut digit = 0u8;
@@ -602,20 +692,38 @@ async fn serve_tile(
         }
     }
 
-    let remote_requests: Vec<(u32, RemoteReq)> = {
+    let (remote_requests, mbtiles_tiles): (Vec<(u32, RemoteReq)>, HashMap<u32, Pixmap>) = {
         let layers = state.layers.read().unpoison();
-        layers.iter().filter_map(|l| {
-            if !l.visible { return None; }
+        let mut reqs = Vec::new();
+        let mut local = HashMap::new();
+        let tms_y = (1u32 << z) - 1 - y;
+        for l in layers.iter() {
+            if !l.visible { continue; }
             match &l.source {
                 LayerSource::Wms { base_url, layer_name } =>
-                    Some((l.id, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
+                    reqs.push((l.id, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
                 LayerSource::ArcGis { base_url, service_name } =>
-                    Some((l.id, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
+                    reqs.push((l.id, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
                 LayerSource::Xyz { url_template } =>
-                    Some((l.id, RemoteReq::Xyz(url_template.clone()))),
-                LayerSource::Kmz { .. } => None,
+                    reqs.push((l.id, RemoteReq::Xyz(url_template.clone()))),
+                LayerSource::MbTiles { path, max_zoom } => {
+                    if let Some(cached) = get_remote_cached(&state, l.id, z, x, y) {
+                        if let Some(pm) = decoded_to_pixmap(&cached) {
+                            local.insert(l.id, pm);
+                        }
+                    } else if let Some(conn) = mbtiles_conn(&state, path) {
+                        let pm = read_mbtiles_tile(&conn.lock().unpoison(), z, x, tms_y, *max_zoom);
+                        if let Some(pm) = pm {
+                            let decoded = (pm.data().to_vec(), pm.width(), pm.height());
+                            put_remote_cached(&state, l.id, z, x, y, decoded);
+                            local.insert(l.id, pm);
+                        }
+                    }
+                }
+                LayerSource::Kmz { .. } => {}
             }
-        }).collect()
+        }
+        (reqs, local)
     };
 
     let fetches = remote_requests.iter().map(|(id, req)| {
@@ -651,10 +759,11 @@ async fn serve_tile(
         .into_iter()
         .collect();
     let any_failed = fetch_results.iter().any(|(_, pm)| pm.is_none());
-    let remote_tiles: HashMap<u32, Pixmap> = fetch_results
+    let mut remote_tiles: HashMap<u32, Pixmap> = fetch_results
         .into_iter()
         .filter_map(|(id, pm)| pm.map(|p| (id, p)))
         .collect();
+    remote_tiles.extend(mbtiles_tiles);
 
     let png = render_tile(&state, &remote_tiles, z.into(), x, y);
 
@@ -682,7 +791,7 @@ fn render_tile(state: &TileState, remote_tiles: &HashMap<u32, Pixmap>, z: u32, x
                     render_ground_overlays(&mut pixmap, images, opacity, &ctx);
                     render_geometry(&mut pixmap, data, opacity, &ctx);
                 }
-                LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } => {
+                LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } | LayerSource::MbTiles { .. } => {
                     if let Some(remote_pixmap) = remote_tiles.get(&layer.id) {
                         let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
                         pixmap.draw_pixmap(

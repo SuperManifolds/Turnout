@@ -267,6 +267,7 @@ pub struct LayerInfo {
     pub opacity: f32,
     pub bbox: [f64; 4],
     pub has_errors: bool,
+    pub source_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -312,6 +313,7 @@ fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
         opacity: get_f64("opacity").unwrap_or(1.0) as f32,
         bbox: parse_bbox(&bbox_val)?,
         has_errors: js_sys::Reflect::get(val, &"hasErrors".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false),
+        source_url: get_str("sourceUrl"),
     })
 }
 
@@ -610,4 +612,87 @@ pub async fn set_layer_opacity(group_id: u32, layer_id: u32, opacity: f32) -> Ov
             web_sys::console::warn_1(&"overlay command failed".into());
             OverlayStatus { groups: Vec::new() }
         })
+}
+
+// --- Tile Download ---
+
+pub async fn count_tiles(south: f64, west: f64, north: f64, east: f64, z_min: u8, z_max: u8) -> Result<u64, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "south", &JsValue::from_f64(south))?;
+    js_set(&args, "west", &JsValue::from_f64(west))?;
+    js_set(&args, "north", &JsValue::from_f64(north))?;
+    js_set(&args, "east", &JsValue::from_f64(east))?;
+    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
+    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
+    let result = invoke("count_tiles", &args).await?;
+    result.as_f64().map(|v| v as u64).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn start_tile_download(
+    url: &str, name: &str,
+    south: f64, west: f64, north: f64, east: f64,
+    z_min: u8, z_max: u8,
+) -> Result<String, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "url", &url.into())?;
+    js_set(&args, "name", &name.into())?;
+    js_set(&args, "south", &JsValue::from_f64(south))?;
+    js_set(&args, "west", &JsValue::from_f64(west))?;
+    js_set(&args, "north", &JsValue::from_f64(north))?;
+    js_set(&args, "east", &JsValue::from_f64(east))?;
+    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
+    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
+    let result = invoke("start_tile_download", &args).await?;
+    result.as_string().ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn add_mbtiles_layer(path: &str, name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "path", &path.into())?;
+    js_set(&args, "displayName", &name.into())?;
+    if let Some(gid) = group_id {
+        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+    }
+    let result = invoke("add_mbtiles_layer", &args).await?;
+    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn cancel_tile_download() -> Result<(), String> {
+    invoke("cancel_tile_download", &JsValue::NULL).await?;
+    Ok(())
+}
+
+pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "paused", &JsValue::from_bool(paused))?;
+    invoke("set_tile_download_paused", &args).await.map(|_| ())
+}
+
+pub async fn download_orm_tiles(
+    south: f64, west: f64, north: f64, east: f64,
+    z_min: u8, z_max: u8,
+) -> Result<String, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "south", &JsValue::from_f64(south))?;
+    js_set(&args, "west", &JsValue::from_f64(west))?;
+    js_set(&args, "north", &JsValue::from_f64(north))?;
+    js_set(&args, "east", &JsValue::from_f64(east))?;
+    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
+    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
+    let result = invoke("download_orm_tiles", &args).await?;
+    result.as_string().ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn get_orm_port() -> Result<u16, String> {
+    let result = invoke("get_orm_port", &JsValue::NULL).await?;
+    result.as_f64().map(|v| v as u16).ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    match dir {
+        Some(d) => js_set(&args, "dir", &d.into())?,
+        None => js_set(&args, "dir", &JsValue::NULL)?,
+    }
+    invoke("set_orm_offline", &args).await.map(|_| ())
 }

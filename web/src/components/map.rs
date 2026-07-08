@@ -2,7 +2,7 @@ use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, In
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-const ORM_TILES: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
+const ORM_DEFAULT_STYLE: &str = "standard";
 const MAX_BBOX_AREA_DEG2: f64 = 1.0;
 const BBOX_COLOR: &str = "#4a9eff";
 const BBOX_ERROR_COLOR: &str = "#d32f2f";
@@ -29,6 +29,8 @@ extern "C" {
     fn map_on_mouseup(callback: &Closure<dyn Fn(f64, f64)>);
     fn map_query_features(lng: f64, lat: f64, layer_id: &str) -> JsValue;
     fn map_set_bbox_color(color: &str);
+    fn map_set_orm_style(style_name: &str);
+    fn map_set_orm_port(port: u16);
 }
 
 // Interaction modes
@@ -167,14 +169,30 @@ pub fn Map(
         map_init(element);
 
         let on_load = Closure::new(move || {
-            map_add_raster_source("orm", ORM_TILES, "\u{00a9} OpenRailwayMap");
-            map_add_raster_layer("orm-layer", "orm", 0.7);
             map_add_preview_layer();
             map_add_geojson_source("bbox");
             map_add_fill_layer("bbox-fill", "bbox", BBOX_COLOR, 0.15);
             map_add_line_layer("bbox-outline", "bbox", BBOX_COLOR, 2.0);
             map_add_geojson_source("handles");
             map_add_circle_layer("handles-layer", "handles", HANDLE_COLOR, HANDLE_RADIUS);
+            // Defer ORM style load slightly — MapLibre needs to complete its
+            // first render cycle before raster tile sources trigger fetching.
+            // Resolve the tile server's actual bound port first; every ORM tile
+            // URL is built from it.
+            let cb = Closure::once(move || {
+                spawn_local(async move {
+                    if let Ok(port) = crate::tauri::get_orm_port().await {
+                        map_set_orm_port(port);
+                        map_set_orm_style(ORM_DEFAULT_STYLE);
+                    }
+                });
+            });
+            if let Some(win) = web_sys::window() {
+                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(), 500,
+                );
+            }
+            cb.forget();
         });
         map_on_load(&on_load);
         on_load.forget();
@@ -395,6 +413,7 @@ pub fn Map(
         set_status.set("Navigate to an area, then click Select Area".into());
     };
 
+    let (show_tile_download, set_show_tile_download) = create_signal(false);
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
     let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 
@@ -429,11 +448,21 @@ pub fn Map(
                 </Show>
                 <Show when=move || bbox.get().is_some()>
                     <button class="primary" on:click=on_import_click disabled=move || over_limit.get() || cached_json.get_value().is_none()>"Import Tracks"</button>
+                    <button on:click=move |_| set_show_tile_download.update(|v| *v = !*v)>
+                        <i class="fa-solid fa-download"></i>
+                        " Download Tiles"
+                    </button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
                 <button on:click=move |_| set_drawer_open.update(|v| *v = !*v)>"Blueprints"</button>
             </nav>
+            <Show when=move || show_tile_download.get()>
+                <super::tile_download::TileDownload
+                    bbox=bbox
+                    on_close=Callback::new(move |()| set_show_tile_download.set(false))
+                />
+            </Show>
             <Show when=move || show_name_prompt.get()>
                 <super::NamePrompt
                     default_name="import".to_string()

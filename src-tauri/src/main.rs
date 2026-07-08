@@ -3,6 +3,10 @@
 mod arcgis;
 mod blueprint;
 mod import;
+mod mbtiles;
+mod orm_net;
+mod orm_offline;
+mod orm_tiles;
 mod overlay;
 mod overpass;
 mod settings;
@@ -142,6 +146,17 @@ fn main() {
     #[cfg(target_os = "linux")]
     unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
 
+    // Size mbgl's shared background pool (vector tile layout for all ORM render
+    // workers) to the machine instead of its 4-thread default, which is the tile
+    // throughput ceiling. Half the logical cores, capped at 8 — more showed no
+    // gain in benchmarks. An explicit MLN_BACKGROUND_THREADS wins.
+    // SAFETY: Called at the very start of main, before any threads are spawned.
+    if std::env::var_os("MLN_BACKGROUND_THREADS").is_none() {
+        let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+        let threads = (cores / 2).clamp(4, 8);
+        unsafe { std::env::set_var("MLN_BACKGROUND_THREADS", threads.to_string()) };
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -151,8 +166,13 @@ fn main() {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
+            app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
+            match orm_tiles::start_blocking() {
+                Ok(h) => { app.manage(h); }
+                Err(e) => eprintln!("ORM tiles failed: {e}"),
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -194,6 +214,7 @@ fn main() {
             overlay::fetch_arcgis_services,
             overlay::add_arcgis_layer,
             overlay::add_xyz_layer,
+            overlay::add_mbtiles_layer,
             overlay::update_apple_urls,
             overlay::fetch_wmts_layers,
             overlay::move_layer,
@@ -202,6 +223,13 @@ fn main() {
             overlay::set_layer_visible,
             overlay::set_layer_opacity,
             overlay::get_overlay_status,
+            mbtiles::count_tiles,
+            mbtiles::start_tile_download,
+            mbtiles::cancel_tile_download,
+            mbtiles::set_tile_download_paused,
+            orm_offline::download_orm_tiles,
+            orm_tiles::set_orm_offline,
+            orm_tiles::get_orm_port,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

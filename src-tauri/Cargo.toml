@@ -16,7 +16,7 @@ tauri-plugin-store = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs-next = "2.0"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["rustls-tls", "http2"], default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22.1"
 notify = { version = "8.2.0", features = ["macos_fsevent"] }
@@ -27,6 +27,8 @@ futures = "0.3"
 lru = "0.12"
 quick-xml = "0.37"
 tokio = { version = "1", features = ["net"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "59b1b5e2bea0306d163c09711cfc6a9a8d3058a0", features = ["json", "tokio"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
