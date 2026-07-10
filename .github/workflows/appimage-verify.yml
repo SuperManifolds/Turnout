@@ -1,0 +1,83 @@
+name: AppImage GPU-lib verification
+
+# Temporary verification harness for PR #8. Reproduces the AppImage
+# LD_LIBRARY_PATH shadowing failure using Mesa's software Vulkan driver
+# (lavapipe) on a newer-than-build host, and proves that stripping the bundled
+# X11/Wayland libs restores driver init. lavapipe is a Mesa ICD with the same
+# dependency structure as RADV, so it exercises the same failure mode without
+# GPU hardware. Runs on demand.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install a newer-than-build Vulkan driver + tools
+        run: |
+          sudo apt-get update
+          # lavapipe (software Vulkan ICD) + loader + tools. On 24.04 these link
+          # against newer libzstd/libxcb/libwayland than the AppImage's 22.04
+          # bundle, which is exactly the skew that breaks the host driver.
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1
+          echo "host libzstd: $(strings /usr/lib/x86_64-linux-gnu/libzstd.so.1 | grep -oE '1\.[0-9]+\.[0-9]+' | head -1)"
+          ls /usr/share/vulkan/icd.d/
+
+      - name: Fetch nightly AppImage (currently un-hardened)
+        run: |
+          curl -fL --retry 3 -o Turnout.AppImage \
+            https://github.com/SuperManifolds/Turnout/releases/download/nightly/Turnout_amd64.AppImage
+          chmod +x Turnout.AppImage
+          ./Turnout.AppImage --appimage-extract >/dev/null
+          echo "bundled libzstd: $(strings squashfs-root/usr/lib/libzstd.so.1 | grep -oE '1\.[0-9]+\.[0-9]+' | head -1)"
+          ls squashfs-root/usr/lib | grep -iE 'xcb|wayland|zstd|lzma|elf' || true
+
+      - name: Reproduce + bisect (software Vulkan under AppImage LD_LIBRARY_PATH)
+        run: |
+          APPDIR="$PWD/squashfs-root"
+          # Force lavapipe so the probe never depends on GPU hardware.
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          LP () { echo "$1/usr/lib/:$1/usr/lib/i386-linux-gnu/:$1/usr/lib/x86_64-linux-gnu/:$1/usr/lib32/:$1/usr/lib64/:$1/lib/:$1/lib/x86_64-linux-gnu/"; }
+
+          probe () { # $1 = label
+            echo "::group::$1"
+            set +e
+            out=$(timeout 30 env VK_LOADER_DEBUG=error,warn vulkaninfo --summary 2>&1)
+            rc=$?
+            echo "$out" | grep -iE 'deviceName|driverName|ERROR|incompatible|cannot|symbol|undefined|not found|version .*GLIBC|llvmpipe' | head -20
+            echo "exit=$rc"
+            set -e
+            echo "::endgroup::"
+            return $rc
+          }
+
+          echo "=== CONTROL: clean host env ==="
+          ( unset LD_LIBRARY_PATH; probe "control" ) && echo "CONTROL_OK=1" || echo "CONTROL_OK=0"
+
+          echo "=== REPRO: full AppImage LD_LIBRARY_PATH ==="
+          ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "repro" ) && echo "REPRO_OK=1" || echo "REPRO_OK=0"
+
+          echo "=== FIX A: minus bundled xcb/wayland (this PR) ==="
+          mkdir -p _removed
+          mv squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so* _removed/ 2>/dev/null || true
+          ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "fix-a" ) && echo "FIXA_OK=1" || echo "FIXA_OK=0"
+
+          echo "=== FIX B: additionally minus zstd/lzma/elf ==="
+          mv squashfs-root/usr/lib/libzstd.so.1 squashfs-root/usr/lib/liblzma.so.5 squashfs-root/usr/lib/libelf.so.1 _removed/ 2>/dev/null || true
+          ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "fix-b" ) && echo "FIXB_OK=1" || echo "FIXB_OK=0"
+
+          # restore for the repack test
+          mv _removed/* squashfs-root/usr/lib/ 2>/dev/null || true
+
+      - name: Validate the repack step used by prerelease.yml
+        run: |
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          rm -fv squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so*
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root Turnout_hardened.AppImage
+          chmod +x Turnout_hardened.AppImage
+          # prove the repacked image is a valid, extractable AppImage and the libs are gone
+          ./Turnout_hardened.AppImage --appimage-extract >/dev/null
+          echo "repacked xcb/wayland present?:"; ls squashfs-root/usr/lib | grep -iE 'xcb|wayland' && echo "STILL PRESENT (bad)" || echo "removed (good)"
