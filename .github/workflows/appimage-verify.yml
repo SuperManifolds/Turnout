@@ -38,38 +38,46 @@ jobs:
       - name: Reproduce + bisect (software Vulkan under AppImage LD_LIBRARY_PATH)
         run: |
           APPDIR="$PWD/squashfs-root"
-          # Force lavapipe so the probe never depends on GPU hardware.
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
           LP () { echo "$1/usr/lib/:$1/usr/lib/i386-linux-gnu/:$1/usr/lib/x86_64-linux-gnu/:$1/usr/lib32/:$1/usr/lib64/:$1/lib/:$1/lib/x86_64-linux-gnu/"; }
 
-          probe () { # $1 = label
+          # The failure mode we care about is the driver .so failing to LOAD its
+          # own deps (a symbol/version error surfaces as ERROR_INCOMPATIBLE_DRIVER
+          # or "failed to load ICD"), which happens before device enumeration — so
+          # a GPU-less runner still exercises it. We distinguish that from the
+          # benign "0 devices" case (RADV loads fine but finds no AMD GPU here).
+          probe () { # $1=label  $2=icd path
             echo "::group::$1"
             set +e
-            out=$(timeout 30 env VK_LOADER_DEBUG=error,warn vulkaninfo --summary 2>&1)
-            rc=$?
-            echo "$out" | grep -iE 'deviceName|driverName|ERROR|incompatible|cannot|symbol|undefined|not found|version .*GLIBC|llvmpipe' | head -20
-            echo "exit=$rc"
+            out=$(timeout 30 env VK_ICD_FILENAMES="$2" VK_LOADER_DEBUG=error,warn vulkaninfo --summary 2>&1)
             set -e
-            echo "::endgroup::"
-            return $rc
+            # a genuine driver-load failure prints these; "0 devices" does not
+            if echo "$out" | grep -qiE 'failed to load|cannot open shared|undefined symbol|version .* not (defined|found)|GLIBC_[0-9].* not found|CreateInstance failed'; then
+              echo "$out" | grep -iE 'failed to load|cannot open|undefined symbol|not (defined|found)|GLIBC_|CreateInstance failed' | head -8
+              echo "$1: DRIVER_LOAD_FAIL"
+              echo "::endgroup::"; return 1
+            fi
+            echo "$out" | grep -iE 'deviceName|driverName' | head -4
+            echo "$1: driver loaded OK"
+            echo "::endgroup::"; return 0
           }
 
-          echo "=== CONTROL: clean host env ==="
-          ( unset LD_LIBRARY_PATH; probe "control" ) && echo "CONTROL_OK=1" || echo "CONTROL_OK=0"
+          for icd in lvp_icd radeon_icd; do
+            P=/usr/share/vulkan/icd.d/$icd.json
+            [ -f "$P" ] || { echo "$icd: ICD json absent, skip"; continue; }
+            echo "############## ICD: $icd ##############"
 
-          echo "=== REPRO: full AppImage LD_LIBRARY_PATH ==="
-          ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "repro" ) && echo "REPRO_OK=1" || echo "REPRO_OK=0"
+            ( unset LD_LIBRARY_PATH; probe "$icd/control" "$P" ) && echo "${icd}_CONTROL=OK" || echo "${icd}_CONTROL=FAIL"
+            ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "$icd/repro-bundled" "$P" ) && echo "${icd}_REPRO=OK" || echo "${icd}_REPRO=FAIL"
+          done
 
-          echo "=== FIX A: minus bundled xcb/wayland (this PR) ==="
+          echo "############## FIX: strip bundled xcb/wayland, re-probe under bundled path ##############"
           mkdir -p _removed
           mv squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so* _removed/ 2>/dev/null || true
-          ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "fix-a" ) && echo "FIXA_OK=1" || echo "FIXA_OK=0"
-
-          echo "=== FIX B: additionally minus zstd/lzma/elf ==="
-          mv squashfs-root/usr/lib/libzstd.so.1 squashfs-root/usr/lib/liblzma.so.5 squashfs-root/usr/lib/libelf.so.1 _removed/ 2>/dev/null || true
-          ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "fix-b" ) && echo "FIXB_OK=1" || echo "FIXB_OK=0"
-
-          # restore for the repack test
+          for icd in lvp_icd radeon_icd; do
+            P=/usr/share/vulkan/icd.d/$icd.json
+            [ -f "$P" ] || continue
+            ( export LD_LIBRARY_PATH="$(LP "$APPDIR")"; probe "$icd/fixed" "$P" ) && echo "${icd}_FIXED=OK" || echo "${icd}_FIXED=FAIL"
+          done
           mv _removed/* squashfs-root/usr/lib/ 2>/dev/null || true
 
       - name: Validate the repack step used by prerelease.yml
