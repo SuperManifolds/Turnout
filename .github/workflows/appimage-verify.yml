@@ -39,7 +39,7 @@ jobs:
         run: |
           APPDIR="$PWD/squashfs-root"
           # Force lavapipe so the probe never depends on GPU hardware.
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
           LP () { echo "$1/usr/lib/:$1/usr/lib/i386-linux-gnu/:$1/usr/lib/x86_64-linux-gnu/:$1/usr/lib32/:$1/usr/lib64/:$1/lib/:$1/lib/x86_64-linux-gnu/"; }
 
           probe () { # $1 = label
@@ -81,5 +81,11 @@ jobs:
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root Turnout_hardened.AppImage
           chmod +x Turnout_hardened.AppImage
           # prove the repacked image is a valid, extractable AppImage and the libs are gone
+          rm -rf squashfs-root
           ./Turnout_hardened.AppImage --appimage-extract >/dev/null
-          echo "repacked xcb/wayland present?:"; ls squashfs-root/usr/lib | grep -iE 'xcb|wayland' && echo "STILL PRESENT (bad)" || echo "removed (good)"
+          echo "repacked libxcb/libwayland present?:"
+          if ls squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so* 2>/dev/null; then
+            echo "STILL PRESENT (bad)"; exit 1
+          else
+            echo "removed (good)"
+          fi
