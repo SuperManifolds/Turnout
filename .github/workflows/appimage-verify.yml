@@ -9,6 +9,8 @@ name: AppImage GPU-lib verification
 
 on:
   workflow_dispatch:
+  push:
+    branches: [fix/appimage-host-display-libs]
 
 jobs:
   verify:
