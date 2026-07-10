@@ -20,7 +20,7 @@ fn main() {
                         if tex.files.iter().any(|f| !f.path.is_empty()) {
                             eprintln!("      tex[{ti}]: speed_class={} files={:?}",
                                 tex.speed_class,
-                                tex.files.iter().map(|f| format!("{}:{}", f.workshop_id, &f.path)).collect::<Vec<_>>());
+                                tex.files.iter().map(|f| format!("{}:{}", f.workshop_id, f.path)).collect::<Vec<_>>());
                         }
                     }
                 }
