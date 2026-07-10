@@ -97,3 +97,55 @@ jobs:
           else
             echo "removed (good)"
           fi
+
+  # The user's actual skew is Arch's bleeding-edge Mesa/RADV against the
+  # Ubuntu-22.04 bundle — a far larger gap than 22.04->24.04. Load Arch's real
+  # libvulkan_radeon.so under the bundled LD_LIBRARY_PATH; the driver .so + its
+  # dependency resolution runs before device enumeration, so no AMD GPU is
+  # needed to catch a symbol/version break.
+  verify-arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install Arch Mesa/RADV + tools
+        run: |
+          pacman -Sy --noconfirm --needed vulkan-radeon vulkan-tools vulkan-icd-loader mesa curl fuse2 zstd
+          echo "Arch libzstd: $(pacman -Q zstd)"
+          ls /usr/share/vulkan/icd.d/
+
+      - name: Fetch + extract nightly AppImage
+        run: |
+          curl -fL --retry 3 -o Turnout.AppImage \
+            https://github.com/SuperManifolds/Turnout/releases/download/nightly/Turnout_amd64.AppImage
+          chmod +x Turnout.AppImage
+          ./Turnout.AppImage --appimage-extract >/dev/null
+          echo "bundled libzstd: $(strings squashfs-root/usr/lib/libzstd.so.1 | grep -oE '1\.[0-9]+\.[0-9]+' | head -1)"
+
+      - name: Probe Arch RADV under bundled AppImage LD_LIBRARY_PATH
+        run: |
+          APPDIR="$PWD/squashfs-root"
+          ICD=$(ls /usr/share/vulkan/icd.d/radeon_icd*.json | head -1)
+          echo "using ICD: $ICD"
+          LP="$APPDIR/usr/lib/:$APPDIR/usr/lib/x86_64-linux-gnu/:$APPDIR/lib/:$APPDIR/lib/x86_64-linux-gnu/"
+
+          probe () { # $1 label ; $2 LD_LIBRARY_PATH value ("" = clean)
+            echo "::group::$1"
+            set +e
+            out=$(timeout 30 env VK_ICD_FILENAMES="$ICD" VK_LOADER_DEBUG=error,warn \
+                  LD_LIBRARY_PATH="$2" vulkaninfo --summary 2>&1)
+            set -e
+            echo "$out" | grep -iE 'failed to load|cannot open|undefined symbol|not (defined|found)|GLIBC_|CreateInstance failed|ERROR_INCOMPATIBLE|deviceName|driverName|GPU id' | head -12
+            if echo "$out" | grep -qiE 'failed to load|cannot open shared|undefined symbol|version .* not (defined|found)|GLIBC_[0-9].* not found|ERROR_INCOMPATIBLE_DRIVER'; then
+              echo "$1: RADV_LOAD_FAIL"
+            else
+              echo "$1: RADV loaded OK"
+            fi
+            echo "::endgroup::"
+          }
+
+          probe "arch-radv/control-clean" ""
+          probe "arch-radv/repro-bundled" "$LP"
+
+          echo "== strip bundled xcb/wayland, re-probe =="
+          rm -f squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so*
+          probe "arch-radv/fixed" "$LP"
