@@ -195,12 +195,19 @@ window.map_hide_orm = function() {
 
 // Keeps the ORM overlay above every other layer. Called after any layer is
 // added, since MapLibre inserts new layers on top by default.
+// Raise the area-selection box + handles to the very top so they are never
+// hidden under the ORM overlay or any map overlays.
+function selection_to_top() {
+    if (!_map) return;
+    ["bbox-fill", "bbox-outline", "handles-layer"].forEach(function(l) {
+        if (_map.getLayer(l)) _map.moveLayer(l);
+    });
+}
+
 function orm_to_top() {
-    if (!_map || !_map.getLayer("orm-layer")) return;
-    // Keep the area-selection box + handles above the ORM overlay so they stay
-    // visible; move ORM just below them (or to the very top if none are present).
-    const selection = ["bbox-fill", "bbox-outline", "handles-layer"].find((l) => _map.getLayer(l));
-    _map.moveLayer("orm-layer", selection || undefined);
+    if (!_map) return;
+    if (_map.getLayer("orm-layer")) _map.moveLayer("orm-layer");
+    selection_to_top();
 }
 
 window.map_add_geojson_source = function(id) {
@@ -236,6 +243,7 @@ window.map_add_line_layer = function(id, source, color, width) {
 window.map_set_geojson = function(source_id, geojson_str) {
     if (!_map || !_map.getSource(source_id)) return;
     _map.getSource(source_id).setData(JSON.parse(geojson_str));
+    if (source_id === "bbox" || source_id === "handles") selection_to_top();
 };
 
 window.map_set_cursor = function(cursor) {
