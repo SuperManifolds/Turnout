@@ -196,7 +196,11 @@ window.map_hide_orm = function() {
 // Keeps the ORM overlay above every other layer. Called after any layer is
 // added, since MapLibre inserts new layers on top by default.
 function orm_to_top() {
-    if (_map && _map.getLayer("orm-layer")) _map.moveLayer("orm-layer");
+    if (!_map || !_map.getLayer("orm-layer")) return;
+    // Keep the area-selection box + handles above the ORM overlay so they stay
+    // visible; move ORM just below them (or to the very top if none are present).
+    const selection = ["bbox-fill", "bbox-outline", "handles-layer"].find((l) => _map.getLayer(l));
+    _map.moveLayer("orm-layer", selection || undefined);
 }
 
 window.map_add_geojson_source = function(id) {
