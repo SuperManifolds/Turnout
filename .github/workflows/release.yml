@@ -165,57 +165,16 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          appimagetool="$HOME/appimagetool"
-          scripts="$GITHUB_WORKSPACE/.github/scripts"
-          pub_line="$(python3 "$scripts/updater_pubkey.py" "$GITHUB_WORKSPACE/src-tauri/tauri.conf.json")"
+          export APPIMAGETOOL="$HOME/appimagetool"
+          export SCRIPTS="$GITHUB_WORKSPACE/.github/scripts"
+          export PUB_LINE="$(python3 "$SCRIPTS/updater_pubkey.py" "$GITHUB_WORKSPACE/src-tauri/tauri.conf.json")"
 
           work="$(mktemp -d)"; cd "$work"
+          export LATEST_JSON="$work/latest.json"
           gh release download "$TAG" --repo "$REPO" --pattern latest.json --output latest.json
 
-          harden() {          # $1 = asset name   $2 = latest.json platform key   $3 = ARCH
-            local asset="$1" key="$2" arch="$3"
-            echo "::group::$asset"
-            gh release download "$TAG" --repo "$REPO" --pattern "$asset" --output "$asset"
-
-            python3 "$scripts/appimage_split.py" "$asset" runtime.bin fs.squashfs
-            rm -rf squashfs-root
-            unsquashfs -d squashfs-root fs.squashfs >/dev/null
-            rm -fv squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so*
-
-            ARCH="$arch" "$appimagetool" --appimage-extract-and-run squashfs-root "$asset"
-            chmod +x "$asset"
-
-            # gate 1: the offending libs are actually gone from the repacked image
-            python3 "$scripts/appimage_split.py" "$asset" runtime.bin fs.squashfs
-            rm -rf verify-root
-            unsquashfs -d verify-root fs.squashfs >/dev/null
-            if ls verify-root/usr/lib/libxcb*.so* verify-root/usr/lib/libwayland*.so* 2>/dev/null; then
-              echo "::error::libxcb/libwayland still present after repack ($asset)"; exit 1
-            fi
-
-            # re-sign with the updater key (env vars are read by the signer)
-            rm -f "$asset.sig"
-            local out sig
-            out="$(tauri signer sign "$asset" 2>&1 || true)"
-            if [ -f "$asset.sig" ]; then
-              sig="$(cat "$asset.sig")"
-            else
-              sig="$(printf '%s\n' "$out" | grep -oE '[A-Za-z0-9+/]{100,}={0,2}' | tail -n1 || true)"
-              printf '%s' "$sig" > "$asset.sig"
-            fi
-            [ -n "$sig" ] || { echo "::error::no signature produced for $asset"; printf '%s\n' "$out"; exit 1; }
-
-            # gate 2: the new signature verifies against the updater public key
-            printf '%s' "$sig" | base64 -d > "$asset.msig"
-            minisign -Vm "$asset" -P "$pub_line" -x "$asset.msig"
-
-            gh release upload "$TAG" --repo "$REPO" --clobber "$asset" "$asset.sig"
-            python3 "$scripts/latest_patch.py" latest.json "$key" "$sig"
-            echo "::endgroup::"
-          }
-
-          harden "Turnout_amd64.AppImage"   linux-x86_64  x86_64
-          harden "Turnout_aarch64.AppImage" linux-aarch64 aarch64
+          bash "$SCRIPTS/harden_appimage.sh" Turnout_amd64.AppImage   linux-x86_64  x86_64
+          bash "$SCRIPTS/harden_appimage.sh" Turnout_aarch64.AppImage linux-aarch64 aarch64
 
           gh release upload "$TAG" --repo "$REPO" --clobber latest.json
           echo "hardened, re-signed, and repointed both Linux AppImages"

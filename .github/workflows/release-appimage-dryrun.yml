@@ -1,0 +1,58 @@
+name: Release AppImage harden (dry run)
+
+# Safe validation for the release.yml `harden-linux-appimage` job WITHOUT cutting
+# a real release. Runs the exact same shared logic (.github/scripts/
+# harden_appimage.sh) against an existing release's AppImages, re-signs them with
+# the real updater key, and runs the minisign verification gate — but uploads
+# nothing (DRY_RUN=1). Fast (~2-3 min): no app build, just download + repack +
+# sign + verify for both arches.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Existing release tag to pull AppImages + latest.json from (needs amd64 + aarch64 AppImages)"
+        default: "v0.2.0"
+  # Temporary: lets the harness validate this on the PR branch. Remove before merge.
+  push:
+    branches: [ci/release-appimage-harden]
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools minisign
+          curl -fsSL -o "$HOME/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$HOME/appimagetool"
+          npm install -g @tauri-apps/cli@^2
+
+      - name: Dry-run harden (no uploads)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ github.event.inputs.source_tag || 'v0.2.0' }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: "1"
+        run: |
+          set -euo pipefail
+          export APPIMAGETOOL="$HOME/appimagetool"
+          export SCRIPTS="$GITHUB_WORKSPACE/.github/scripts"
+          export PUB_LINE="$(python3 "$SCRIPTS/updater_pubkey.py" "$GITHUB_WORKSPACE/src-tauri/tauri.conf.json")"
+
+          work="$(mktemp -d)"; cd "$work"
+          export LATEST_JSON="$work/latest.json"
+          gh release download "$TAG" --repo "$REPO" --pattern latest.json --output latest.json
+
+          bash "$SCRIPTS/harden_appimage.sh" Turnout_amd64.AppImage   linux-x86_64  x86_64
+          bash "$SCRIPTS/harden_appimage.sh" Turnout_aarch64.AppImage linux-aarch64 aarch64
+
+          echo "=== patched latest.json (linux entries) ==="
+          python3 -c "import json; d=json.load(open('latest.json')); [print(k, d['platforms'][k]['signature'][:24]+'...') for k in d['platforms'] if k.startswith('linux')]"
+          echo "DRY RUN PASSED: repack + re-sign + minisign verify OK for both arches"
