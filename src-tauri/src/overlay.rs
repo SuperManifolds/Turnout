@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,11 @@ struct TileGroup {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SavedGroup {
+    // Persist the group id so its tile-server port (PREFERRED_PORT + id) is
+    // stable across restarts. Optional for backward compatibility with stores
+    // written before ids were saved (those restore in sequential order).
+    #[serde(default)]
+    id: Option<u32>,
     name: String,
     layers: Vec<SavedLayer>,
 }
@@ -101,6 +107,29 @@ impl OverlayState {
 
 fn port_for_id(id: u32) -> u16 {
     tile_server::PREFERRED_PORT.saturating_add(id as u16)
+}
+
+/// Assign a concrete id to each restored group. A saved id is reused when it is
+/// still free (keeping its tile-server port stable across restarts); a missing
+/// id (legacy store) or a collision falls back to the lowest free id, which
+/// preserves the saved order.
+fn allocate_group_ids(saved_ids: &[Option<u32>]) -> Vec<u32> {
+    let mut used: HashSet<u32> = HashSet::new();
+    saved_ids
+        .iter()
+        .map(|&preferred| {
+            let id = match preferred {
+                Some(id) if !used.contains(&id) => id,
+                // The lowest free id is at most used.len() (pigeonhole over the
+                // used-so-far set), so this bounded search always succeeds.
+                _ => (0..=used.len() as u32)
+                    .find(|id| !used.contains(id))
+                    .expect("a free id exists"),
+            };
+            used.insert(id);
+            id
+        })
+        .collect()
 }
 
 // --- Tauri commands ---
@@ -511,8 +540,8 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
         return OverlayStatus { groups: Vec::new() };
     }
 
-    for saved_group in &saved {
-        let group_id = state.next_group_id();
+    let ids = allocate_group_ids(&saved.iter().map(|g| g.id).collect::<Vec<_>>());
+    for (saved_group, &group_id) in saved.iter().zip(&ids) {
         let port = port_for_id(group_id);
         let Ok(handle) = tile_server::start(port).await else { continue };
 
@@ -525,6 +554,12 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
             name: saved_group.name.clone(),
             handle,
         });
+    }
+
+    // Hand out ids above every restored one so new groups never reuse a port.
+    if let Some(max_id) = ids.iter().max() {
+        let mut next = state.next_group_id.lock().unpoison();
+        *next = (*next).max(max_id + 1);
     }
 
     let groups = state.groups.lock().unpoison();
@@ -690,6 +725,7 @@ fn save_groups(app: &tauri::AppHandle) {
     let saved: Vec<SavedGroup> = groups.iter().map(|g| {
         let layers = g.handle.state.layers.read().unpoison();
         SavedGroup {
+            id: Some(g.id),
             name: g.name.clone(),
             layers: layers.iter().filter_map(|l| {
                 let source = match (&l.source, l.kind) {
@@ -743,4 +779,41 @@ fn load_saved(app: &tauri::AppHandle) -> Vec<SavedGroup> {
         .get(STORE_KEY)
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allocate_group_ids;
+
+    #[test]
+    fn contiguous_ids_are_preserved() {
+        assert_eq!(allocate_group_ids(&[Some(0), Some(1), Some(2)]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn gap_after_removal_keeps_ids_and_ports() {
+        // Group 1 was removed in a prior session; the survivor must keep id 2
+        // (and therefore its port), not slide down to 1.
+        assert_eq!(allocate_group_ids(&[Some(0), Some(2)]), vec![0, 2]);
+    }
+
+    #[test]
+    fn reorder_keeps_each_groups_id() {
+        assert_eq!(allocate_group_ids(&[Some(2), Some(0), Some(1)]), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn legacy_store_without_ids_falls_back_to_sequential() {
+        assert_eq!(allocate_group_ids(&[None, None, None]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn duplicate_saved_ids_are_disambiguated() {
+        assert_eq!(allocate_group_ids(&[Some(1), Some(1)]), vec![1, 0]);
+    }
+
+    #[test]
+    fn mixed_legacy_and_saved_ids_avoid_collision() {
+        assert_eq!(allocate_group_ids(&[Some(2), None, None]), vec![2, 0, 1]);
+    }
 }
