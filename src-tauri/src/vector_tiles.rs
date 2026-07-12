@@ -23,9 +23,10 @@ use crate::tile_server::UnpoisonExt;
 
 const EXTENT: u32 = 4096;
 const PIXELS_PER_TILE: f64 = 256.0;
-/// OSM `layer` is conventionally within ±5; clamp a bit wider and drop outliers.
-const LAYER_MIN: i32 = -8;
-const LAYER_MAX: i32 = 8;
+/// Clamp to ±5 to match the static Workshop mod's level vocabulary and the
+/// game's `gameplay_layer` range; rarer outliers bucket into the extremes.
+const LAYER_MIN: i32 = -5;
+const LAYER_MAX: i32 = 5;
 const MIN_ZOOM: u32 = 5;
 const MAX_ZOOM: u32 = 16;
 const PREFERRED_PORT: u16 = 17971;
