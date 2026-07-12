@@ -629,6 +629,18 @@ fn kind_for_extension(path: &str) -> LayerKind {
     }
 }
 
+/// The layer kind for a restored XYZ-family source. The kind must round-trip so
+/// that kind-specific behaviour (notably Apple token refresh) still applies to
+/// restored layers.
+fn kind_for_saved_source(source: &SavedSource) -> LayerKind {
+    match source {
+        SavedSource::Wmts { .. } => LayerKind::Wmts,
+        SavedSource::Apple { .. } => LayerKind::Apple,
+        SavedSource::Bing { .. } => LayerKind::Bing,
+        _ => LayerKind::Xyz,
+    }
+}
+
 fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
     match &layer.source {
         SavedSource::Kmz { path } | SavedSource::Shp { path } | SavedSource::GeoJson { path } => {
@@ -653,7 +665,10 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
         | SavedSource::Wmts { xyz_url }
         | SavedSource::Apple { xyz_url }
         | SavedSource::Bing { xyz_url } => {
-            handle.add_xyz_layer(xyz_url.clone(), layer.name.clone());
+            // Preserve the specific kind — a restored Apple layer must come back
+            // as LayerKind::Apple, otherwise the token refresher (which only
+            // rewrites Apple layers) never renews it and its tiles die on expiry.
+            handle.add_xyz_layer_with_kind(xyz_url.clone(), layer.name.clone(), kind_for_saved_source(&layer.source));
         }
         SavedSource::MbTiles { path } => {
             if let Err(e) = handle.add_mbtiles_layer(path.clone(), layer.name.clone()) {
@@ -783,7 +798,7 @@ fn load_saved(app: &tauri::AppHandle) -> Vec<SavedGroup> {
 
 #[cfg(test)]
 mod tests {
-    use super::allocate_group_ids;
+    use super::*;
 
     #[test]
     fn contiguous_ids_are_preserved() {
@@ -815,5 +830,14 @@ mod tests {
     #[test]
     fn mixed_legacy_and_saved_ids_avoid_collision() {
         assert_eq!(allocate_group_ids(&[Some(2), None, None]), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn restored_xyz_family_keeps_its_kind() {
+        let url = || "https://example.test/{z}/{x}/{y}".to_string();
+        assert_eq!(kind_for_saved_source(&SavedSource::Apple { xyz_url: url() }), LayerKind::Apple);
+        assert_eq!(kind_for_saved_source(&SavedSource::Bing { xyz_url: url() }), LayerKind::Bing);
+        assert_eq!(kind_for_saved_source(&SavedSource::Wmts { xyz_url: url() }), LayerKind::Wmts);
+        assert_eq!(kind_for_saved_source(&SavedSource::Xyz { xyz_url: url() }), LayerKind::Xyz);
     }
 }
