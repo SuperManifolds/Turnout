@@ -12,6 +12,7 @@ mod overlay;
 mod overpass;
 mod settings;
 mod tile_server;
+mod vector_tiles;
 mod wms;
 mod wmts;
 
@@ -176,6 +177,7 @@ fn main() {
             }
             app.manage(apple_token::AppleRefresh::new());
             apple_token::spawn_auto_refresh(app.handle().clone());
+            app.manage(vector_tiles::VectorLayerState::default());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -234,6 +236,8 @@ fn main() {
             orm_offline::download_orm_tiles,
             orm_tiles::set_orm_offline,
             orm_tiles::get_orm_port,
+            vector_tiles::start_orm_vector_layers,
+            vector_tiles::stop_orm_vector_layers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
