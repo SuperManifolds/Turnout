@@ -12,5 +12,5 @@ name = "orm-bench"
 path = "src/main.rs"
 
 [dependencies]
-maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "29f4464", features = ["json", "tokio"] }
+maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "aa183dd", features = ["json", "tokio"] }
 serde_json = "1.0"

@@ -3320,7 +3320,7 @@ dependencies = [
 [[package]]
 name = "maplibre_native"
 version = "0.8.4"
-source = "git+https://github.com/SuperManifolds/maplibre-native-rs?rev=29f4464#29f4464998da8023b5ee5a3d40738082bb23431d"
+source = "git+https://github.com/SuperManifolds/maplibre-native-rs?rev=aa183dd#aa183ddb57dad482817d3827689fde31f71d8d05"
 dependencies = [
  "cmake",
  "cxx",
