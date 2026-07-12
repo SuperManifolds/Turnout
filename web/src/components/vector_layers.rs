@@ -15,6 +15,7 @@ pub fn VectorLayers(
     let (info, set_info) = create_signal::<Option<tauri::VectorLayersInfo>>(None);
     let (loading, set_loading) = create_signal(false);
     let (error, set_error) = create_signal::<Option<String>>(None);
+    let (copied, set_copied) = create_signal(false);
 
     let on_generate = move |_| {
         let Some((s, w, n, e)) = bbox.get_untracked() else {
@@ -22,6 +23,7 @@ pub fn VectorLayers(
             return;
         };
         set_error.set(None);
+        set_copied.set(false);
         set_loading.set(true);
         spawn_local(async move {
             let timeout = crate::components::app_settings::load_settings().await.overpass_timeout;
@@ -36,10 +38,20 @@ pub fn VectorLayers(
     let on_stop = move |_| {
         spawn_local(async move { tauri::stop_orm_vector_layers().await });
         set_info.set(None);
+        set_copied.set(false);
+    };
+
+    let copy_url = move |_| {
+        if let Some(v) = info.get_untracked() {
+            if let Some(win) = web_sys::window() {
+                let _ = win.navigator().clipboard().write_text(&v.tilejson_url);
+            }
+            set_copied.set(true);
+        }
     };
 
     view! {
-        <div class="tile-download-panel">
+        <div class="tile-download-panel rail-layers-panel">
             <header>
                 <h3>"Rail Layers for NIMBY Rails"</h3>
                 <button class="icon-btn" on:click=move |_| on_close.call(()) title="Close">
@@ -70,16 +82,31 @@ pub fn VectorLayers(
                 let items = v.levels.iter().map(|l| {
                     let name = l.layer_name.clone();
                     let desc = l.description.clone();
-                    view! { <li>{desc}" "<small>"("{name}")"</small></li> }
+                    view! {
+                        <li>
+                            <span class="level-name">{name}</span>
+                            <span class="level-desc">{desc}</span>
+                        </li>
+                    }
                 }).collect_view();
                 view! {
-                    <section class="offline-active">
-                        <label>"TileJSON URL — paste into NIMBY Rails \u{2192} map sources:"</label>
-                        <input type="text" readonly=true prop:value=v.tilejson_url.clone() />
-                        <p>{format!("{count} vertical layer(s) in this area:")}</p>
-                        <ul class="level-list">{items}</ul>
-                        <button on:click=on_stop>"Stop server"</button>
-                    </section>
+                    <fieldset>
+                        <label>"TileJSON URL — add as a map source in NIMBY Rails"</label>
+                        <div class="url-copy">
+                            <input type="text" readonly=true prop:value=v.tilejson_url.clone() />
+                            <button class="icon-btn" on:click=copy_url title="Copy URL">
+                                <i class="fa-solid fa-copy"></i>
+                            </button>
+                        </div>
+                        {move || copied.get().then(|| view! {
+                            <small class="success-text">"Copied to clipboard"</small>
+                        })}
+                    </fieldset>
+                    <fieldset>
+                        <label>{format!("{count} vertical layer(s) — toggle each in-game")}</label>
+                        <ul class="rail-level-list">{items}</ul>
+                    </fieldset>
+                    <button class="stop-btn" on:click=on_stop>"Stop server"</button>
                 }
             })}
         </div>

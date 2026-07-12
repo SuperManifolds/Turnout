@@ -34,8 +34,10 @@ TYPE_COLORS = {
     "funicular": "#d87777",     # dusty red
 }
 
-HALF_STROKE_MM = 2500          # half-stroke width, physical millimetres
-CASING_EXTRA_MM = 1400         # extra half-stroke for the bridge casing pass
+# Screen-space widths (tenths of a pixel): thin, zoom-stable overlay lines that
+# don't balloon with real-world scale when zoomed in.
+HALF_STROKE_PX = 12            # 1.2 px half-stroke -> ~2.4 px line
+CASING_EXTRA_PX = 12          # extra half-stroke for the bridge casing pass
 CASING_COLOR = "#1a1a1aff"     # dark casing under bridges
 TUNNEL_TEXTURE = "textures/dash.png"
 LIGHTNESS_STEP = 0.05          # per level
@@ -54,10 +56,10 @@ def level_color(base_hex: str, level: int) -> str:
 
 def layer_name(level: int) -> str:
     if level < 0:
-        return f"rail_layer_m{-level}"
+        return f"Underground{-level}"
     if level > 0:
-        return f"rail_layer_p{level}"
-    return "rail_layer_0"
+        return f"Elevated{level}"
+    return "Ground"
 
 
 def block(lines: list[str]) -> str:
@@ -76,11 +78,11 @@ def rule(level: int, rtype: str) -> str:
         f"and railway = {rtype}",
         "and bridge = yes",
         f"pass1_color = {CASING_COLOR}",
-        f"pass1_half_stroke_phys_mm = {HALF_STROKE_MM + CASING_EXTRA_MM}",
-        "pass1_half_stroke_px_dec = 0",
+        "pass1_half_stroke_phys_mm = 0",
+        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX + CASING_EXTRA_PX}",
         f"pass2_color = {color}",
-        f"pass2_half_stroke_phys_mm = {HALF_STROKE_MM}",
-        "pass2_half_stroke_px_dec = 0",
+        "pass2_half_stroke_phys_mm = 0",
+        f"pass2_half_stroke_px_dec = {HALF_STROKE_PX}",
         f"gameplay_layer = {level}",
     ]))
 
@@ -92,8 +94,8 @@ def rule(level: int, rtype: str) -> str:
         "and tunnel = yes",
         f"pass1_color = {color}",
         f"pass1_texture = {TUNNEL_TEXTURE}",
-        f"pass1_half_stroke_phys_mm = {HALF_STROKE_MM}",
-        "pass1_half_stroke_px_dec = 0",
+        "pass1_half_stroke_phys_mm = 0",
+        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
         f"gameplay_layer = {level}",
     ]))
 
@@ -105,8 +107,8 @@ def rule(level: int, rtype: str) -> str:
         "and not tunnel = yes",
         "and not bridge = yes",
         f"pass1_color = {color}",
-        f"pass1_half_stroke_phys_mm = {HALF_STROKE_MM}",
-        "pass1_half_stroke_px_dec = 0",
+        "pass1_half_stroke_phys_mm = 0",
+        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
         f"gameplay_layer = {level}",
     ]))
     return "".join(out)
