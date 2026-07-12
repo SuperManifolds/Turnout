@@ -129,3 +129,46 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
           assetNamePattern: "[name]_[arch][_setup][ext]"
+
+  # The bundled AppImage carries Ubuntu-22.04 libxcb*/libwayland*, which shadow
+  # the host's newer copies at runtime and break the host Vulkan driver (Arch
+  # RADV needs wl_display_create_queue_with_name, absent from the bundled
+  # libwayland). Tauri exposes no build-time exclusion, so strip them after the
+  # fact. Unlike the nightly, tagged AppImages are signed for auto-update, so the
+  # repacked image must be re-signed and latest.json repointed, then verified
+  # against the updater public key before publishing (fail-closed).
+  #
+  # NOTE: this touches production updater signing and cannot be fully exercised
+  # off a real signed tag — validate on a throwaway tag (e.g. v0.0.0-rc1) before
+  # a real release.
+  harden-linux-appimage:
+    needs: [create-release, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/install_harden_tools.sh"
+
+      - name: Strip host-provided libs, re-sign, repoint latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export APPIMAGETOOL="$HOME/appimagetool"
+          export SCRIPTS="$GITHUB_WORKSPACE/.github/scripts"
+          export PUB_LINE="$(python3 "$SCRIPTS/updater_pubkey.py" "$GITHUB_WORKSPACE/src-tauri/tauri.conf.json")"
+
+          work="$(mktemp -d)"; cd "$work"
+          export LATEST_JSON="$work/latest.json"
+          gh release download "$TAG" --repo "$REPO" --pattern latest.json --output latest.json
+
+          bash "$SCRIPTS/harden_appimage.sh" Turnout_amd64.AppImage   linux-x86_64  x86_64
+          bash "$SCRIPTS/harden_appimage.sh" Turnout_aarch64.AppImage linux-aarch64 aarch64
+
+          gh release upload "$TAG" --repo "$REPO" --clobber latest.json
+          echo "hardened, re-signed, and repointed both Linux AppImages"
