@@ -13,9 +13,6 @@ on:
       source_tag:
         description: "Existing release tag to pull AppImages + latest.json from (needs amd64 + aarch64 AppImages)"
         default: "v0.2.0"
-  # Temporary: lets the harness validate this on the PR branch. Remove before merge.
-  push:
-    branches: [ci/release-appimage-harden]
 
 jobs:
   dryrun:
