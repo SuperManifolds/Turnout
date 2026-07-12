@@ -152,10 +152,6 @@ impl ServerHandle {
         id
     }
 
-    pub fn add_xyz_layer(&self, url_template: String, display_name: String) -> u32 {
-        self.add_xyz_layer_with_kind(url_template, display_name, LayerKind::Xyz)
-    }
-
     pub fn add_xyz_layer_with_kind(&self, url_template: String, display_name: String, kind: LayerKind) -> u32 {
         let id = self.next_id();
 
