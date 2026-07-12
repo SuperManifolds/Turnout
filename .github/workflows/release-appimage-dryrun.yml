@@ -24,13 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y squashfs-tools minisign
-          curl -fsSL -o "$HOME/appimagetool" \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x "$HOME/appimagetool"
-          npm install -g @tauri-apps/cli@^2
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/install_harden_tools.sh"
 
       - name: Dry-run harden (no uploads)
         env:
