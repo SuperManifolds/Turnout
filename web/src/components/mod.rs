@@ -8,6 +8,7 @@ pub mod app_settings;
 mod blueprint_drawer;
 mod overlay;
 mod tile_download;
+mod vector_layers;
 
 pub use map::Map;
 pub use search::Search;

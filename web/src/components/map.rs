@@ -417,6 +417,7 @@ pub fn Map(
     };
 
     let (show_tile_download, set_show_tile_download) = create_signal(false);
+    let (show_vector_layers, set_show_vector_layers) = create_signal(false);
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
     let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 
@@ -455,6 +456,10 @@ pub fn Map(
                         <i class="fa-solid fa-download"></i>
                         " Download Tiles"
                     </button>
+                    <button on:click=move |_| set_show_vector_layers.update(|v| *v = !*v)>
+                        <i class="fa-solid fa-layer-group"></i>
+                        " Rail Layers"
+                    </button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
@@ -464,6 +469,12 @@ pub fn Map(
                 <super::tile_download::TileDownload
                     bbox=bbox
                     on_close=Callback::new(move |()| set_show_tile_download.set(false))
+                />
+            </Show>
+            <Show when=move || show_vector_layers.get()>
+                <super::vector_layers::VectorLayers
+                    bbox=bbox
+                    on_close=Callback::new(move |()| set_show_vector_layers.set(false))
                 />
             </Show>
             <Show when=move || show_name_prompt.get()>

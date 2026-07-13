@@ -672,6 +672,58 @@ pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
     invoke("set_tile_download_paused", &args).await.map(|_| ())
 }
 
+#[derive(Clone, Debug)]
+pub struct VectorLayerLevel {
+    pub level: i32,
+    pub layer_name: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct VectorLayersInfo {
+    pub tilejson_url: String,
+    pub tile_url: String,
+    pub levels: Vec<VectorLayerLevel>,
+}
+
+fn parse_vector_layers_info(val: &JsValue) -> Option<VectorLayersInfo> {
+    let tilejson_url = js_sys::Reflect::get(val, &"tilejsonUrl".into()).ok()?.as_string()?;
+    let tile_url = js_sys::Reflect::get(val, &"tileUrl".into()).ok()?.as_string()?;
+    let levels_val = js_sys::Reflect::get(val, &"levels".into()).ok()?;
+    let levels = js_sys::Array::from(&levels_val)
+        .iter()
+        .filter_map(|v| {
+            Some(VectorLayerLevel {
+                level: js_sys::Reflect::get(&v, &"level".into()).ok()?.as_f64()? as i32,
+                layer_name: js_sys::Reflect::get(&v, &"layerName".into()).ok()?.as_string()?,
+                description: js_sys::Reflect::get(&v, &"description".into()).ok()?.as_string()?,
+            })
+        })
+        .collect();
+    Some(VectorLayersInfo { tilejson_url, tile_url, levels })
+}
+
+pub async fn start_orm_vector_layers(
+    south: f64, west: f64, north: f64, east: f64, timeout_secs: u32,
+) -> Result<VectorLayersInfo, String> {
+    let args = js_sys::Object::new();
+    js_set(&args, "south", &JsValue::from_f64(south))?;
+    js_set(&args, "west", &JsValue::from_f64(west))?;
+    js_set(&args, "north", &JsValue::from_f64(north))?;
+    js_set(&args, "east", &JsValue::from_f64(east))?;
+    js_set(&args, "timeoutSecs", &JsValue::from_f64(f64::from(timeout_secs)))?;
+    let result = invoke("start_orm_vector_layers", &args).await?;
+    parse_vector_layers_info(&result).ok_or_else(|| "Unexpected response from the tile server".to_string())
+}
+
+pub async fn stop_orm_vector_layers() {
+    let _ = invoke("stop_orm_vector_layers", &JsValue::NULL).await;
+}
+
+pub async fn open_workshop_mod() -> Result<(), String> {
+    invoke("open_workshop_mod", &JsValue::NULL).await.map(|_| ())
+}
+
 pub async fn download_orm_tiles(
     south: f64, west: f64, north: f64, east: f64,
     z_min: u8, z_max: u8,
