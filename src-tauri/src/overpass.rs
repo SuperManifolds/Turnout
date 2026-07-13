@@ -85,10 +85,17 @@ fn bbox_area_km2(south: f64, west: f64, north: f64, east: f64) -> f64 {
 
 fn build_railway_query(south: f64, west: f64, north: f64, east: f64, timeout_secs: u32) -> String {
     let types = RAILWAY_TYPES.join("|");
+    let bbox = format!("{south},{west},{north},{east}");
     // `out geom;` inlines coordinates and returns all tags (incl. `layer`),
-    // avoiding a separate node fetch + assembly.
+    // avoiding a separate node fetch + assembly. The union also pulls platforms
+    // (both the classic `railway=platform` and the newer `public_transport`
+    // tagging) so they can be rendered alongside the tracks.
     format!(
-        "[out:json][timeout:{timeout_secs}];way[\"railway\"~\"^({types})$\"]({south},{west},{north},{east});out geom;"
+        "[out:json][timeout:{timeout_secs}];\
+         (way[\"railway\"~\"^({types})$\"]({bbox});\
+         way[\"railway\"=\"platform\"]({bbox});\
+         way[\"public_transport\"=\"platform\"]({bbox}););\
+         out geom;"
     )
 }
 
@@ -233,6 +240,8 @@ mod tests {
         for t in RAILWAY_TYPES {
             assert!(q.contains(t), "missing type {t}");
         }
+        assert!(q.contains("\"railway\"=\"platform\""), "missing railway platforms");
+        assert!(q.contains("\"public_transport\"=\"platform\""), "missing PT platforms");
     }
 
     #[test]

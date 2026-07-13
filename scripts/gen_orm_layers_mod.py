@@ -42,6 +42,8 @@ CASING_COLOR = "#1a1a1aff"     # dark casing under bridges
 TUNNEL_TEXTURE = "textures/dash.png"
 LIGHTNESS_STEP = 0.05          # per level
 LIGHTNESS_MIN, LIGHTNESS_MAX = 0.20, 0.85
+PLATFORM_COLOR = "#8a8a8a"     # neutral grey, shaded per level like the track types
+PLATFORM_FILL_ALPHA = "aa"     # semi-transparent so the platform reads as a pad
 
 
 def level_color(base_hex: str, level: int) -> str:
@@ -114,6 +116,37 @@ def rule(level: int, rtype: str) -> str:
     return "".join(out)
 
 
+def platform_rules(level: int) -> str:
+    """Platform styling for one level: a filled area for closed platform ways plus
+    an outline line for open ones (which have no area to fill). Listed before the
+    track rules for the level so platforms draw underneath the tracks."""
+    src = layer_name(level)
+    color = level_color(PLATFORM_COLOR, level)
+    fill = color[:-2] + PLATFORM_FILL_ALPHA
+    out = []
+
+    # Closed platform ways -> filled polygon.
+    out.append(block([
+        "[StyleArea]",
+        f"source_layer = {src}",
+        "and railway = platform",
+        f"pass1_color = {fill}",
+        f"gameplay_layer = {level}",
+    ]))
+
+    # Open platform ways -> outline line.
+    out.append(block([
+        "[StyleLine]",
+        f"source_layer = {src}",
+        "and railway = platform",
+        f"pass1_color = {color}",
+        "pass1_half_stroke_phys_mm = 0",
+        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+        f"gameplay_layer = {level}",
+    ]))
+    return "".join(out)
+
+
 def dash_png() -> bytes:
     """A 16x4 stroke texture: 10px opaque white + 6px transparent → dashes when
     tiled along a line. White so `pass1_color` tints it."""
@@ -145,7 +178,10 @@ def main() -> None:
         "desc = Railway map styled by type (ORM colours) and OSM vertical layer; toggle heights via the source's vector layers.",
         "version = 1.0.0",
     ])
-    body = "".join(rule(level, rtype) for level in LEVELS for rtype in TYPE_COLORS)
+    body = "".join(
+        platform_rules(level) + "".join(rule(level, rtype) for rtype in TYPE_COLORS)
+        for level in LEVELS
+    )
 
     mod_path = os.path.join(OUT_DIR, "mod.txt")
     with open(mod_path, "w") as f:
@@ -156,8 +192,9 @@ def main() -> None:
     with open(os.path.join(OUT_DIR, "textures", "dash.png"), "wb") as f:
         f.write(dash_png())
 
-    n_rules = sum(1 for _ in LEVELS) * len(TYPE_COLORS) * 3
-    print(f"wrote {mod_path} ({n_rules} StyleLine rules) + textures/dash.png")
+    levels = sum(1 for _ in LEVELS)
+    n_rules = levels * (len(TYPE_COLORS) * 3 + 2)  # +2 platform rules per level
+    print(f"wrote {mod_path} ({n_rules} style rules) + textures/dash.png")
 
 
 if __name__ == "__main__":
