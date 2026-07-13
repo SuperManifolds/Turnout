@@ -3,7 +3,7 @@
 [ModMeta]
 schema = 1
 name = ORM Vertical Layers
-author = Turnout
+author = SuperManifolds
 desc = Railway map styled by type (ORM colours) and OSM vertical layer; toggle heights via the source's vector layers.
 version = 1.0.0
 
