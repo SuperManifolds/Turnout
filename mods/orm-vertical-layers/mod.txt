@@ -11,13 +11,13 @@ version = 1.0.0
 source_layer = Underground5
 and railway = platform
 and mode = rail
-color = #804000aa
+color = #663400aa
 
 [StyleLine]
 source_layer = Underground5
 and railway = platform
 and mode = rail
-pass1_color = #804000ff
+pass1_color = #663400ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -56,13 +56,13 @@ gameplay_layer = -5
 source_layer = Underground5
 and railway = platform
 and mode = tram
-color = #a12e7baa
+color = #4f173daa
 
 [StyleLine]
 source_layer = Underground5
 and railway = platform
 and mode = tram
-pass1_color = #a12e7bff
+pass1_color = #4f173dff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -86,13 +86,13 @@ gameplay_layer = -5
 source_layer = Underground5
 and railway = platform
 and mode = funicular
-color = #a12e2eaa
+color = #4f1717aa
 
 [StyleLine]
 source_layer = Underground5
 and railway = platform
 and mode = funicular
-pass1_color = #a12e2eff
+pass1_color = #4f1717ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -104,7 +104,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #804000ff
+pass2_color = #663400ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -113,7 +113,7 @@ gameplay_layer = -5
 source_layer = Underground5
 and railway = rail
 and tunnel = yes
-pass1_color = #804000ff
+pass1_color = #663400ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -124,7 +124,7 @@ source_layer = Underground5
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #804000ff
+pass1_color = #663400ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -136,7 +136,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #a12e7bff
+pass2_color = #4f173dff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -145,7 +145,7 @@ gameplay_layer = -5
 source_layer = Underground5
 and railway = tram
 and tunnel = yes
-pass1_color = #a12e7bff
+pass1_color = #4f173dff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -156,7 +156,7 @@ source_layer = Underground5
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #a12e7bff
+pass1_color = #4f173dff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -296,7 +296,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #a12e2eff
+pass2_color = #4f1717ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -305,7 +305,7 @@ gameplay_layer = -5
 source_layer = Underground5
 and railway = funicular
 and tunnel = yes
-pass1_color = #a12e2eff
+pass1_color = #4f1717ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -316,7 +316,7 @@ source_layer = Underground5
 and railway = funicular
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #a12e2eff
+pass1_color = #4f1717ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
@@ -325,13 +325,13 @@ gameplay_layer = -5
 source_layer = Underground4
 and railway = platform
 and mode = rail
-color = #994d00aa
+color = #8b4600aa
 
 [StyleLine]
 source_layer = Underground4
 and railway = platform
 and mode = rail
-pass1_color = #994d00ff
+pass1_color = #8b4600ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -340,13 +340,13 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = platform
 and mode = subway
-color = #020066aa
+color = #02008baa
 
 [StyleLine]
 source_layer = Underground4
 and railway = platform
 and mode = subway
-pass1_color = #020066ff
+pass1_color = #02008bff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -355,13 +355,13 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = platform
 and mode = light_rail
-color = #00660baa
+color = #008b0faa
 
 [StyleLine]
 source_layer = Underground4
 and railway = platform
 and mode = light_rail
-pass1_color = #00660bff
+pass1_color = #008b0fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -370,13 +370,13 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = platform
 and mode = tram
-color = #b5348aaa
+color = #6c1f52aa
 
 [StyleLine]
 source_layer = Underground4
 and railway = platform
 and mode = tram
-pass1_color = #b5348aff
+pass1_color = #6c1f52ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -385,13 +385,13 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = platform
 and mode = monorail
-color = #00664baa
+color = #008b66aa
 
 [StyleLine]
 source_layer = Underground4
 and railway = platform
 and mode = monorail
-pass1_color = #00664bff
+pass1_color = #008b66ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -400,13 +400,13 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = platform
 and mode = funicular
-color = #b53434aa
+color = #6c1f1faa
 
 [StyleLine]
 source_layer = Underground4
 and railway = platform
 and mode = funicular
-pass1_color = #b53434ff
+pass1_color = #6c1f1fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -418,7 +418,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #994d00ff
+pass2_color = #8b4600ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -427,7 +427,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = rail
 and tunnel = yes
-pass1_color = #994d00ff
+pass1_color = #8b4600ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -438,7 +438,7 @@ source_layer = Underground4
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #994d00ff
+pass1_color = #8b4600ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -450,7 +450,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #b5348aff
+pass2_color = #6c1f52ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -459,7 +459,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = tram
 and tunnel = yes
-pass1_color = #b5348aff
+pass1_color = #6c1f52ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -470,7 +470,7 @@ source_layer = Underground4
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #b5348aff
+pass1_color = #6c1f52ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -482,7 +482,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #020066ff
+pass2_color = #02008bff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -491,7 +491,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = subway
 and tunnel = yes
-pass1_color = #020066ff
+pass1_color = #02008bff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -502,7 +502,7 @@ source_layer = Underground4
 and railway = subway
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #020066ff
+pass1_color = #02008bff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -514,7 +514,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00660bff
+pass2_color = #008b0fff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -523,7 +523,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = light_rail
 and tunnel = yes
-pass1_color = #00660bff
+pass1_color = #008b0fff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -534,7 +534,7 @@ source_layer = Underground4
 and railway = light_rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00660bff
+pass1_color = #008b0fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -546,7 +546,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00664bff
+pass2_color = #008b66ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -555,7 +555,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = monorail
 and tunnel = yes
-pass1_color = #00664bff
+pass1_color = #008b66ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -566,7 +566,7 @@ source_layer = Underground4
 and railway = monorail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00664bff
+pass1_color = #008b66ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -578,7 +578,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #667400ff
+pass2_color = #7a8b00ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -587,7 +587,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = narrow_gauge
 and tunnel = yes
-pass1_color = #667400ff
+pass1_color = #7a8b00ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -598,7 +598,7 @@ source_layer = Underground4
 and railway = narrow_gauge
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #667400ff
+pass1_color = #7a8b00ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -610,7 +610,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #b53434ff
+pass2_color = #6c1f1fff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -619,7 +619,7 @@ gameplay_layer = -4
 source_layer = Underground4
 and railway = funicular
 and tunnel = yes
-pass1_color = #b53434ff
+pass1_color = #6c1f1fff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -630,7 +630,7 @@ source_layer = Underground4
 and railway = funicular
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #b53434ff
+pass1_color = #6c1f1fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
@@ -639,13 +639,13 @@ gameplay_layer = -4
 source_layer = Underground3
 and railway = platform
 and mode = rail
-color = #b25a00aa
+color = #af5900aa
 
 [StyleLine]
 source_layer = Underground3
 and railway = platform
 and mode = rail
-pass1_color = #b25a00ff
+pass1_color = #af5900ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -654,13 +654,13 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = platform
 and mode = subway
-color = #020076aa
+color = #0300afaa
 
 [StyleLine]
 source_layer = Underground3
 and railway = platform
 and mode = subway
-pass1_color = #020076ff
+pass1_color = #0300afff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -669,13 +669,13 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = platform
 and mode = light_rail
-color = #00700caa
+color = #00af13aa
 
 [StyleLine]
 source_layer = Underground3
 and railway = platform
 and mode = light_rail
-pass1_color = #00700cff
+pass1_color = #00af13ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -684,13 +684,13 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = platform
 and mode = tram
-color = #c73c99aa
+color = #882768aa
 
 [StyleLine]
 source_layer = Underground3
 and railway = platform
 and mode = tram
-pass1_color = #c73c99ff
+pass1_color = #882768ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -699,13 +699,13 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = platform
 and mode = monorail
-color = #007053aa
+color = #00af81aa
 
 [StyleLine]
 source_layer = Underground3
 and railway = platform
 and mode = monorail
-pass1_color = #007053ff
+pass1_color = #00af81ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -714,13 +714,13 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = platform
 and mode = funicular
-color = #c73c3caa
+color = #882727aa
 
 [StyleLine]
 source_layer = Underground3
 and railway = platform
 and mode = funicular
-pass1_color = #c73c3cff
+pass1_color = #882727ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -732,7 +732,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #b25a00ff
+pass2_color = #af5900ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -741,7 +741,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = rail
 and tunnel = yes
-pass1_color = #b25a00ff
+pass1_color = #af5900ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -752,7 +752,7 @@ source_layer = Underground3
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #b25a00ff
+pass1_color = #af5900ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -764,7 +764,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #c73c99ff
+pass2_color = #882768ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -773,7 +773,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = tram
 and tunnel = yes
-pass1_color = #c73c99ff
+pass1_color = #882768ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -784,7 +784,7 @@ source_layer = Underground3
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #c73c99ff
+pass1_color = #882768ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -796,7 +796,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #020076ff
+pass2_color = #0300afff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -805,7 +805,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = subway
 and tunnel = yes
-pass1_color = #020076ff
+pass1_color = #0300afff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -816,7 +816,7 @@ source_layer = Underground3
 and railway = subway
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #020076ff
+pass1_color = #0300afff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -828,7 +828,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00700cff
+pass2_color = #00af13ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -837,7 +837,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = light_rail
 and tunnel = yes
-pass1_color = #00700cff
+pass1_color = #00af13ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -848,7 +848,7 @@ source_layer = Underground3
 and railway = light_rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00700cff
+pass1_color = #00af13ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -860,7 +860,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #007053ff
+pass2_color = #00af81ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -869,7 +869,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = monorail
 and tunnel = yes
-pass1_color = #007053ff
+pass1_color = #00af81ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -880,7 +880,7 @@ source_layer = Underground3
 and railway = monorail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #007053ff
+pass1_color = #00af81ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -892,7 +892,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #7d8d00ff
+pass2_color = #9baf00ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -901,7 +901,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = narrow_gauge
 and tunnel = yes
-pass1_color = #7d8d00ff
+pass1_color = #9baf00ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -912,7 +912,7 @@ source_layer = Underground3
 and railway = narrow_gauge
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #7d8d00ff
+pass1_color = #9baf00ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -924,7 +924,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #c73c3cff
+pass2_color = #882727ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -933,7 +933,7 @@ gameplay_layer = -3
 source_layer = Underground3
 and railway = funicular
 and tunnel = yes
-pass1_color = #c73c3cff
+pass1_color = #882727ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -944,7 +944,7 @@ source_layer = Underground3
 and railway = funicular
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #c73c3cff
+pass1_color = #882727ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
@@ -953,13 +953,13 @@ gameplay_layer = -3
 source_layer = Underground2
 and railway = platform
 and mode = rail
-color = #cc6700aa
+color = #d46b00aa
 
 [StyleLine]
 source_layer = Underground2
 and railway = platform
 and mode = rail
-pass1_color = #cc6700ff
+pass1_color = #d46b00ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -968,13 +968,13 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = platform
 and mode = subway
-color = #020090aa
+color = #0300d4aa
 
 [StyleLine]
 source_layer = Underground2
 and railway = platform
 and mode = subway
-pass1_color = #020090ff
+pass1_color = #0300d4ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -983,13 +983,13 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = platform
 and mode = light_rail
-color = #008a0faa
+color = #00d416aa
 
 [StyleLine]
 source_layer = Underground2
 and railway = platform
 and mode = light_rail
-pass1_color = #008a0fff
+pass1_color = #00d416ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -998,13 +998,13 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = platform
 and mode = tram
-color = #cd4fa3aa
+color = #a52f7eaa
 
 [StyleLine]
 source_layer = Underground2
 and railway = platform
 and mode = tram
-pass1_color = #cd4fa3ff
+pass1_color = #a52f7eff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1013,13 +1013,13 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = platform
 and mode = monorail
-color = #008a65aa
+color = #00d49caa
 
 [StyleLine]
 source_layer = Underground2
 and railway = platform
 and mode = monorail
-pass1_color = #008a65ff
+pass1_color = #00d49cff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1028,13 +1028,13 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = platform
 and mode = funicular
-color = #cd4f4faa
+color = #a52f2faa
 
 [StyleLine]
 source_layer = Underground2
 and railway = platform
 and mode = funicular
-pass1_color = #cd4f4fff
+pass1_color = #a52f2fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1046,7 +1046,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #cc6700ff
+pass2_color = #d46b00ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1055,7 +1055,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = rail
 and tunnel = yes
-pass1_color = #cc6700ff
+pass1_color = #d46b00ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1066,7 +1066,7 @@ source_layer = Underground2
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #cc6700ff
+pass1_color = #d46b00ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1078,7 +1078,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #cd4fa3ff
+pass2_color = #a52f7eff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1087,7 +1087,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = tram
 and tunnel = yes
-pass1_color = #cd4fa3ff
+pass1_color = #a52f7eff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1098,7 +1098,7 @@ source_layer = Underground2
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #cd4fa3ff
+pass1_color = #a52f7eff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1110,7 +1110,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #020090ff
+pass2_color = #0300d4ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1119,7 +1119,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = subway
 and tunnel = yes
-pass1_color = #020090ff
+pass1_color = #0300d4ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1130,7 +1130,7 @@ source_layer = Underground2
 and railway = subway
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #020090ff
+pass1_color = #0300d4ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1142,7 +1142,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #008a0fff
+pass2_color = #00d416ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1151,7 +1151,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = light_rail
 and tunnel = yes
-pass1_color = #008a0fff
+pass1_color = #00d416ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1162,7 +1162,7 @@ source_layer = Underground2
 and railway = light_rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #008a0fff
+pass1_color = #00d416ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1174,7 +1174,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #008a65ff
+pass2_color = #00d49cff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1183,7 +1183,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = monorail
 and tunnel = yes
-pass1_color = #008a65ff
+pass1_color = #00d49cff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1194,7 +1194,7 @@ source_layer = Underground2
 and railway = monorail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #008a65ff
+pass1_color = #00d49cff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1206,7 +1206,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #93a700ff
+pass2_color = #bbd400ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1215,7 +1215,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = narrow_gauge
 and tunnel = yes
-pass1_color = #93a700ff
+pass1_color = #bbd400ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1226,7 +1226,7 @@ source_layer = Underground2
 and railway = narrow_gauge
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #93a700ff
+pass1_color = #bbd400ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1238,7 +1238,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #cd4f4fff
+pass2_color = #a52f2fff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1247,7 +1247,7 @@ gameplay_layer = -2
 source_layer = Underground2
 and railway = funicular
 and tunnel = yes
-pass1_color = #cd4f4fff
+pass1_color = #a52f2fff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1258,7 +1258,7 @@ source_layer = Underground2
 and railway = funicular
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #cd4f4fff
+pass1_color = #a52f2fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
@@ -1267,13 +1267,13 @@ gameplay_layer = -2
 source_layer = Underground1
 and railway = platform
 and mode = rail
-color = #e67400aa
+color = #f97e00aa
 
 [StyleLine]
 source_layer = Underground1
 and railway = platform
 and mode = rail
-pass1_color = #e67400ff
+pass1_color = #f97e00ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1282,13 +1282,13 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = platform
 and mode = subway
-color = #0300aaaa
+color = #0400f9aa
 
 [StyleLine]
 source_layer = Underground1
 and railway = platform
 and mode = subway
-pass1_color = #0300aaff
+pass1_color = #0400f9ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1297,13 +1297,13 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = platform
 and mode = light_rail
-color = #00a411aa
+color = #00f91aaa
 
 [StyleLine]
 source_layer = Underground1
 and railway = platform
 and mode = light_rail
-pass1_color = #00a411ff
+pass1_color = #00f91aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1312,13 +1312,13 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = platform
 and mode = tram
-color = #d263aeaa
+color = #c13794aa
 
 [StyleLine]
 source_layer = Underground1
 and railway = platform
 and mode = tram
-pass1_color = #d263aeff
+pass1_color = #c13794ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1327,13 +1327,13 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = platform
 and mode = monorail
-color = #00a478aa
+color = #00f9b7aa
 
 [StyleLine]
 source_layer = Underground1
 and railway = platform
 and mode = monorail
-pass1_color = #00a478ff
+pass1_color = #00f9b7ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1342,13 +1342,13 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = platform
 and mode = funicular
-color = #d26363aa
+color = #c13737aa
 
 [StyleLine]
 source_layer = Underground1
 and railway = platform
 and mode = funicular
-pass1_color = #d26363ff
+pass1_color = #c13737ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1360,7 +1360,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #e67400ff
+pass2_color = #f97e00ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1369,7 +1369,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = rail
 and tunnel = yes
-pass1_color = #e67400ff
+pass1_color = #f97e00ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1380,7 +1380,7 @@ source_layer = Underground1
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #e67400ff
+pass1_color = #f97e00ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1392,7 +1392,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #d263aeff
+pass2_color = #c13794ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1401,7 +1401,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = tram
 and tunnel = yes
-pass1_color = #d263aeff
+pass1_color = #c13794ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1412,7 +1412,7 @@ source_layer = Underground1
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #d263aeff
+pass1_color = #c13794ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1424,7 +1424,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #0300aaff
+pass2_color = #0400f9ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1433,7 +1433,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = subway
 and tunnel = yes
-pass1_color = #0300aaff
+pass1_color = #0400f9ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1444,7 +1444,7 @@ source_layer = Underground1
 and railway = subway
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #0300aaff
+pass1_color = #0400f9ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1456,7 +1456,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00a411ff
+pass2_color = #00f91aff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1465,7 +1465,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = light_rail
 and tunnel = yes
-pass1_color = #00a411ff
+pass1_color = #00f91aff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1476,7 +1476,7 @@ source_layer = Underground1
 and railway = light_rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00a411ff
+pass1_color = #00f91aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1488,7 +1488,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00a478ff
+pass2_color = #00f9b7ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1497,7 +1497,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = monorail
 and tunnel = yes
-pass1_color = #00a478ff
+pass1_color = #00f9b7ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1508,7 +1508,7 @@ source_layer = Underground1
 and railway = monorail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00a478ff
+pass1_color = #00f9b7ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1520,7 +1520,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #aac000ff
+pass2_color = #dbf900ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1529,7 +1529,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = narrow_gauge
 and tunnel = yes
-pass1_color = #aac000ff
+pass1_color = #dbf900ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1540,7 +1540,7 @@ source_layer = Underground1
 and railway = narrow_gauge
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #aac000ff
+pass1_color = #dbf900ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1552,7 +1552,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #d26363ff
+pass2_color = #c13737ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1561,7 +1561,7 @@ gameplay_layer = -1
 source_layer = Underground1
 and railway = funicular
 and tunnel = yes
-pass1_color = #d26363ff
+pass1_color = #c13737ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1572,7 +1572,7 @@ source_layer = Underground1
 and railway = funicular
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #d26363ff
+pass1_color = #c13737ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
@@ -1581,13 +1581,13 @@ gameplay_layer = -1
 source_layer = Ground
 and railway = platform
 and mode = rail
-color = #ff8100aa
+color = #ff901faa
 
 [StyleLine]
 source_layer = Ground
 and railway = platform
 and mode = rail
-pass1_color = #ff8100ff
+pass1_color = #ff901fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1596,13 +1596,13 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = platform
 and mode = subway
-color = #0300c3aa
+color = #221fffaa
 
 [StyleLine]
 source_layer = Ground
 and railway = platform
 and mode = subway
-pass1_color = #0300c3ff
+pass1_color = #221fffff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1611,13 +1611,13 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = platform
 and mode = light_rail
-color = #00bd14aa
+color = #1fff36aa
 
 [StyleLine]
 source_layer = Ground
 and railway = platform
 and mode = light_rail
-pass1_color = #00bd14ff
+pass1_color = #1fff36ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1626,13 +1626,13 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = platform
 and mode = tram
-color = #d877b8aa
+color = #cd51a4aa
 
 [StyleLine]
 source_layer = Ground
 and railway = platform
 and mode = tram
-pass1_color = #d877b8ff
+pass1_color = #cd51a4ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1641,13 +1641,13 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = platform
 and mode = monorail
-color = #00bd8baa
+color = #1fffc4aa
 
 [StyleLine]
 source_layer = Ground
 and railway = platform
 and mode = monorail
-pass1_color = #00bd8bff
+pass1_color = #1fffc4ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1656,13 +1656,13 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = platform
 and mode = funicular
-color = #d87777aa
+color = #cd5151aa
 
 [StyleLine]
 source_layer = Ground
 and railway = platform
 and mode = funicular
-pass1_color = #d87777ff
+pass1_color = #cd5151ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1674,7 +1674,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #ff8100ff
+pass2_color = #ff901fff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1683,7 +1683,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = rail
 and tunnel = yes
-pass1_color = #ff8100ff
+pass1_color = #ff901fff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1694,7 +1694,7 @@ source_layer = Ground
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #ff8100ff
+pass1_color = #ff901fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1706,7 +1706,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #d877b8ff
+pass2_color = #cd51a4ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1715,7 +1715,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = tram
 and tunnel = yes
-pass1_color = #d877b8ff
+pass1_color = #cd51a4ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1726,7 +1726,7 @@ source_layer = Ground
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #d877b8ff
+pass1_color = #cd51a4ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1738,7 +1738,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #0300c3ff
+pass2_color = #221fffff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1747,7 +1747,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = subway
 and tunnel = yes
-pass1_color = #0300c3ff
+pass1_color = #221fffff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1758,7 +1758,7 @@ source_layer = Ground
 and railway = subway
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #0300c3ff
+pass1_color = #221fffff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1770,7 +1770,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00bd14ff
+pass2_color = #1fff36ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1779,7 +1779,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = light_rail
 and tunnel = yes
-pass1_color = #00bd14ff
+pass1_color = #1fff36ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1790,7 +1790,7 @@ source_layer = Ground
 and railway = light_rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00bd14ff
+pass1_color = #1fff36ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1802,7 +1802,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #00bd8bff
+pass2_color = #1fffc4ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1811,7 +1811,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = monorail
 and tunnel = yes
-pass1_color = #00bd8bff
+pass1_color = #1fffc4ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1822,7 +1822,7 @@ source_layer = Ground
 and railway = monorail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #00bd8bff
+pass1_color = #1fffc4ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1834,7 +1834,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #c0da00ff
+pass2_color = #e4ff1fff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1843,7 +1843,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = narrow_gauge
 and tunnel = yes
-pass1_color = #c0da00ff
+pass1_color = #e4ff1fff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1854,7 +1854,7 @@ source_layer = Ground
 and railway = narrow_gauge
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #c0da00ff
+pass1_color = #e4ff1fff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1866,7 +1866,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #d87777ff
+pass2_color = #cd5151ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1875,7 +1875,7 @@ gameplay_layer = 0
 source_layer = Ground
 and railway = funicular
 and tunnel = yes
-pass1_color = #d87777ff
+pass1_color = #cd5151ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -1886,7 +1886,7 @@ source_layer = Ground
 and railway = funicular
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #d87777ff
+pass1_color = #cd5151ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
@@ -1895,1414 +1895,158 @@ gameplay_layer = 0
 source_layer = Elevated1
 and railway = platform
 and mode = rail
-color = #ff8e1aaa
+color = #ffa243aa
 
 [StyleLine]
 source_layer = Elevated1
 and railway = platform
 and mode = rail
-pass1_color = #ff8e1aff
+pass1_color = #ffa243ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 1
 
 [StyleMesh]
 source_layer = Elevated1
-and railway = platform
-and mode = subway
-color = #0300dcaa
-
-[StyleLine]
-source_layer = Elevated1
-and railway = platform
-and mode = subway
-pass1_color = #0300dcff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleMesh]
-source_layer = Elevated1
-and railway = platform
-and mode = light_rail
-color = #00d617aa
-
-[StyleLine]
-source_layer = Elevated1
-and railway = platform
-and mode = light_rail
-pass1_color = #00d617ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleMesh]
-source_layer = Elevated1
-and railway = platform
-and mode = tram
-color = #de8bc2aa
-
-[StyleLine]
-source_layer = Elevated1
-and railway = platform
-and mode = tram
-pass1_color = #de8bc2ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleMesh]
-source_layer = Elevated1
-and railway = platform
-and mode = monorail
-color = #00d69eaa
-
-[StyleLine]
-source_layer = Elevated1
-and railway = platform
-and mode = monorail
-pass1_color = #00d69eff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleMesh]
-source_layer = Elevated1
-and railway = platform
-and mode = funicular
-color = #de8b8baa
-
-[StyleLine]
-source_layer = Elevated1
-and railway = platform
-and mode = funicular
-pass1_color = #de8b8bff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #ff8e1aff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = rail
-and tunnel = yes
-pass1_color = #ff8e1aff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #ff8e1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = tram
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #de8bc2ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = tram
-and tunnel = yes
-pass1_color = #de8bc2ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = tram
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #de8bc2ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = subway
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #0300dcff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = subway
-and tunnel = yes
-pass1_color = #0300dcff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = subway
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #0300dcff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = light_rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #00d617ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = light_rail
-and tunnel = yes
-pass1_color = #00d617ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = light_rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #00d617ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = monorail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #00d69eff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = monorail
-and tunnel = yes
-pass1_color = #00d69eff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = monorail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #00d69eff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = narrow_gauge
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #d6f300ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = narrow_gauge
-and tunnel = yes
-pass1_color = #d6f300ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = narrow_gauge
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #d6f300ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = funicular
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #de8b8bff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = funicular
-and tunnel = yes
-pass1_color = #de8b8bff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleLine]
-source_layer = Elevated1
-and railway = funicular
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #de8b8bff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 1
-
-[StyleMesh]
-source_layer = Elevated2
-and railway = platform
-and mode = rail
-color = #ff9a33aa
-
-[StyleLine]
-source_layer = Elevated2
-and railway = platform
-and mode = rail
-pass1_color = #ff9a33ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleMesh]
-source_layer = Elevated2
-and railway = platform
-and mode = subway
-color = #0400f6aa
-
-[StyleLine]
-source_layer = Elevated2
-and railway = platform
-and mode = subway
-pass1_color = #0400f6ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleMesh]
-source_layer = Elevated2
-and railway = platform
-and mode = light_rail
-color = #00f019aa
-
-[StyleLine]
-source_layer = Elevated2
-and railway = platform
-and mode = light_rail
-pass1_color = #00f019ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleMesh]
-source_layer = Elevated2
-and railway = platform
-and mode = tram
-color = #e39fcdaa
-
-[StyleLine]
-source_layer = Elevated2
-and railway = platform
-and mode = tram
-pass1_color = #e39fcdff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleMesh]
-source_layer = Elevated2
-and railway = platform
-and mode = monorail
-color = #00f0b1aa
-
-[StyleLine]
-source_layer = Elevated2
-and railway = platform
-and mode = monorail
-pass1_color = #00f0b1ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleMesh]
-source_layer = Elevated2
-and railway = platform
-and mode = funicular
-color = #e39f9faa
-
-[StyleLine]
-source_layer = Elevated2
-and railway = platform
-and mode = funicular
-pass1_color = #e39f9fff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #ff9a33ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = rail
-and tunnel = yes
-pass1_color = #ff9a33ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #ff9a33ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = tram
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e39fcdff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = tram
-and tunnel = yes
-pass1_color = #e39fcdff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = tram
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e39fcdff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = subway
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #0400f6ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = subway
-and tunnel = yes
-pass1_color = #0400f6ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = subway
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #0400f6ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = light_rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #00f019ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = light_rail
-and tunnel = yes
-pass1_color = #00f019ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = light_rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #00f019ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = monorail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #00f0b1ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = monorail
-and tunnel = yes
-pass1_color = #00f0b1ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = monorail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #00f0b1ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = narrow_gauge
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e2ff0eff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = narrow_gauge
-and tunnel = yes
-pass1_color = #e2ff0eff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = narrow_gauge
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e2ff0eff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = funicular
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e39f9fff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = funicular
-and tunnel = yes
-pass1_color = #e39f9fff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleLine]
-source_layer = Elevated2
-and railway = funicular
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e39f9fff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 2
-
-[StyleMesh]
-source_layer = Elevated3
-and railway = platform
-and mode = rail
-color = #ffa74daa
-
-[StyleLine]
-source_layer = Elevated3
-and railway = platform
-and mode = rail
-pass1_color = #ffa74dff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleMesh]
-source_layer = Elevated3
-and railway = platform
-and mode = subway
-color = #1411ffaa
-
-[StyleLine]
-source_layer = Elevated3
-and railway = platform
-and mode = subway
-pass1_color = #1411ffff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleMesh]
-source_layer = Elevated3
-and railway = platform
-and mode = light_rail
-color = #0bff24aa
-
-[StyleLine]
-source_layer = Elevated3
-and railway = platform
-and mode = light_rail
-pass1_color = #0bff24ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleMesh]
-source_layer = Elevated3
-and railway = platform
-and mode = tram
-color = #e9b2d7aa
-
-[StyleLine]
-source_layer = Elevated3
-and railway = platform
-and mode = tram
-pass1_color = #e9b2d7ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleMesh]
-source_layer = Elevated3
-and railway = platform
-and mode = monorail
-color = #0bffbeaa
-
-[StyleLine]
-source_layer = Elevated3
-and railway = platform
-and mode = monorail
-pass1_color = #0bffbeff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleMesh]
-source_layer = Elevated3
-and railway = platform
-and mode = funicular
-color = #e9b2b2aa
-
-[StyleLine]
-source_layer = Elevated3
-and railway = platform
-and mode = funicular
-pass1_color = #e9b2b2ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #ffa74dff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = rail
-and tunnel = yes
-pass1_color = #ffa74dff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #ffa74dff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = tram
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e9b2d7ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = tram
-and tunnel = yes
-pass1_color = #e9b2d7ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = tram
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e9b2d7ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = subway
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #1411ffff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = subway
-and tunnel = yes
-pass1_color = #1411ffff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = subway
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #1411ffff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = light_rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #0bff24ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = light_rail
-and tunnel = yes
-pass1_color = #0bff24ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = light_rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #0bff24ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = monorail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #0bffbeff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = monorail
-and tunnel = yes
-pass1_color = #0bffbeff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = monorail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #0bffbeff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = narrow_gauge
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e5ff27ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = narrow_gauge
-and tunnel = yes
-pass1_color = #e5ff27ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = narrow_gauge
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e5ff27ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = funicular
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e9b2b2ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = funicular
-and tunnel = yes
-pass1_color = #e9b2b2ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleLine]
-source_layer = Elevated3
-and railway = funicular
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e9b2b2ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 3
-
-[StyleMesh]
-source_layer = Elevated4
-and railway = platform
-and mode = rail
-color = #ffb366aa
-
-[StyleLine]
-source_layer = Elevated4
-and railway = platform
-and mode = rail
-pass1_color = #ffb366ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleMesh]
-source_layer = Elevated4
-and railway = platform
-and mode = subway
-color = #2d2affaa
-
-[StyleLine]
-source_layer = Elevated4
-and railway = platform
-and mode = subway
-pass1_color = #2d2affff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleMesh]
-source_layer = Elevated4
-and railway = platform
-and mode = light_rail
-color = #24ff3baa
-
-[StyleLine]
-source_layer = Elevated4
-and railway = platform
-and mode = light_rail
-pass1_color = #24ff3bff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleMesh]
-source_layer = Elevated4
-and railway = platform
-and mode = tram
-color = #eec4e0aa
-
-[StyleLine]
-source_layer = Elevated4
-and railway = platform
-and mode = tram
-pass1_color = #eec4e0ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleMesh]
-source_layer = Elevated4
-and railway = platform
-and mode = monorail
-color = #24ffc5aa
-
-[StyleLine]
-source_layer = Elevated4
-and railway = platform
-and mode = monorail
-pass1_color = #24ffc5ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleMesh]
-source_layer = Elevated4
-and railway = platform
-and mode = funicular
-color = #eec4c4aa
-
-[StyleLine]
-source_layer = Elevated4
-and railway = platform
-and mode = funicular
-pass1_color = #eec4c4ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #ffb366ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = rail
-and tunnel = yes
-pass1_color = #ffb366ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #ffb366ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = tram
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #eec4e0ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = tram
-and tunnel = yes
-pass1_color = #eec4e0ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = tram
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #eec4e0ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = subway
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #2d2affff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = subway
-and tunnel = yes
-pass1_color = #2d2affff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = subway
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #2d2affff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = light_rail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #24ff3bff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = light_rail
-and tunnel = yes
-pass1_color = #24ff3bff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = light_rail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #24ff3bff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = monorail
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #24ffc5ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = monorail
-and tunnel = yes
-pass1_color = #24ffc5ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = monorail
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #24ffc5ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = narrow_gauge
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #e8ff41ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = narrow_gauge
-and tunnel = yes
-pass1_color = #e8ff41ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = narrow_gauge
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #e8ff41ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = funicular
-and bridge = yes
-pass1_color = #1a1a1aff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 24
-pass2_color = #eec4c4ff
-pass2_half_stroke_phys_mm = 0
-pass2_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = funicular
-and tunnel = yes
-pass1_color = #eec4c4ff
-pass1_texture = textures/dash.png
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleLine]
-source_layer = Elevated4
-and railway = funicular
-and not tunnel = yes
-and not bridge = yes
-pass1_color = #eec4c4ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 4
-
-[StyleMesh]
-source_layer = Elevated5
-and railway = platform
-and mode = rail
-color = #ffc080aa
-
-[StyleLine]
-source_layer = Elevated5
-and railway = platform
-and mode = rail
-pass1_color = #ffc080ff
-pass1_half_stroke_phys_mm = 0
-pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
-
-[StyleMesh]
-source_layer = Elevated5
 and railway = platform
 and mode = subway
 color = #4643ffaa
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = subway
 pass1_color = #4643ffff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleMesh]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = light_rail
-color = #3eff52aa
+color = #43ff57aa
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = light_rail
-pass1_color = #3eff52ff
+pass1_color = #43ff57ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleMesh]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = tram
-color = #eec4e0aa
+color = #d56db3aa
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = tram
-pass1_color = #eec4e0ff
+pass1_color = #d56db3ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleMesh]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = monorail
-color = #3effccaa
+color = #43ffcdaa
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = monorail
-pass1_color = #3effccff
+pass1_color = #43ffcdff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleMesh]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = funicular
-color = #eec4c4aa
+color = #d56d6daa
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = platform
 and mode = funicular
-pass1_color = #eec4c4ff
+pass1_color = #d56d6dff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = rail
 and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #ffc080ff
+pass2_color = #ffa243ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = rail
 and tunnel = yes
-pass1_color = #ffc080ff
+pass1_color = #ffa243ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #ffc080ff
+pass1_color = #ffa243ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = tram
 and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #eec4e0ff
+pass2_color = #d56db3ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = tram
 and tunnel = yes
-pass1_color = #eec4e0ff
+pass1_color = #d56db3ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = tram
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #eec4e0ff
+pass1_color = #d56db3ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = subway
 and bridge = yes
 pass1_color = #1a1a1aff
@@ -3311,16 +2055,1272 @@ pass1_half_stroke_px_dec = 24
 pass2_color = #4643ffff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
-gameplay_layer = 5
+gameplay_layer = 1
 
 [StyleLine]
-source_layer = Elevated5
+source_layer = Elevated1
 and railway = subway
 and tunnel = yes
 pass1_color = #4643ffff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = subway
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #4643ffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = light_rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #43ff57ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = light_rail
+and tunnel = yes
+pass1_color = #43ff57ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = light_rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #43ff57ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = monorail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #43ffcdff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = monorail
+and tunnel = yes
+pass1_color = #43ffcdff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = monorail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #43ffcdff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = narrow_gauge
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #e9ff43ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = narrow_gauge
+and tunnel = yes
+pass1_color = #e9ff43ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = narrow_gauge
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #e9ff43ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = funicular
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #d56d6dff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = funicular
+and tunnel = yes
+pass1_color = #d56d6dff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleLine]
+source_layer = Elevated1
+and railway = funicular
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #d56d6dff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 1
+
+[StyleMesh]
+source_layer = Elevated2
+and railway = platform
+and mode = rail
+color = #ffb468aa
+
+[StyleLine]
+source_layer = Elevated2
+and railway = platform
+and mode = rail
+pass1_color = #ffb468ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleMesh]
+source_layer = Elevated2
+and railway = platform
+and mode = subway
+color = #6a68ffaa
+
+[StyleLine]
+source_layer = Elevated2
+and railway = platform
+and mode = subway
+pass1_color = #6a68ffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleMesh]
+source_layer = Elevated2
+and railway = platform
+and mode = light_rail
+color = #68ff78aa
+
+[StyleLine]
+source_layer = Elevated2
+and railway = platform
+and mode = light_rail
+pass1_color = #68ff78ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleMesh]
+source_layer = Elevated2
+and railway = platform
+and mode = tram
+color = #dd8ac2aa
+
+[StyleLine]
+source_layer = Elevated2
+and railway = platform
+and mode = tram
+pass1_color = #dd8ac2ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleMesh]
+source_layer = Elevated2
+and railway = platform
+and mode = monorail
+color = #68ffd7aa
+
+[StyleLine]
+source_layer = Elevated2
+and railway = platform
+and mode = monorail
+pass1_color = #68ffd7ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleMesh]
+source_layer = Elevated2
+and railway = platform
+and mode = funicular
+color = #dd8a8aaa
+
+[StyleLine]
+source_layer = Elevated2
+and railway = platform
+and mode = funicular
+pass1_color = #dd8a8aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #ffb468ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = rail
+and tunnel = yes
+pass1_color = #ffb468ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #ffb468ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = tram
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #dd8ac2ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = tram
+and tunnel = yes
+pass1_color = #dd8ac2ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = tram
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #dd8ac2ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = subway
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #6a68ffff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = subway
+and tunnel = yes
+pass1_color = #6a68ffff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = subway
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #6a68ffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = light_rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #68ff78ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = light_rail
+and tunnel = yes
+pass1_color = #68ff78ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = light_rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #68ff78ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = monorail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #68ffd7ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = monorail
+and tunnel = yes
+pass1_color = #68ffd7ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = monorail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #68ffd7ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = narrow_gauge
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #edff68ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = narrow_gauge
+and tunnel = yes
+pass1_color = #edff68ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = narrow_gauge
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #edff68ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = funicular
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #dd8a8aff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = funicular
+and tunnel = yes
+pass1_color = #dd8a8aff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleLine]
+source_layer = Elevated2
+and railway = funicular
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #dd8a8aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 2
+
+[StyleMesh]
+source_layer = Elevated3
+and railway = platform
+and mode = rail
+color = #ffc78daa
+
+[StyleLine]
+source_layer = Elevated3
+and railway = platform
+and mode = rail
+pass1_color = #ffc78dff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleMesh]
+source_layer = Elevated3
+and railway = platform
+and mode = subway
+color = #8f8dffaa
+
+[StyleLine]
+source_layer = Elevated3
+and railway = platform
+and mode = subway
+pass1_color = #8f8dffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleMesh]
+source_layer = Elevated3
+and railway = platform
+and mode = light_rail
+color = #8dff99aa
+
+[StyleLine]
+source_layer = Elevated3
+and railway = platform
+and mode = light_rail
+pass1_color = #8dff99ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleMesh]
+source_layer = Elevated3
+and railway = platform
+and mode = tram
+color = #e6a6d1aa
+
+[StyleLine]
+source_layer = Elevated3
+and railway = platform
+and mode = tram
+pass1_color = #e6a6d1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleMesh]
+source_layer = Elevated3
+and railway = platform
+and mode = monorail
+color = #8dffe1aa
+
+[StyleLine]
+source_layer = Elevated3
+and railway = platform
+and mode = monorail
+pass1_color = #8dffe1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleMesh]
+source_layer = Elevated3
+and railway = platform
+and mode = funicular
+color = #e6a6a6aa
+
+[StyleLine]
+source_layer = Elevated3
+and railway = platform
+and mode = funicular
+pass1_color = #e6a6a6ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #ffc78dff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = rail
+and tunnel = yes
+pass1_color = #ffc78dff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #ffc78dff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = tram
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #e6a6d1ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = tram
+and tunnel = yes
+pass1_color = #e6a6d1ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = tram
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #e6a6d1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = subway
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #8f8dffff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = subway
+and tunnel = yes
+pass1_color = #8f8dffff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = subway
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #8f8dffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = light_rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #8dff99ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = light_rail
+and tunnel = yes
+pass1_color = #8dff99ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = light_rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #8dff99ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = monorail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #8dffe1ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = monorail
+and tunnel = yes
+pass1_color = #8dffe1ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = monorail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #8dffe1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = narrow_gauge
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #f1ff8dff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = narrow_gauge
+and tunnel = yes
+pass1_color = #f1ff8dff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = narrow_gauge
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #f1ff8dff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = funicular
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #e6a6a6ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = funicular
+and tunnel = yes
+pass1_color = #e6a6a6ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleLine]
+source_layer = Elevated3
+and railway = funicular
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #e6a6a6ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 3
+
+[StyleMesh]
+source_layer = Elevated4
+and railway = platform
+and mode = rail
+color = #ffd9b1aa
+
+[StyleLine]
+source_layer = Elevated4
+and railway = platform
+and mode = rail
+pass1_color = #ffd9b1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleMesh]
+source_layer = Elevated4
+and railway = platform
+and mode = subway
+color = #b3b1ffaa
+
+[StyleLine]
+source_layer = Elevated4
+and railway = platform
+and mode = subway
+pass1_color = #b3b1ffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleMesh]
+source_layer = Elevated4
+and railway = platform
+and mode = light_rail
+color = #b1ffbaaa
+
+[StyleLine]
+source_layer = Elevated4
+and railway = platform
+and mode = light_rail
+pass1_color = #b1ffbaff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleMesh]
+source_layer = Elevated4
+and railway = platform
+and mode = tram
+color = #eec3e0aa
+
+[StyleLine]
+source_layer = Elevated4
+and railway = platform
+and mode = tram
+pass1_color = #eec3e0ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleMesh]
+source_layer = Elevated4
+and railway = platform
+and mode = monorail
+color = #b1ffeaaa
+
+[StyleLine]
+source_layer = Elevated4
+and railway = platform
+and mode = monorail
+pass1_color = #b1ffeaff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleMesh]
+source_layer = Elevated4
+and railway = platform
+and mode = funicular
+color = #eec3c3aa
+
+[StyleLine]
+source_layer = Elevated4
+and railway = platform
+and mode = funicular
+pass1_color = #eec3c3ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #ffd9b1ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = rail
+and tunnel = yes
+pass1_color = #ffd9b1ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #ffd9b1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = tram
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #eec3e0ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = tram
+and tunnel = yes
+pass1_color = #eec3e0ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = tram
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #eec3e0ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = subway
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #b3b1ffff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = subway
+and tunnel = yes
+pass1_color = #b3b1ffff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = subway
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #b3b1ffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = light_rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #b1ffbaff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = light_rail
+and tunnel = yes
+pass1_color = #b1ffbaff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = light_rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #b1ffbaff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = monorail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #b1ffeaff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = monorail
+and tunnel = yes
+pass1_color = #b1ffeaff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = monorail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #b1ffeaff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = narrow_gauge
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #f6ffb1ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = narrow_gauge
+and tunnel = yes
+pass1_color = #f6ffb1ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = narrow_gauge
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #f6ffb1ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = funicular
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #eec3c3ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = funicular
+and tunnel = yes
+pass1_color = #eec3c3ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleLine]
+source_layer = Elevated4
+and railway = funicular
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #eec3c3ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 4
+
+[StyleMesh]
+source_layer = Elevated5
+and railway = platform
+and mode = rail
+color = #ffd9b2aa
+
+[StyleLine]
+source_layer = Elevated5
+and railway = platform
+and mode = rail
+pass1_color = #ffd9b2ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleMesh]
+source_layer = Elevated5
+and railway = platform
+and mode = subway
+color = #b4b2ffaa
+
+[StyleLine]
+source_layer = Elevated5
+and railway = platform
+and mode = subway
+pass1_color = #b4b2ffff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleMesh]
+source_layer = Elevated5
+and railway = platform
+and mode = light_rail
+color = #b2ffbbaa
+
+[StyleLine]
+source_layer = Elevated5
+and railway = platform
+and mode = light_rail
+pass1_color = #b2ffbbff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleMesh]
+source_layer = Elevated5
+and railway = platform
+and mode = tram
+color = #eec4e0aa
+
+[StyleLine]
+source_layer = Elevated5
+and railway = platform
+and mode = tram
+pass1_color = #eec4e0ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleMesh]
+source_layer = Elevated5
+and railway = platform
+and mode = monorail
+color = #b2ffebaa
+
+[StyleLine]
+source_layer = Elevated5
+and railway = platform
+and mode = monorail
+pass1_color = #b2ffebff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleMesh]
+source_layer = Elevated5
+and railway = platform
+and mode = funicular
+color = #eec4c4aa
+
+[StyleLine]
+source_layer = Elevated5
+and railway = platform
+and mode = funicular
+pass1_color = #eec4c4ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = rail
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #ffd9b2ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = rail
+and tunnel = yes
+pass1_color = #ffd9b2ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = rail
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #ffd9b2ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = tram
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #eec4e0ff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = tram
+and tunnel = yes
+pass1_color = #eec4e0ff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = tram
+and not tunnel = yes
+and not bridge = yes
+pass1_color = #eec4e0ff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = subway
+and bridge = yes
+pass1_color = #1a1a1aff
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 24
+pass2_color = #b4b2ffff
+pass2_half_stroke_phys_mm = 0
+pass2_half_stroke_px_dec = 12
+gameplay_layer = 5
+
+[StyleLine]
+source_layer = Elevated5
+and railway = subway
+and tunnel = yes
+pass1_color = #b4b2ffff
+pass1_texture = textures/dash.png
+pass1_half_stroke_phys_mm = 0
+pass1_half_stroke_px_dec = 12
 gameplay_layer = 5
 
 [StyleLine]
@@ -3328,7 +3328,7 @@ source_layer = Elevated5
 and railway = subway
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #4643ffff
+pass1_color = #b4b2ffff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 5
@@ -3340,7 +3340,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #3eff52ff
+pass2_color = #b2ffbbff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 5
@@ -3349,7 +3349,7 @@ gameplay_layer = 5
 source_layer = Elevated5
 and railway = light_rail
 and tunnel = yes
-pass1_color = #3eff52ff
+pass1_color = #b2ffbbff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -3360,7 +3360,7 @@ source_layer = Elevated5
 and railway = light_rail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #3eff52ff
+pass1_color = #b2ffbbff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 5
@@ -3372,7 +3372,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #3effccff
+pass2_color = #b2ffebff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 5
@@ -3381,7 +3381,7 @@ gameplay_layer = 5
 source_layer = Elevated5
 and railway = monorail
 and tunnel = yes
-pass1_color = #3effccff
+pass1_color = #b2ffebff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -3392,7 +3392,7 @@ source_layer = Elevated5
 and railway = monorail
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #3effccff
+pass1_color = #b2ffebff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 5
@@ -3404,7 +3404,7 @@ and bridge = yes
 pass1_color = #1a1a1aff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 24
-pass2_color = #ebff5bff
+pass2_color = #f6ffb2ff
 pass2_half_stroke_phys_mm = 0
 pass2_half_stroke_px_dec = 12
 gameplay_layer = 5
@@ -3413,7 +3413,7 @@ gameplay_layer = 5
 source_layer = Elevated5
 and railway = narrow_gauge
 and tunnel = yes
-pass1_color = #ebff5bff
+pass1_color = #f6ffb2ff
 pass1_texture = textures/dash.png
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
@@ -3424,7 +3424,7 @@ source_layer = Elevated5
 and railway = narrow_gauge
 and not tunnel = yes
 and not bridge = yes
-pass1_color = #ebff5bff
+pass1_color = #f6ffb2ff
 pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 5

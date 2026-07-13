@@ -40,7 +40,8 @@ HALF_STROKE_PX = 12            # 1.2 px half-stroke -> ~2.4 px line
 CASING_EXTRA_PX = 12          # extra half-stroke for the bridge casing pass
 CASING_COLOR = "#1a1a1aff"     # dark casing under bridges
 TUNNEL_TEXTURE = "textures/dash.png"
-LIGHTNESS_STEP = 0.05          # per level
+GROUND_LIGHTNESS = 0.56         # level 0; hue-independent so every type ramps alike
+LIGHTNESS_STEP = 0.072         # per level (deeper darker, higher lighter)
 LIGHTNESS_MIN, LIGHTNESS_MAX = 0.20, 0.85
 PLATFORM_FILL_ALPHA = "aa"     # semi-transparent so the platform reads as a pad
 # Rail modes a platform can serve (via OSM boolean flags), coloured like the tracks.
@@ -48,11 +49,16 @@ PLATFORM_MODES = ["rail", "subway", "light_rail", "tram", "monorail", "funicular
 
 
 def level_color(base_hex: str, level: int) -> str:
-    """Type hue at a per-level lightness, as #rrggbbaa."""
+    """Type hue/saturation at a level-driven lightness, as #rrggbbaa.
+
+    Lightness encodes the vertical level from a common ground anchor rather than
+    each hue's own lightness, so dark bases (e.g. metro blue) don't sink the deep
+    levels into an indistinguishable near-black. The wide step keeps all five
+    underground levels visibly apart without colliding at the clamp."""
     base = base_hex.lstrip("#")
     r, g, b = (int(base[i : i + 2], 16) / 255 for i in (0, 2, 4))
-    h, lightness, s = colorsys.rgb_to_hls(r, g, b)
-    lightness = max(LIGHTNESS_MIN, min(LIGHTNESS_MAX, lightness + level * LIGHTNESS_STEP))
+    h, _, s = colorsys.rgb_to_hls(r, g, b)
+    lightness = max(LIGHTNESS_MIN, min(LIGHTNESS_MAX, GROUND_LIGHTNESS + level * LIGHTNESS_STEP))
     r, g, b = colorsys.hls_to_rgb(h, lightness, s)
     return "#%02x%02x%02xff" % (round(r * 255), round(g * 255), round(b * 255))
 
