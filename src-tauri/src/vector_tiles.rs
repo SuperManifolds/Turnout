@@ -14,7 +14,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use lru::LruCache;
-use mvt::{GeomEncoder, GeomType, Tile};
+use mvt::{GeomData, GeomEncoder, GeomType, Tile};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -137,14 +137,62 @@ fn clip_polyline(points: &[Point], lo: f64, hi: f64) -> Vec<Vec<Point>> {
     runs
 }
 
+/// Encodes a run of tile-space points as an MVT linestring geometry.
+fn linestring_geom(run: &[Point]) -> Result<GeomData, String> {
+    let mut enc = GeomEncoder::new(GeomType::Linestring);
+    for &(px, py) in run {
+        enc = enc.point(px, py).map_err(|e| e.to_string())?;
+    }
+    enc.encode().map_err(|e| e.to_string())
+}
+
+/// Encodes a closed ring as a single-ring polygon: drops the duplicate closing
+/// vertex and orients it as an exterior ring (positive signed area, which the
+/// `mvt` encoder treats as exterior). Returns `None` for a degenerate ring.
+fn polygon_geom(pts: &[Point]) -> Result<Option<GeomData>, String> {
+    let mut ring: Vec<Point> = pts.to_vec();
+    if ring.len() >= 2 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    if ring.len() < 3 {
+        return Ok(None);
+    }
+    if signed_area(&ring) < 0.0 {
+        ring.reverse();
+    }
+    let mut enc = GeomEncoder::new(GeomType::Polygon);
+    for &(px, py) in &ring {
+        enc = enc.point(px, py).map_err(|e| e.to_string())?;
+    }
+    enc.encode().map(Some).map_err(|e| e.to_string())
+}
+
+/// Twice the signed area (shoelace) of a ring. Positive for a clockwise ring in
+/// tile pixel space (y down) — the winding the `mvt` encoder treats as exterior.
+fn signed_area(ring: &[Point]) -> f64 {
+    let n = ring.len();
+    (0..n)
+        .map(|i| {
+            let (x1, y1) = ring[i];
+            let (x2, y2) = ring[(i + 1) % n];
+            x1 * y2 - x2 * y1
+        })
+        .sum()
+}
+
 /// One railway way with the tags we render/style on.
 struct RailFeature {
     /// (lon, lat) vertices in order.
     coords: Vec<(f64, f64)>,
     level: i32,
     railway: String,
+    /// For platforms, the rail mode served (`rail`, `subway`, `tram`, …) so the
+    /// mod can colour them like the matching track type. `None` for track lines.
+    mode: Option<String>,
     tunnel: bool,
     bridge: bool,
+    /// A closed platform way, emitted as a filled polygon rather than a line.
+    area: bool,
     /// `(min_lon, min_lat, max_lon, max_lat)` bounding box for tile-intersection.
     bbox: (f64, f64, f64, f64),
 }
@@ -186,6 +234,29 @@ fn truthy(v: Option<&String>) -> bool {
     matches!(v.map(String::as_str), Some("yes" | "true" | "1"))
 }
 
+/// The rail mode a platform serves, from OSM boolean flags (heavy rail first when
+/// several apply). A bare `railway=platform` with no flag defaults to heavy rail.
+/// Returns `None` for a non-rail platform (e.g. a bus `public_transport=platform`),
+/// which the caller drops.
+fn platform_mode(
+    tags: &std::collections::HashMap<String, String>,
+    has_railway_platform: bool,
+) -> Option<&'static str> {
+    const FLAGS: &[(&str, &str)] = &[
+        ("train", "rail"),
+        ("subway", "subway"),
+        ("light_rail", "light_rail"),
+        ("tram", "tram"),
+        ("monorail", "monorail"),
+        ("funicular", "funicular"),
+    ];
+    FLAGS
+        .iter()
+        .find(|(flag, _)| tags.get(*flag).map(String::as_str) == Some("yes"))
+        .map(|(_, mode)| *mode)
+        .or(has_railway_platform.then_some("rail"))
+}
+
 impl RailDataset {
     /// Parse the raw Overpass response into per-level railway geometry.
     fn from_overpass_json(json: &str) -> Result<Self, overpass::OverpassError> {
@@ -200,7 +271,24 @@ impl RailDataset {
             if el.kind != "way" || el.geometry.len() < 2 {
                 continue;
             }
-            let Some(railway) = el.tags.get("railway").cloned() else { continue };
+            // Platforms come in via either tagging scheme; normalise both to
+            // `railway=platform` so a single style rule matches, and carry the rail
+            // mode for colouring. `public_transport=platform` is mode-agnostic (bus
+            // stops use it too), so a platform with no rail mode is dropped.
+            // Non-platform ways must carry a railway line type (the query ensures it).
+            let railway_tag = el.tags.get("railway").map(String::as_str);
+            let is_platform = railway_tag == Some("platform")
+                || el.tags.get("public_transport").map(String::as_str) == Some("platform");
+            let (railway, mode) = if is_platform {
+                let Some(m) = platform_mode(&el.tags, railway_tag == Some("platform")) else {
+                    continue; // non-rail platform (bus, …)
+                };
+                ("platform".to_string(), Some(m.to_string()))
+            } else if let Some(r) = railway_tag {
+                (r.to_string(), None)
+            } else {
+                continue;
+            };
             let level = el
                 .tags
                 .get("layer")
@@ -209,6 +297,8 @@ impl RailDataset {
                 .clamp(LAYER_MIN, LAYER_MAX);
 
             let coords: Vec<(f64, f64)> = el.geometry.iter().map(|p| (p.lon, p.lat)).collect();
+            // A closed platform way (ring) is a filled area; open ways stay lines.
+            let area = is_platform && coords.len() >= 4 && coords.first() == coords.last();
             let (mut fw, mut fs, mut fe, mut fn_) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
             for &(lon, lat) in &coords {
                 fw = fw.min(lon);
@@ -226,8 +316,10 @@ impl RailDataset {
                 coords,
                 level,
                 railway,
+                mode,
                 tunnel: truthy(el.tags.get("tunnel")),
                 bridge: truthy(el.tags.get("bridge")),
+                area,
                 bbox: (fw, fs, fe, fn_),
             });
         }
@@ -255,7 +347,7 @@ impl RailDataset {
                 if fe < tw || fw > te || fn_ < ts || fs > tn {
                     continue; // feature bbox doesn't touch this tile
                 }
-                let tile_pts: Vec<(f64, f64)> = f
+                let tile_pts: Vec<Point> = f
                     .coords
                     .iter()
                     .map(|&(lon, lat)| {
@@ -264,16 +356,25 @@ impl RailDataset {
                     })
                     .collect();
 
-                // Clip to the tile (with buffer) so a line is only emitted where
-                // it actually crosses this tile, not in full into every tile.
-                for run in clip_polyline(&tile_pts, -TILE_BUFFER, hi) {
-                    let mut enc = GeomEncoder::new(GeomType::Linestring);
-                    for &(px, py) in &run {
-                        enc = enc.point(px, py).map_err(|e| e.to_string())?;
+                // Platform areas are emitted whole as polygons (the renderer clips
+                // at the buffer); lines are clipped so each is only emitted where it
+                // crosses this tile, not in full into every tile it touches.
+                let geoms: Vec<GeomData> = if f.area {
+                    polygon_geom(&tile_pts)?.into_iter().collect()
+                } else {
+                    let mut v = Vec::new();
+                    for run in clip_polyline(&tile_pts, -TILE_BUFFER, hi) {
+                        v.push(linestring_geom(&run)?);
                     }
-                    let geom = enc.encode().map_err(|e| e.to_string())?;
+                    v
+                };
+
+                for geom in geoms {
                     let mut feature = layer.into_feature(geom);
                     feature.add_tag_string("railway", &f.railway);
+                    if let Some(mode) = &f.mode {
+                        feature.add_tag_string("mode", mode);
+                    }
                     if f.tunnel {
                         feature.add_tag_string("tunnel", "yes");
                     }
@@ -304,7 +405,8 @@ impl RailDataset {
                     "id": layer_name(level),
                     "description": describe_level(level),
                     "fields": {
-                        "railway": "Railway type (rail, tram, subway, …)",
+                        "railway": "Railway type (rail, tram, subway, …, or platform)",
+                        "mode": "For platforms, the rail mode served (rail, subway, tram, …)",
                         "tunnel": "\"yes\" if in a tunnel",
                         "bridge": "\"yes\" if on a bridge"
                     }
@@ -557,6 +659,55 @@ mod tests {
         let far = d.encode_tile(12, 0, 0).expect("encode far");
         assert!(!near.is_empty());
         assert!(far.len() < near.len(), "far tile should carry no layers");
+    }
+
+    const PLATFORMS: &str = r#"{"elements":[
+        {"type":"way","tags":{"railway":"platform","subway":"yes","layer":"0"},
+         "geometry":[{"lat":52.5020,"lon":13.4200},{"lat":52.5022,"lon":13.4200},{"lat":52.5022,"lon":13.4205},{"lat":52.5020,"lon":13.4205},{"lat":52.5020,"lon":13.4200}]},
+        {"type":"way","tags":{"public_transport":"platform","tram":"yes"},
+         "geometry":[{"lat":52.5030,"lon":13.4210},{"lat":52.5032,"lon":13.4215}]},
+        {"type":"way","tags":{"public_transport":"platform","highway":"platform","bus":"yes"},
+         "geometry":[{"lat":52.5040,"lon":13.4220},{"lat":52.5042,"lon":13.4225}]}
+    ]}"#;
+
+    #[test]
+    fn rail_platforms_normalise_and_carry_mode_bus_dropped() {
+        let d = RailDataset::from_overpass_json(PLATFORMS).expect("valid platforms");
+        assert_eq!(d.features.len(), 2, "the bus platform must be dropped");
+        assert!(d.features.iter().all(|f| f.railway == "platform"));
+        let modes: BTreeSet<&str> = d.features.iter().filter_map(|f| f.mode.as_deref()).collect();
+        assert_eq!(modes, BTreeSet::from(["subway", "tram"]));
+        // The closed railway=platform ring is an area; the open PT way stays a line.
+        assert_eq!(d.features.iter().filter(|f| f.area).count(), 1);
+    }
+
+    #[test]
+    fn platform_mode_prefers_heavy_rail_and_defaults_for_bare_platform() {
+        let mut both = std::collections::HashMap::new();
+        both.insert("subway".to_string(), "yes".to_string());
+        both.insert("train".to_string(), "yes".to_string());
+        assert_eq!(platform_mode(&both, true), Some("rail"));
+        let bare = std::collections::HashMap::new();
+        assert_eq!(platform_mode(&bare, true), Some("rail")); // railway=platform, no flag
+        assert_eq!(platform_mode(&bare, false), None); // not a rail platform
+    }
+
+    #[test]
+    fn encodes_platform_polygon_tile() {
+        let d = RailDataset::from_overpass_json(PLATFORMS).expect("valid platforms");
+        let (x, y) = turnout_core::geo::latlon_to_tile_xy(52.5021, 13.4202, 16);
+        assert!(!d.encode_tile(16, x, y).expect("encode platform tile").is_empty());
+    }
+
+    #[test]
+    fn exterior_ring_winding_is_normalised() {
+        // A clockwise and a counter-clockwise square must both encode (the encoder
+        // treats positive signed area as the exterior ring, so we orient to it).
+        let cw = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let ccw = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)];
+        assert!(polygon_geom(&cw).expect("cw").is_some());
+        assert!(polygon_geom(&ccw).expect("ccw").is_some());
+        assert!(polygon_geom(&[(0.0, 0.0), (1.0, 1.0)]).expect("degenerate").is_none());
     }
 
     #[test]
