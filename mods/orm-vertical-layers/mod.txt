@@ -7,11 +7,10 @@ author = SuperManifolds
 desc = Railway map styled by type (ORM colours) and OSM vertical layer; toggle heights via the source's vector layers.
 version = 1.0.0
 
-[StyleArea]
+[StyleMesh]
 source_layer = Underground5
 and railway = platform
-pass1_color = #4a4a4aaa
-gameplay_layer = -5
+color = #4a4a4aaa
 
 [StyleLine]
 source_layer = Underground5
@@ -245,11 +244,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -5
 
-[StyleArea]
+[StyleMesh]
 source_layer = Underground4
 and railway = platform
-pass1_color = #575757aa
-gameplay_layer = -4
+color = #575757aa
 
 [StyleLine]
 source_layer = Underground4
@@ -483,11 +481,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -4
 
-[StyleArea]
+[StyleMesh]
 source_layer = Underground3
 and railway = platform
-pass1_color = #646464aa
-gameplay_layer = -3
+color = #646464aa
 
 [StyleLine]
 source_layer = Underground3
@@ -721,11 +718,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -3
 
-[StyleArea]
+[StyleMesh]
 source_layer = Underground2
 and railway = platform
-pass1_color = #707070aa
-gameplay_layer = -2
+color = #707070aa
 
 [StyleLine]
 source_layer = Underground2
@@ -959,11 +955,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -2
 
-[StyleArea]
+[StyleMesh]
 source_layer = Underground1
 and railway = platform
-pass1_color = #7d7d7daa
-gameplay_layer = -1
+color = #7d7d7daa
 
 [StyleLine]
 source_layer = Underground1
@@ -1197,11 +1192,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = -1
 
-[StyleArea]
+[StyleMesh]
 source_layer = Ground
 and railway = platform
-pass1_color = #8a8a8aaa
-gameplay_layer = 0
+color = #8a8a8aaa
 
 [StyleLine]
 source_layer = Ground
@@ -1435,11 +1429,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 0
 
-[StyleArea]
+[StyleMesh]
 source_layer = Elevated1
 and railway = platform
-pass1_color = #979797aa
-gameplay_layer = 1
+color = #979797aa
 
 [StyleLine]
 source_layer = Elevated1
@@ -1673,11 +1666,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 1
 
-[StyleArea]
+[StyleMesh]
 source_layer = Elevated2
 and railway = platform
-pass1_color = #a3a3a3aa
-gameplay_layer = 2
+color = #a3a3a3aa
 
 [StyleLine]
 source_layer = Elevated2
@@ -1911,11 +1903,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 2
 
-[StyleArea]
+[StyleMesh]
 source_layer = Elevated3
 and railway = platform
-pass1_color = #b0b0b0aa
-gameplay_layer = 3
+color = #b0b0b0aa
 
 [StyleLine]
 source_layer = Elevated3
@@ -2149,11 +2140,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 3
 
-[StyleArea]
+[StyleMesh]
 source_layer = Elevated4
 and railway = platform
-pass1_color = #bdbdbdaa
-gameplay_layer = 4
+color = #bdbdbdaa
 
 [StyleLine]
 source_layer = Elevated4
@@ -2387,11 +2377,10 @@ pass1_half_stroke_phys_mm = 0
 pass1_half_stroke_px_dec = 12
 gameplay_layer = 4
 
-[StyleArea]
+[StyleMesh]
 source_layer = Elevated5
 and railway = platform
-pass1_color = #cacacaaa
-gameplay_layer = 5
+color = #cacacaaa
 
 [StyleLine]
 source_layer = Elevated5

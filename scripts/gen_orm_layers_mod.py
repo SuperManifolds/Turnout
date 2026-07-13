@@ -125,13 +125,13 @@ def platform_rules(level: int) -> str:
     fill = color[:-2] + PLATFORM_FILL_ALPHA
     out = []
 
-    # Closed platform ways -> filled polygon.
+    # Closed platform ways -> filled polygon. NIMBY fills polygons via [StyleMesh]
+    # with the `color` key; [StyleLine]/pass1_color only strokes the outline.
     out.append(block([
-        "[StyleArea]",
+        "[StyleMesh]",
         f"source_layer = {src}",
         "and railway = platform",
-        f"pass1_color = {fill}",
-        f"gameplay_layer = {level}",
+        f"color = {fill}",
     ]))
 
     # Open platform ways -> outline line.
