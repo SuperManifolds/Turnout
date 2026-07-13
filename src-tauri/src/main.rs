@@ -172,7 +172,13 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
             match orm_tiles::start_blocking() {
-                Ok(h) => { app.manage(h); }
+                Ok(h) => {
+                    let base = settings::resolve_orm_base(settings::load(app.handle()).orm_base_url.as_deref());
+                    if base != settings::DEFAULT_ORM_BASE {
+                        h.set_base_url(base);
+                    }
+                    app.manage(h);
+                }
                 Err(e) => eprintln!("ORM tiles failed: {e}"),
             }
             app.manage(apple_token::AppleRefresh::new());

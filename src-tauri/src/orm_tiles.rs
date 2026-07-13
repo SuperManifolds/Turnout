@@ -189,6 +189,10 @@ struct Dispatch {
 /// lazily rebuild their renderers and encoders can drop stale cache inserts.
 struct OrmShared {
     offline_dir: RwLock<Option<PathBuf>>,
+    /// Base URL for online tile/glyph/sprite requests. Substituted into the
+    /// embedded styles at load so a self-hosted `OpenRailwayMap` can replace the
+    /// default `openrailwaymap.app`.
+    base_url: RwLock<String>,
     generation: AtomicU64,
     bound_port: AtomicU16,
 }
@@ -222,6 +226,21 @@ impl OrmHandle {
         self.shared.generation.fetch_add(1, Ordering::SeqCst);
         self.cache.clear();
     }
+
+    /// Points online rendering at a different ORM base URL. Like `set_offline_dir`,
+    /// this bumps the render generation (so workers rebuild against the new host)
+    /// and clears the tile cache. A no-op when the URL is unchanged.
+    pub fn set_base_url(&self, base: String) {
+        {
+            let mut current = self.shared.base_url.write().unpoison();
+            if *current == base {
+                return;
+            }
+            *current = base;
+        }
+        self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        self.cache.clear();
+    }
 }
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
@@ -233,6 +252,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 
     let shared = Arc::new(OrmShared {
         offline_dir: RwLock::new(None),
+        base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
     });
@@ -421,17 +441,34 @@ fn build_renderer(
 /// Returns the style JSON to load: the on-disk offline variant when offline mode is
 /// active and readable, otherwise the embedded style. Offline styles reference their
 /// tiles via an `mbtiles://<abs path>` source url that mbgl reads directly.
+///
+/// The embedded (online) style is rewritten to the configured base URL so a
+/// self-hosted ORM replaces the default host; offline styles are used verbatim.
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
+    let embedded = || {
+        let base = shared.base_url.read().unpoison();
+        rebase_style(style_json(style), &base)
+    };
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
-        return style_json(style).to_string();
+        return embedded();
     };
     match offline_style_source(&dir, style) {
         Ok(source) => source,
         Err(e) => {
             eprintln!("[ORM] offline style '{style}' unavailable ({e}); using embedded style");
-            style_json(style).to_string()
+            embedded()
         }
+    }
+}
+
+/// Substitutes the default ORM host in an embedded style with `base`. A no-op when
+/// `base` is the default, so the common case allocates only the base copy.
+fn rebase_style(json: &str, base: &str) -> String {
+    if base == crate::settings::DEFAULT_ORM_BASE {
+        json.to_string()
+    } else {
+        json.replace(crate::settings::DEFAULT_ORM_BASE, base)
     }
 }
 

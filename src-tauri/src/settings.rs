@@ -3,6 +3,17 @@ use tauri_plugin_store::StoreExt;
 
 const SETTINGS_STORE: &str = "settings.json";
 
+/// Host serving `OpenRailwayMap` vector tiles, glyphs and sprites. Overridable via
+/// [`Settings::orm_base_url`] for users running a self-hosted `OpenRailwayMap` stack.
+pub const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
+
+/// Resolves the configured ORM base URL, falling back to [`DEFAULT_ORM_BASE`] and
+/// trimming a trailing slash so callers can append `/path` without doubling it.
+pub fn resolve_orm_base(base: Option<&str>) -> String {
+    let raw = base.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(DEFAULT_ORM_BASE);
+    raw.trim_end_matches('/').to_string()
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
@@ -20,6 +31,8 @@ pub struct Settings {
     pub apple_sat_version: Option<String>,
     #[serde(default = "default_true")]
     pub apple_auto_refresh: bool,
+    #[serde(default)]
+    pub orm_base_url: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -42,6 +55,7 @@ impl Default for Settings {
             apple_map_version: None,
             apple_sat_version: None,
             apple_auto_refresh: true,
+            orm_base_url: None,
         }
     }
 }
@@ -74,6 +88,8 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
         apple_auto_refresh: store.get("apple_auto_refresh")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        orm_base_url: store.get("orm_base_url")
+            .and_then(|v| v.as_str().map(String::from)),
     }
 }
 
@@ -93,6 +109,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
     store.set("overpass_timeout", serde_json::json!(settings.overpass_timeout));
     store.set("type_speed_overrides", serde_json::json!(settings.type_speed_overrides));
     store.set("apple_auto_refresh", serde_json::json!(settings.apple_auto_refresh));
+    store.set("orm_base_url", serde_json::json!(settings.orm_base_url));
     // While auto-refresh owns the Apple credentials, leave them untouched so a
     // manual save from the settings window (which may hold stale, auto-populated
     // values) can't overwrite the fresher key the refresher just stored.
@@ -102,6 +119,11 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
         store.set("apple_sat_version", serde_json::json!(settings.apple_sat_version));
     }
     store.save().map_err(|e| e.to_string())?;
+    // Re-point the live ORM renderer at the (possibly changed) base URL without a
+    // restart; it rebuilds its renderers and clears cached tiles.
+    if let Some(handle) = app.try_state::<crate::orm_tiles::OrmHandle>() {
+        handle.set_base_url(resolve_orm_base(settings.orm_base_url.as_deref()));
+    }
     let _ = app.emit("settings-changed", &settings);
     // Re-evaluate auto-refresh now (e.g. it was just re-enabled) instead of
     // waiting out the loop's current sleep.
