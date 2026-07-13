@@ -42,8 +42,9 @@ CASING_COLOR = "#1a1a1aff"     # dark casing under bridges
 TUNNEL_TEXTURE = "textures/dash.png"
 LIGHTNESS_STEP = 0.05          # per level
 LIGHTNESS_MIN, LIGHTNESS_MAX = 0.20, 0.85
-PLATFORM_COLOR = "#8a8a8a"     # neutral grey, shaded per level like the track types
 PLATFORM_FILL_ALPHA = "aa"     # semi-transparent so the platform reads as a pad
+# Rail modes a platform can serve (via OSM boolean flags), coloured like the tracks.
+PLATFORM_MODES = ["rail", "subway", "light_rail", "tram", "monorail", "funicular"]
 
 
 def level_color(base_hex: str, level: int) -> str:
@@ -117,33 +118,38 @@ def rule(level: int, rtype: str) -> str:
 
 
 def platform_rules(level: int) -> str:
-    """Platform styling for one level: a filled area for closed platform ways plus
-    an outline line for open ones (which have no area to fill). Listed before the
-    track rules for the level so platforms draw underneath the tracks."""
+    """Platform styling for one level, coloured by the rail mode served (same
+    palette as the tracks): a filled area for closed platform ways plus an outline
+    line for open ones. Listed before the track rules so platforms draw underneath.
+
+    NIMBY fills polygons via [StyleMesh] with the `color` key; [StyleLine]/
+    pass1_color only strokes the outline, so both are emitted."""
     src = layer_name(level)
-    color = level_color(PLATFORM_COLOR, level)
-    fill = color[:-2] + PLATFORM_FILL_ALPHA
     out = []
+    for mode in PLATFORM_MODES:
+        color = level_color(TYPE_COLORS[mode], level)
+        fill = color[:-2] + PLATFORM_FILL_ALPHA
 
-    # Closed platform ways -> filled polygon. NIMBY fills polygons via [StyleMesh]
-    # with the `color` key; [StyleLine]/pass1_color only strokes the outline.
-    out.append(block([
-        "[StyleMesh]",
-        f"source_layer = {src}",
-        "and railway = platform",
-        f"color = {fill}",
-    ]))
+        # Closed platform ways -> filled polygon.
+        out.append(block([
+            "[StyleMesh]",
+            f"source_layer = {src}",
+            "and railway = platform",
+            f"and mode = {mode}",
+            f"color = {fill}",
+        ]))
 
-    # Open platform ways -> outline line.
-    out.append(block([
-        "[StyleLine]",
-        f"source_layer = {src}",
-        "and railway = platform",
-        f"pass1_color = {color}",
-        "pass1_half_stroke_phys_mm = 0",
-        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
-        f"gameplay_layer = {level}",
-    ]))
+        # Open platform ways -> outline line.
+        out.append(block([
+            "[StyleLine]",
+            f"source_layer = {src}",
+            "and railway = platform",
+            f"and mode = {mode}",
+            f"pass1_color = {color}",
+            "pass1_half_stroke_phys_mm = 0",
+            f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+            f"gameplay_layer = {level}",
+        ]))
     return "".join(out)
 
 
@@ -193,7 +199,7 @@ def main() -> None:
         f.write(dash_png())
 
     levels = sum(1 for _ in LEVELS)
-    n_rules = levels * (len(TYPE_COLORS) * 3 + 2)  # +2 platform rules per level
+    n_rules = levels * (len(TYPE_COLORS) * 3 + len(PLATFORM_MODES) * 2)
     print(f"wrote {mod_path} ({n_rules} style rules) + textures/dash.png")
 
 

@@ -186,6 +186,9 @@ struct RailFeature {
     coords: Vec<(f64, f64)>,
     level: i32,
     railway: String,
+    /// For platforms, the rail mode served (`rail`, `subway`, `tram`, …) so the
+    /// mod can colour them like the matching track type. `None` for track lines.
+    mode: Option<String>,
     tunnel: bool,
     bridge: bool,
     /// A closed platform way, emitted as a filled polygon rather than a line.
@@ -231,6 +234,29 @@ fn truthy(v: Option<&String>) -> bool {
     matches!(v.map(String::as_str), Some("yes" | "true" | "1"))
 }
 
+/// The rail mode a platform serves, from OSM boolean flags (heavy rail first when
+/// several apply). A bare `railway=platform` with no flag defaults to heavy rail.
+/// Returns `None` for a non-rail platform (e.g. a bus `public_transport=platform`),
+/// which the caller drops.
+fn platform_mode(
+    tags: &std::collections::HashMap<String, String>,
+    has_railway_platform: bool,
+) -> Option<&'static str> {
+    const FLAGS: &[(&str, &str)] = &[
+        ("train", "rail"),
+        ("subway", "subway"),
+        ("light_rail", "light_rail"),
+        ("tram", "tram"),
+        ("monorail", "monorail"),
+        ("funicular", "funicular"),
+    ];
+    FLAGS
+        .iter()
+        .find(|(flag, _)| tags.get(*flag).map(String::as_str) == Some("yes"))
+        .map(|(_, mode)| *mode)
+        .or(has_railway_platform.then_some("rail"))
+}
+
 impl RailDataset {
     /// Parse the raw Overpass response into per-level railway geometry.
     fn from_overpass_json(json: &str) -> Result<Self, overpass::OverpassError> {
@@ -246,14 +272,20 @@ impl RailDataset {
                 continue;
             }
             // Platforms come in via either tagging scheme; normalise both to
-            // `railway=platform` so a single style rule matches. Anything else
-            // must carry a railway line type (the query guarantees this).
-            let is_platform = el.tags.get("railway").map(String::as_str) == Some("platform")
+            // `railway=platform` so a single style rule matches, and carry the rail
+            // mode for colouring. `public_transport=platform` is mode-agnostic (bus
+            // stops use it too), so a platform with no rail mode is dropped.
+            // Non-platform ways must carry a railway line type (the query ensures it).
+            let railway_tag = el.tags.get("railway").map(String::as_str);
+            let is_platform = railway_tag == Some("platform")
                 || el.tags.get("public_transport").map(String::as_str) == Some("platform");
-            let railway = if is_platform {
-                "platform".to_string()
-            } else if let Some(r) = el.tags.get("railway") {
-                r.clone()
+            let (railway, mode) = if is_platform {
+                let Some(m) = platform_mode(&el.tags, railway_tag == Some("platform")) else {
+                    continue; // non-rail platform (bus, …)
+                };
+                ("platform".to_string(), Some(m.to_string()))
+            } else if let Some(r) = railway_tag {
+                (r.to_string(), None)
             } else {
                 continue;
             };
@@ -284,6 +316,7 @@ impl RailDataset {
                 coords,
                 level,
                 railway,
+                mode,
                 tunnel: truthy(el.tags.get("tunnel")),
                 bridge: truthy(el.tags.get("bridge")),
                 area,
@@ -339,6 +372,9 @@ impl RailDataset {
                 for geom in geoms {
                     let mut feature = layer.into_feature(geom);
                     feature.add_tag_string("railway", &f.railway);
+                    if let Some(mode) = &f.mode {
+                        feature.add_tag_string("mode", mode);
+                    }
                     if f.tunnel {
                         feature.add_tag_string("tunnel", "yes");
                     }
@@ -370,6 +406,7 @@ impl RailDataset {
                     "description": describe_level(level),
                     "fields": {
                         "railway": "Railway type (rail, tram, subway, …, or platform)",
+                        "mode": "For platforms, the rail mode served (rail, subway, tram, …)",
                         "tunnel": "\"yes\" if in a tunnel",
                         "bridge": "\"yes\" if on a bridge"
                     }
@@ -625,19 +662,34 @@ mod tests {
     }
 
     const PLATFORMS: &str = r#"{"elements":[
-        {"type":"way","tags":{"railway":"platform","layer":"0"},
+        {"type":"way","tags":{"railway":"platform","subway":"yes","layer":"0"},
          "geometry":[{"lat":52.5020,"lon":13.4200},{"lat":52.5022,"lon":13.4200},{"lat":52.5022,"lon":13.4205},{"lat":52.5020,"lon":13.4205},{"lat":52.5020,"lon":13.4200}]},
-        {"type":"way","tags":{"public_transport":"platform"},
-         "geometry":[{"lat":52.5030,"lon":13.4210},{"lat":52.5032,"lon":13.4215}]}
+        {"type":"way","tags":{"public_transport":"platform","tram":"yes"},
+         "geometry":[{"lat":52.5030,"lon":13.4210},{"lat":52.5032,"lon":13.4215}]},
+        {"type":"way","tags":{"public_transport":"platform","highway":"platform","bus":"yes"},
+         "geometry":[{"lat":52.5040,"lon":13.4220},{"lat":52.5042,"lon":13.4225}]}
     ]}"#;
 
     #[test]
-    fn platforms_from_both_tags_normalise_to_platform() {
+    fn rail_platforms_normalise_and_carry_mode_bus_dropped() {
         let d = RailDataset::from_overpass_json(PLATFORMS).expect("valid platforms");
-        assert_eq!(d.features.len(), 2);
+        assert_eq!(d.features.len(), 2, "the bus platform must be dropped");
         assert!(d.features.iter().all(|f| f.railway == "platform"));
+        let modes: BTreeSet<&str> = d.features.iter().filter_map(|f| f.mode.as_deref()).collect();
+        assert_eq!(modes, BTreeSet::from(["subway", "tram"]));
         // The closed railway=platform ring is an area; the open PT way stays a line.
         assert_eq!(d.features.iter().filter(|f| f.area).count(), 1);
+    }
+
+    #[test]
+    fn platform_mode_prefers_heavy_rail_and_defaults_for_bare_platform() {
+        let mut both = std::collections::HashMap::new();
+        both.insert("subway".to_string(), "yes".to_string());
+        both.insert("train".to_string(), "yes".to_string());
+        assert_eq!(platform_mode(&both, true), Some("rail"));
+        let bare = std::collections::HashMap::new();
+        assert_eq!(platform_mode(&bare, true), Some("rail")); // railway=platform, no flag
+        assert_eq!(platform_mode(&bare, false), None); // not a rail platform
     }
 
     #[test]
