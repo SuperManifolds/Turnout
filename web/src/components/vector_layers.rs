@@ -41,6 +41,12 @@ pub fn VectorLayers(
         set_copied.set(false);
     };
 
+    let open_workshop = move |_| {
+        spawn_local(async move {
+            let _ = tauri::open_workshop_mod().await;
+        });
+    };
+
     let copy_url = move |_| {
         if let Some(v) = info.get_untracked() {
             if let Some(win) = web_sys::window() {
@@ -64,6 +70,11 @@ pub fn VectorLayers(
                 <strong>"ORM Vertical Layers"</strong>
                 " mod to colour by type and toggle heights."
             </p>
+
+            <button class="workshop-link" on:click=open_workshop>
+                <i class="fa-brands fa-steam"></i>
+                "Get the mod on Steam Workshop"
+            </button>
 
             {move || error.get().map(|e| view! { <p class="error-text">{e}</p> })}
 

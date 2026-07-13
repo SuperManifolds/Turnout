@@ -42,6 +42,8 @@ const TILE_CACHE_CAPACITY: usize = 1024;
 /// falling back to an ephemeral port so the tile URL stays stable across restarts.
 const BIND_ATTEMPTS: u32 = 10;
 const BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
+/// Steam Workshop page for the companion "ORM Vertical Layers" styling mod.
+const WORKSHOP_MOD_URL: &str = "https://steamcommunity.com/sharedfiles/filedetails/?id=3763998309";
 
 /// Human-friendly, single-token layer name shown in the game's toggle list and
 /// matched by the mod's `source_layer`. Single token (no spaces) because NIMBY's
@@ -492,6 +494,13 @@ pub fn stop_orm_vector_layers(app: tauri::AppHandle) {
     if let Some(handle) = state.handle.lock().unpoison().take() {
         handle.shutdown();
     }
+}
+
+/// Open the companion styling mod's Steam Workshop page in the default browser.
+#[tauri::command]
+pub fn open_workshop_mod() -> Result<(), String> {
+    tauri_plugin_opener::open_url(WORKSHOP_MOD_URL, None::<&str>)
+        .map_err(|e| format!("Failed to open Workshop page: {e}"))
 }
 
 #[cfg(test)]

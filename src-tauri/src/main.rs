@@ -238,6 +238,7 @@ fn main() {
             orm_tiles::get_orm_port,
             vector_tiles::start_orm_vector_layers,
             vector_tiles::stop_orm_vector_layers,
+            vector_tiles::open_workshop_mod,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
