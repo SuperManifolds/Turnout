@@ -13,8 +13,6 @@ use tauri::{Emitter, Manager};
 use crate::mbtiles::{DownloadProgress, ProgressEvent};
 use crate::tile_server::UnpoisonExt;
 
-const ORM_BASE: &str = "https://openrailwaymap.app";
-
 /// Union of every distinct MVT source layer referenced by the composite
 /// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs across all seven bundled
 /// styles. Downloaded together into a single combined-blob `MBTiles`.
@@ -106,6 +104,8 @@ pub async fn download_orm_offline(
 
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {e}"))?;
 
+    let orm_base = crate::settings::resolve_orm_base(crate::settings::load(&app).orm_base_url.as_deref());
+
     // HTTP/1.1 with a warm connection pool, NOT HTTP/2: the tile endpoint is
     // latency-bound, and a pool of independent connections parallelizes far better
     // than HTTP/2 multiplexing over a single connection (measured ~1.5x faster, and
@@ -138,7 +138,7 @@ pub async fn download_orm_offline(
     // Resources (sprites + glyph ranges) are counted into the same progress total
     // so the bar advances from the first file rather than sitting at 0/0 while
     // ~1000 glyph requests run.
-    let resources = resource_list(&dir).map_err(|e| format!("Failed to prepare resources: {e}"))?;
+    let resources = resource_list(&dir, &orm_base).map_err(|e| format!("Failed to prepare resources: {e}"))?;
     progress.total.store((tiles.len() + resources.len()) as u64, Ordering::Relaxed);
     emit_progress(&app, &progress);
 
@@ -205,13 +205,14 @@ pub async fn download_orm_offline(
         .iter()
         .enumerate()
         .flat_map(|(ti, &(z, x, y))| {
+            let orm_base = orm_base.clone();
             plans
                 .get(&z)
                 .map(Vec::as_slice)
                 .unwrap_or_default()
                 .iter()
                 .enumerate()
-                .map(move |(gi, group)| (ti, gi, format!("{ORM_BASE}/{group}/{z}/{x}/{y}")))
+                .map(move |(gi, group)| (ti, gi, format!("{orm_base}/{group}/{z}/{x}/{y}")))
         })
         .collect();
 
@@ -344,7 +345,7 @@ const FONTS: &[&str] =
 /// creating the target directories. Glyph ranges that the server lacks return 404
 /// and are skipped at fetch time; the whole 0..65535 space is attempted because
 /// coverage varies per font.
-fn resource_list(dir: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
+fn resource_list(dir: &Path, orm_base: &str) -> std::io::Result<Vec<(String, PathBuf)>> {
     let mut items = Vec::new();
 
     let sprites_dir = dir.join("sprites");
@@ -353,7 +354,7 @@ fn resource_list(dir: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
         for suffix in ["", "@2x"] {
             for ext in ["json", "png"] {
                 items.push((
-                    format!("{ORM_BASE}/{prefix}/symbols{suffix}.{ext}"),
+                    format!("{orm_base}/{prefix}/symbols{suffix}.{ext}"),
                     sprites_dir.join(format!("{name}{suffix}.{ext}")),
                 ));
             }
@@ -367,7 +368,7 @@ fn resource_list(dir: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
         for range_start in (0u32..65536).step_by(256) {
             let range = format!("{range_start}-{}", range_start + 255);
             items.push((
-                format!("{ORM_BASE}/font/{font}/{range}.pbf"),
+                format!("{orm_base}/font/{font}/{range}.pbf"),
                 font_dir.join(format!("{range}.pbf")),
             ));
         }

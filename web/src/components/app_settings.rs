@@ -19,6 +19,8 @@ pub struct Settings {
     pub apple_sat_version: Option<String>,
     #[serde(default = "default_true")]
     pub apple_auto_refresh: bool,
+    #[serde(default)]
+    pub orm_base_url: Option<String>,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
@@ -36,9 +38,12 @@ impl Default for Settings {
             apple_map_version: None,
             apple_sat_version: None,
             apple_auto_refresh: true,
+            orm_base_url: None,
         }
     }
 }
+
+const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
 
 const SPEED_TRACK_TYPES: &[(&str, &str, u32)] = &[
     ("rail", "Rail", 160),
@@ -137,6 +142,7 @@ pub fn AppSettings() -> impl IntoView {
     let (apple_map_ver, set_apple_map_ver) = create_signal::<Option<String>>(None);
     let (apple_sat_ver, set_apple_sat_ver) = create_signal::<Option<String>>(None);
     let (apple_auto, set_apple_auto) = create_signal(true);
+    let (orm_base, set_orm_base) = create_signal::<Option<String>>(None);
     let (apple_refresh_status, set_apple_refresh_status) = create_signal(String::new());
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
@@ -156,6 +162,7 @@ pub fn AppSettings() -> impl IntoView {
             set_apple_map_ver.set(settings.apple_map_version);
             set_apple_sat_ver.set(settings.apple_sat_version);
             set_apple_auto.set(settings.apple_auto_refresh);
+            set_orm_base.set(settings.orm_base_url);
             set_loaded.set(true);
             fit_window_to_content();
 
@@ -179,6 +186,7 @@ pub fn AppSettings() -> impl IntoView {
         let amv = apple_map_ver.get();
         let asv = apple_sat_ver.get();
         let auto = apple_auto.get();
+        let orm = orm_base.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -195,6 +203,7 @@ pub fn AppSettings() -> impl IntoView {
                 apple_map_version: amv,
                 apple_sat_version: asv,
                 apple_auto_refresh: auto,
+                orm_base_url: orm,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -338,6 +347,28 @@ pub fn AppSettings() -> impl IntoView {
                     />
                     " seconds"
                 </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>"OpenRailwayMap Server"</legend>
+                <label>
+                    "Base URL"
+                    <input
+                        type="text"
+                        placeholder=DEFAULT_ORM_BASE
+                        prop:value=move || orm_base.get().unwrap_or_default()
+                        on:input=move |ev| {
+                            let v = leptos::event_target_value(&ev);
+                            let v = v.trim();
+                            set_orm_base.set(if v.is_empty() { None } else { Some(v.to_string()) });
+                        }
+                    />
+                </label>
+                <p class="hint">
+                    "Where OpenRailwayMap tiles, glyphs and sprites are fetched from. Leave blank to use "
+                    {DEFAULT_ORM_BASE}
+                    ". Set this to your own server if you self-host the OpenRailwayMap stack."
+                </p>
             </fieldset>
 
             <fieldset>
