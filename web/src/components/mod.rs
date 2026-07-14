@@ -9,6 +9,7 @@ mod blueprint_drawer;
 mod overlay;
 mod tile_download;
 mod vector_layers;
+mod cartometro;
 
 pub use map::Map;
 pub use search::Search;

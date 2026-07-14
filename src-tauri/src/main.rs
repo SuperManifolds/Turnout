@@ -3,6 +3,7 @@
 mod apple_token;
 mod arcgis;
 mod blueprint;
+mod cartometro;
 mod import;
 mod mbtiles;
 mod orm_net;
@@ -184,6 +185,7 @@ fn main() {
             app.manage(apple_token::AppleRefresh::new());
             apple_token::spawn_auto_refresh(app.handle().clone());
             app.manage(vector_tiles::VectorLayerState::default());
+            app.manage(cartometro::CartoMetroState::default());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -245,6 +247,8 @@ fn main() {
             vector_tiles::start_orm_vector_layers,
             vector_tiles::stop_orm_vector_layers,
             vector_tiles::open_workshop_mod,
+            cartometro::start_cartometro,
+            cartometro::stop_cartometro,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

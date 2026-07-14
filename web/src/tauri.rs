@@ -752,3 +752,30 @@ pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
     }
     invoke("set_orm_offline", &args).await.map(|_| ())
 }
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CartoCity {
+    pub slug: String,
+    pub name: String,
+    pub tilejson_url: String,
+    pub center: [f64; 2],
+    pub min_zoom: u32,
+    pub max_zoom: u32,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CartoMetroInfo {
+    pub base_url: String,
+    pub cities: Vec<CartoCity>,
+}
+
+pub async fn start_cartometro() -> Result<CartoMetroInfo, String> {
+    let result = invoke("start_cartometro", &JsValue::NULL).await?;
+    serde_wasm_bindgen::from_value(result).map_err(|e| e.to_string())
+}
+
+pub async fn stop_cartometro() {
+    let _ = invoke("stop_cartometro", &JsValue::NULL).await;
+}
