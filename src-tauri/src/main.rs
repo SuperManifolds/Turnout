@@ -186,6 +186,7 @@ fn main() {
             apple_token::spawn_auto_refresh(app.handle().clone());
             app.manage(vector_tiles::VectorLayerState::default());
             app.manage(cartometro::CartoMetroState::default());
+            tauri::async_runtime::spawn(cartometro::autostart(app.handle().clone()));
             Ok(())
         })
         .on_menu_event(|app, event| {

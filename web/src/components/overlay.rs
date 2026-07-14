@@ -70,7 +70,7 @@ fn is_remote(kind: &str) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ServiceForm { None, Wms, Wmts, ArcGis, Xyz }
+enum ServiceForm { None, Wms, Wmts, ArcGis, Xyz, CartoMetro }
 
 #[derive(Clone)]
 struct ServiceEntry {
@@ -335,6 +335,22 @@ pub fn OverlayDrawer(
             set_target_group.set(gid);
             set_service_url.set(String::new());
             set_service_entries.set(Vec::new());
+            // CartoMetro has a fixed catalogue rather than a URL to fetch — load it
+            // (starting the proxy) as soon as the form opens.
+            if form == ServiceForm::CartoMetro {
+                set_service_loading.set(true);
+                spawn_local(async move {
+                    match tauri::start_cartometro().await {
+                        Ok(info) => set_service_entries.set(
+                            info.cities.into_iter()
+                                .map(|c| ServiceEntry { name: c.tile_url, display: c.name })
+                                .collect(),
+                        ),
+                        Err(e) => show_toast(e),
+                    }
+                    set_service_loading.set(false);
+                });
+            }
         }
     };
 
@@ -391,6 +407,8 @@ pub fn OverlayDrawer(
                 ServiceForm::Wms => tauri::add_wms_layer(&url, &name, &display, gid).await,
                 ServiceForm::Wmts => tauri::add_xyz_layer_with_kind(&name, &display, gid, Some("wmts")).await,
                 ServiceForm::ArcGis => tauri::add_arcgis_layer(&url, &name, &display, gid).await,
+                // For CartoMetro the entry's `name` is the local tile-URL template.
+                ServiceForm::CartoMetro => tauri::add_xyz_layer(&name, &format!("CartoMetro {display}"), gid).await,
                 ServiceForm::None | ServiceForm::Xyz => return,
             };
             match result {
@@ -478,6 +496,9 @@ pub fn OverlayDrawer(
                                 <li on:click=move |_| open_service_form(ServiceForm::Xyz, None)>
                                     <i class="fa-solid fa-link"></i>" XYZ tile URL"
                                 </li>
+                                <li on:click=move |_| open_service_form(ServiceForm::CartoMetro, None)>
+                                    <i class="fa-solid fa-train-subway"></i>" CartoMetro"
+                                </li>
                                 <li on:click=move |_| on_add_bing("a", "Bing Aerial")>
                                     <i class="fa-solid fa-satellite"></i>" Bing Aerial"
                                 </li>
@@ -518,28 +539,37 @@ pub fn OverlayDrawer(
                                 ServiceForm::Wmts => "WMTS server URL",
                                 ServiceForm::ArcGis => "ArcGIS services URL",
                                 ServiceForm::Xyz => "https://example.com/{z}/{x}/{y}.png",
+                                ServiceForm::CartoMetro => "Filter cities\u{2026}",
                                 ServiceForm::None => "",
                             }
                             prop:value=move || service_url.get()
                             on:input=move |ev| set_service_url.set(leptos::event_target_value(&ev))
                             on:keydown=on_url_keydown
                         />
-                        <button on:click=move |_| do_fetch() disabled=move || service_loading.get() || service_url.get().trim().is_empty()>
-                            {move || if service_loading.get() { "Loading\u{2026}" } else if active_form.get() == ServiceForm::Xyz { "Add" } else { "Fetch" }}
-                        </button>
+                        <Show when=move || active_form.get() != ServiceForm::CartoMetro>
+                            <button on:click=move |_| do_fetch() disabled=move || service_loading.get() || service_url.get().trim().is_empty()>
+                                {move || if service_loading.get() { "Loading\u{2026}" } else if active_form.get() == ServiceForm::Xyz { "Add" } else { "Fetch" }}
+                            </button>
+                        </Show>
                     </section>
                     <Show when=move || !service_entries.get().is_empty()>
                         <ul class="service-list">
-                            {move || service_entries.get().iter().map(|e| {
-                                let name = e.name.clone();
-                                let display = e.display.clone();
-                                let label = display.clone();
-                                view! {
-                                    <li on:click=move |_| on_service_select(name.clone(), display.clone())>
-                                        {label}
-                                    </li>
-                                }
-                            }).collect_view()}
+                            {move || {
+                                let needle = service_url.get().to_lowercase();
+                                let filtering = active_form.get() == ServiceForm::CartoMetro && !needle.is_empty();
+                                service_entries.get().iter()
+                                    .filter(|e| !filtering || e.display.to_lowercase().contains(&needle))
+                                    .map(|e| {
+                                        let name = e.name.clone();
+                                        let display = e.display.clone();
+                                        let label = display.clone();
+                                        view! {
+                                            <li on:click=move |_| on_service_select(name.clone(), display.clone())>
+                                                {label}
+                                            </li>
+                                        }
+                                    }).collect_view()
+                            }}
                         </ul>
                     </Show>
                 </Show>

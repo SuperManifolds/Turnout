@@ -758,6 +758,7 @@ pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
 pub struct CartoCity {
     pub slug: String,
     pub name: String,
+    pub tile_url: String,
     pub tilejson_url: String,
     pub center: [f64; 2],
     pub min_zoom: u32,

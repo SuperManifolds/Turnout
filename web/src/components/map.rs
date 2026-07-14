@@ -418,7 +418,6 @@ pub fn Map(
 
     let (show_tile_download, set_show_tile_download) = create_signal(false);
     let (show_vector_layers, set_show_vector_layers) = create_signal(false);
-    let (show_cartometro, set_show_cartometro) = create_signal(false);
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
     let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 
@@ -464,10 +463,6 @@ pub fn Map(
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
-                <button on:click=move |_| set_show_cartometro.update(|v| *v = !*v)>
-                    <i class="fa-solid fa-train-subway"></i>
-                    " CartoMetro"
-                </button>
                 <button on:click=move |_| set_drawer_open.update(|v| *v = !*v)>"Blueprints"</button>
             </nav>
             <Show when=move || show_tile_download.get()>
@@ -480,11 +475,6 @@ pub fn Map(
                 <super::vector_layers::VectorLayers
                     bbox=bbox
                     on_close=Callback::new(move |()| set_show_vector_layers.set(false))
-                />
-            </Show>
-            <Show when=move || show_cartometro.get()>
-                <super::cartometro::CartoMetro
-                    on_close=Callback::new(move |()| set_show_cartometro.set(false))
                 />
             </Show>
             <Show when=move || show_name_prompt.get()>

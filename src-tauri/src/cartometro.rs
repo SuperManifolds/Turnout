@@ -38,6 +38,9 @@ const BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
 const OUT_CACHE_CAPACITY: usize = 512;
 const SRC_CACHE_CAPACITY: usize = 512;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// `CartoMetro` renders on an opaque white page. Pixels at/above this on every
+/// channel are treated as background and dropped so the map shows through.
+const WHITE_CUTOFF: u8 = 250;
 
 /// One city's `CartoMetro` tile grid, parsed from the bundled `cities.json`.
 #[derive(Deserialize, Clone)]
@@ -205,7 +208,11 @@ impl ServerData {
                 let Some(src) = src else { continue };
                 let iu = ((u - f64::from(col)) as u32).min(src.width().saturating_sub(1));
                 let iv = ((v - f64::from(row)) as u32).min(src.height().saturating_sub(1));
-                out.put_pixel(ox, oy, *src.get_pixel(iu, iv));
+                let px = *src.get_pixel(iu, iv);
+                if px[0] >= WHITE_CUTOFF && px[1] >= WHITE_CUTOFF && px[2] >= WHITE_CUTOFF {
+                    continue; // CartoMetro's white page background -> transparent
+                }
+                out.put_pixel(ox, oy, px);
                 wrote = true;
             }
         }
@@ -353,6 +360,8 @@ async fn serve_tile(
 pub struct CityInfo {
     pub slug: String,
     pub name: String,
+    /// XYZ tile-URL template (`.../{z}/{x}/{y}.png`) to add as a map layer.
+    pub tile_url: String,
     pub tilejson_url: String,
     pub center: [f64; 2],
     pub min_zoom: u32,
@@ -366,25 +375,33 @@ pub struct CartoMetroInfo {
     pub cities: Vec<CityInfo>,
 }
 
-/// Starts the `CartoMetro` proxy (reusing the running one) and returns the catalog
-/// of cities with their per-city `TileJSON` URLs to paste into NIMBY Rails.
+/// Starts the proxy if it isn't already running and returns its bound port.
+async fn ensure_running(state: &CartoMetroState) -> Result<u16, String> {
+    if let Some(port) = state.handle.lock().unpoison().as_ref().map(|h| h.port) {
+        return Ok(port);
+    }
+    let handle = start().await?;
+    let port = handle.port;
+    *state.handle.lock().unpoison() = Some(handle);
+    Ok(port)
+}
+
+/// Starts the `CartoMetro` proxy at launch so persisted overlays (which point at
+/// its stable port) resolve immediately, without waiting for the panel to open.
+pub async fn autostart(app: tauri::AppHandle) {
+    use tauri::Manager;
+    if let Err(e) = ensure_running(app.state::<CartoMetroState>().inner()).await {
+        eprintln!("CartoMetro autostart failed: {e}");
+    }
+}
+
+/// Ensures the proxy is running and returns the catalog of cities, each with the
+/// tile-URL template to add as a persistent map layer.
 #[tauri::command]
 pub async fn start_cartometro(app: tauri::AppHandle) -> Result<CartoMetroInfo, String> {
     use tauri::Manager;
 
-    let state = app.state::<CartoMetroState>();
-    let port = {
-        let guard = state.handle.lock().unpoison();
-        guard.as_ref().map(|h| h.port)
-    };
-    let port = if let Some(p) = port {
-        p
-    } else {
-        let handle = start().await?;
-        let p = handle.port;
-        *state.handle.lock().unpoison() = Some(handle);
-        p
-    };
+    let port = ensure_running(app.state::<CartoMetroState>().inner()).await?;
 
     let mut cities: Vec<CityInfo> = load_cities()
         .into_iter()
@@ -392,6 +409,7 @@ pub async fn start_cartometro(app: tauri::AppHandle) -> Result<CartoMetroInfo, S
             let (min_zoom, max_zoom) = c.std_zoom_range();
             CityInfo {
                 name: friendly_name(&slug),
+                tile_url: format!("http://127.0.0.1:{port}/{slug}/{{z}}/{{x}}/{{y}}.png"),
                 tilejson_url: format!("http://127.0.0.1:{port}/{slug}/tilejson.json"),
                 center: c.center,
                 min_zoom,
