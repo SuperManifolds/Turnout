@@ -133,24 +133,10 @@ pub fn OverlayDrawer(
 
     load_apple_creds();
 
-    spawn_local(async move {
-        let Ok(tauri_obj) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
-        let Ok(event_mod) = js_sys::Reflect::get(&tauri_obj, &"event".into()) else { return };
-        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
-        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
-
-        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: wasm_bindgen::JsValue| {
-            load_apple_creds();
-        }) as Box<dyn Fn(wasm_bindgen::JsValue)>);
-
-        // Reload creds both on a manual settings change and when the background
-        // token refresher stores a fresh key, so newly added Apple layers never
-        // pick up a stale access key.
-        for event in ["settings-changed", "apple-token-refreshed"] {
-            let _ = listen_fn.call2(&event_mod, &event.into(), callback.as_ref().unchecked_ref());
-        }
-        callback.forget();
-    });
+    // Reload creds both on a manual settings change and when the background
+    // token refresher stores a fresh key, so newly added Apple layers never
+    // pick up a stale access key.
+    tauri::listen_to_events(&["settings-changed", "apple-token-refreshed"], move |_| load_apple_creds());
 
     let group_ids = move || status.get_untracked().groups.iter().map(|g| g.id).collect::<Vec<_>>();
 

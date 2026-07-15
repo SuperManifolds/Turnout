@@ -1,6 +1,4 @@
-use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalGetUntracked, spawn_local, ReadSignal, Callback, Callable, CollectView};
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use leptos::{component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalGetUntracked, spawn_local, ReadSignal, Callback, Callable, CollectView};
 
 const DEFAULT_Z_MIN: u8 = 0;
 const DEFAULT_Z_MAX: u8 = 19;
@@ -123,31 +121,15 @@ pub fn TileDownload(
         });
     });
 
-    let progress_closure = Closure::wrap(Box::new(move |event: JsValue| {
-        if let Ok(payload) = js_sys::Reflect::get(&event, &"payload".into()) {
-            let completed = js_sys::Reflect::get(&payload, &"completed".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let total = js_sys::Reflect::get(&payload, &"total".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let failed = js_sys::Reflect::get(&payload, &"failed".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let bytes = js_sys::Reflect::get(&payload, &"bytes".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            set_progress_completed.set(completed);
-            set_progress_total.set(total);
-            set_progress_failed.set(failed);
-            set_progress_bytes.set(bytes);
-        }
-    }) as Box<dyn Fn(JsValue)>);
-
-    if let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
-        && let Ok(event) = js_sys::Reflect::get(&tauri, &"event".into())
-        && let Ok(listen) = js_sys::Reflect::get(&event, &"listen".into())
-        && let Ok(listen_fn) = listen.dyn_into::<js_sys::Function>()
-    {
-        let _ = listen_fn.call2(&JsValue::NULL, &"tile-download-progress".into(), progress_closure.as_ref().unchecked_ref());
-    }
-    progress_closure.forget();
+    crate::tauri::listen_to_events(&["tile-download-progress"], move |payload| {
+        let field = |k: &str| {
+            js_sys::Reflect::get(&payload, &k.into()).ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64
+        };
+        set_progress_completed.set(field("completed"));
+        set_progress_total.set(field("total"));
+        set_progress_failed.set(field("failed"));
+        set_progress_bytes.set(field("bytes"));
+    });
 
     let on_start = move |_| {
         let url_val = resolved_url();
