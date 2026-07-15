@@ -515,11 +515,11 @@ async fn fetch_wms_tile(
     let resp = req
         .send()
         .await
-        .map_err(|e| eprintln!("WMS fetch error: {e}"))
+        .map_err(|e| tracing::warn!("WMS fetch error: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {
-        eprintln!("WMS returned HTTP {}", resp.status());
+        tracing::warn!("WMS returned HTTP {}", resp.status());
         return None;
     }
 
@@ -531,7 +531,7 @@ async fn fetch_wms_tile(
 
     if content_type.contains("xml") || content_type.contains("text") {
         let body = resp.text().await.ok().unwrap_or_default();
-        eprintln!("WMS error for layer={layer_name}: {}", &body[..body.len().min(500)]);
+        tracing::warn!("WMS error for layer={layer_name}: {}", &body[..body.len().min(500)]);
         return None;
     }
 
@@ -566,11 +566,11 @@ async fn fetch_xyz_tile(
         .header("User-Agent", "Mozilla/5.0")
         .send()
         .await
-        .map_err(|e| eprintln!("XYZ fetch error for {url}: {e}"))
+        .map_err(|e| tracing::warn!("XYZ fetch error for {url}: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {
-        eprintln!("XYZ returned HTTP {} for {url}", resp.status());
+        tracing::warn!("XYZ returned HTTP {} for {url}", resp.status());
         return None;
     }
 
@@ -589,7 +589,7 @@ async fn fetch_arcgis_tile(
         .get(&url)
         .send()
         .await
-        .map_err(|e| eprintln!("ArcGIS fetch error: {e}"))
+        .map_err(|e| tracing::warn!("ArcGIS fetch error: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {
