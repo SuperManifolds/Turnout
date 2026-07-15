@@ -5,6 +5,9 @@ use wasm_bindgen::JsCast;
 const DEFAULT_Z_MIN: u8 = 0;
 const DEFAULT_Z_MAX: u8 = 19;
 const MAX_TILE_COUNT: u64 = 5_000_000;
+/// Thresholds for the "M tiles" / "K tiles" count summary.
+const MILLION: u64 = 1_000_000;
+const THOUSAND: u64 = 1_000;
 const ORM_STANDARD: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
 
 fn format_duration(secs: f64) -> String {
@@ -240,10 +243,10 @@ pub fn TileDownload(
     let format_summary = move || {
         let count = tile_count.get();
         let is_vector = resolved_url() == ORM_VECTOR_URL;
-        let tiles = if count > 1_000_000 {
-            format!("{:.1}M tiles", count as f64 / 1_000_000.0)
-        } else if count > 1_000 {
-            format!("{:.1}K tiles", count as f64 / 1_000.0)
+        let tiles = if count > MILLION {
+            format!("{:.1}M tiles", count as f64 / MILLION as f64)
+        } else if count > THOUSAND {
+            format!("{:.1}K tiles", count as f64 / THOUSAND as f64)
         } else {
             format!("{count} tiles")
         };

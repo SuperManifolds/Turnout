@@ -32,6 +32,9 @@ use turnout_core::kml::{Geometry, OverlayData, Style};
 const TILE_SIZE: u32 = 256;
 const RENDER_CACHE_CAPACITY: usize = 512;
 const REMOTE_CACHE_CAPACITY: usize = 2048;
+/// Max cached open `MBTiles` read connections; bounds file descriptors when many
+/// distinct `MBTiles` layers are added. Evicting closes the connection once unused.
+const MBTILES_CONN_CACHE: usize = 16;
 pub const PREFERRED_PORT: u16 = 17853;
 const MAX_ZOOM: u8 = 22;
 const HTTP_TIMEOUT_SECS: u64 = 15;
@@ -113,7 +116,7 @@ pub struct TileState {
     http: reqwest::Client,
     /// Path-keyed read-only `MBTiles` connections, reused across tile requests to
     /// avoid reopening the `SQLite` file on every fetch.
-    mbtiles_conns: Mutex<HashMap<String, Arc<Mutex<rusqlite::Connection>>>>,
+    mbtiles_conns: Mutex<LruCache<String, Arc<Mutex<rusqlite::Connection>>>>,
 }
 
 pub struct ServerHandle {
@@ -370,7 +373,9 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default(),
-        mbtiles_conns: Mutex::new(HashMap::new()),
+        mbtiles_conns: Mutex::new(LruCache::new(
+            NonZeroUsize::new(MBTILES_CONN_CACHE).expect("nonzero"),
+        )),
     });
 
     let app = Router::new()
@@ -450,7 +455,9 @@ fn mbtiles_conn(state: &TileState, path: &str) -> Option<Arc<Mutex<rusqlite::Con
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ).ok()?;
     let arc = Arc::new(Mutex::new(conn));
-    conns.insert(path.to_string(), Arc::clone(&arc));
+    // Bounded LRU: evicting only drops this map's ref; an in-flight request keeps
+    // its own Arc, so the connection closes when the last user releases it.
+    conns.put(path.to_string(), Arc::clone(&arc));
     Some(arc)
 }
 

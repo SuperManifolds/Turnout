@@ -661,6 +661,21 @@ mod tests {
         assert!(far.len() < near.len(), "far tile should carry no layers");
     }
 
+    #[test]
+    fn encoded_tile_names_the_level_layer_and_tags() {
+        // Beyond "non-empty": MVT stores layer names and attribute keys verbatim,
+        // so scan the bytes to confirm the ground-level railway line landed in the
+        // `Ground` layer with a `railway` tag.
+        let d = RailDataset::from_overpass_json(FIXTURE).expect("valid fixture");
+        let (x, y) = turnout_core::geo::latlon_to_tile_xy(52.502, 13.42, 12);
+        let near = d.encode_tile(12, x, y).expect("encode near");
+        assert!(near.windows(6).any(|w| w == b"Ground"), "expected the 'Ground' layer");
+        assert!(near.windows(7).any(|w| w == b"railway"), "expected the 'railway' key");
+        // The far tile has no coverage, so it must not name a level layer.
+        let far = d.encode_tile(12, 0, 0).expect("encode far");
+        assert!(!far.windows(6).any(|w| w == b"Ground"), "far tile should be empty");
+    }
+
     const PLATFORMS: &str = r#"{"elements":[
         {"type":"way","tags":{"railway":"platform","subway":"yes","layer":"0"},
          "geometry":[{"lat":52.5020,"lon":13.4200},{"lat":52.5022,"lon":13.4200},{"lat":52.5022,"lon":13.4205},{"lat":52.5020,"lon":13.4205},{"lat":52.5020,"lon":13.4200}]},

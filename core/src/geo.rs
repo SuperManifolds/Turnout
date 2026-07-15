@@ -229,4 +229,31 @@ mod tests {
         assert!((px - 128.0).abs() < 1.0);
         assert!((py - 128.0).abs() < 1.0);
     }
+
+    #[test]
+    fn tile_x_clamps_at_antimeridian() {
+        // lon = +180 maps to n (out of range) and must clamp to the last column;
+        // lon = -180 is the first column. Both stay in [0, 2^z).
+        for z in [0u8, 1, 8, 16] {
+            let max = (1u32 << z) - 1;
+            assert_eq!(latlon_to_tile_xy(0.0, 180.0, z).0, max, "+180 at z{z}");
+            assert_eq!(latlon_to_tile_xy(0.0, -180.0, z).0, 0, "-180 at z{z}");
+        }
+    }
+
+    #[test]
+    fn tile_y_clamps_beyond_mercator_limit() {
+        // Latitudes past the Web Mercator cut-off must clamp into range, not overflow.
+        for z in [1u8, 8, 16] {
+            let max = (1u32 << z) - 1;
+            assert!(latlon_to_tile_xy(89.9, 0.0, z).1 <= max);
+            assert!(latlon_to_tile_xy(-89.9, 0.0, z).1 <= max);
+        }
+    }
+
+    #[test]
+    fn count_tiles_degenerate_point_bbox() {
+        // A zero-size bbox (a point) covers exactly one tile per zoom level.
+        assert_eq!(count_tiles_in_bbox(51.5, -0.1, 51.5, -0.1, 10, 12), 3);
+    }
 }
