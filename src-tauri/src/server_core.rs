@@ -96,7 +96,7 @@ pub fn spawn_with_shutdown(listener: TcpListener, app: axum::Router) -> watch::S
             })
             .await
         {
-            eprintln!("[tile-server] accept loop exited: {e}");
+            tracing::error!("tile-server accept loop exited: {e}");
         }
     });
     shutdown_tx

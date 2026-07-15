@@ -276,7 +276,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         .enable_all()
         .build()?;
     if let Err(e) = crate::orm_net::register(rt.handle().clone()) {
-        eprintln!("ORM tiles: shared network source unavailable ({e}); using mbgl default");
+        tracing::warn!("shared network source unavailable ({e}); using mbgl default");
     }
 
     let cache: Arc<StripedCache> = Arc::new(StripedCache::new(TILE_CACHE_CAPACITY));
@@ -349,12 +349,12 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
                 }));
                 match result {
                     Ok(()) => {
-                        eprintln!("[ORM worker {i}] Exited cleanly");
+                        tracing::debug!("worker {i} exited cleanly");
                         break;
                     }
                     Err(e) => {
                         let msg = extract_panic_message(&e);
-                        eprintln!("[ORM worker {i}] PANIC: {msg} — restarting...");
+                        tracing::error!("worker {i} panicked: {msg} — restarting");
                         std::thread::sleep(std::time::Duration::from_secs(WORKER_RESTART_DELAY_SECS));
                     }
                 }
@@ -382,13 +382,13 @@ async fn run_server(state: Arc<OrmTileState>, mut shutdown_rx: watch::Receiver<b
     let listener = match server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("ORM tiles: failed to bind: {e}");
+            tracing::error!("failed to bind: {e}");
             return;
         }
     };
     let port = listener.local_addr().map_or(0, |a| a.port());
     state.shared.bound_port.store(port, Ordering::SeqCst);
-    eprintln!("ORM tile renderer at http://127.0.0.1:{port}/{{style}}/{{z}}/{{y}}/{{x}}.png");
+    tracing::info!("tile renderer at http://127.0.0.1:{port}/{{style}}/{{z}}/{{y}}/{{x}}.png");
 
     let router = Router::new()
         .route("/tilejson.json", get(serve_tilejson))
@@ -413,8 +413,8 @@ fn enable_wal(path: &std::path::Path) {
         .and_then(|conn| conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0)));
     match mode {
         Ok(mode) if mode.eq_ignore_ascii_case("wal") => {}
-        Ok(mode) => eprintln!("ORM tiles: ambient cache journal_mode is '{mode}', not WAL"),
-        Err(e) => eprintln!("ORM tiles: could not enable WAL on ambient cache: {e}"),
+        Ok(mode) => tracing::warn!("ambient cache journal_mode is '{mode}', not WAL"),
+        Err(e) => tracing::warn!("could not enable WAL on ambient cache: {e}"),
     }
 }
 
@@ -456,7 +456,7 @@ fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     match offline_style_source(&dir, style) {
         Ok(source) => source,
         Err(e) => {
-            eprintln!("[ORM] offline style '{style}' unavailable ({e}); using embedded style");
+            tracing::warn!("offline style '{style}' unavailable ({e}); using embedded style");
             embedded()
         }
     }
@@ -586,7 +586,7 @@ fn render_worker_inner(
     encode_tx: &std::sync::mpsc::Sender<(Key, RawImage, u64)>,
     shared: &OrmShared,
 ) {
-    eprintln!("[ORM worker {id}] Starting...");
+    tracing::debug!("worker {id} starting");
 
     let mut renderers: HashMap<Arc<str>, maplibre_native::ImageRenderer<maplibre_native::Tile>> =
         HashMap::new();
@@ -642,9 +642,9 @@ fn render_worker_inner(
         }
 
         if !renderers.contains_key(style.as_ref()) {
-            eprintln!("[ORM worker {id}] Loading style '{style}'...");
+            tracing::debug!("worker {id} loading style '{style}'");
             renderers.insert(Arc::clone(&style), build_renderer(cache_path, &style, shared));
-            eprintln!("[ORM worker {id}] Style '{style}' loaded");
+            tracing::debug!("worker {id} style '{style}' loaded");
         }
 
         let (render_z, render_x, render_y) = parent_coords(z, x, y);
@@ -664,15 +664,15 @@ fn render_worker_inner(
                     image.into_inner()
                 };
                 if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > 2000 {
-                    eprintln!(
-                        "[ORM worker {id}] Rendered {render_count} tiles (last: {render_ms}ms)"
+                    tracing::debug!(
+                        "worker {id} rendered {render_count} tiles (last: {render_ms}ms)"
                     );
                 }
                 let _ = encode_tx.send((key, raw, current_gen));
             }
             Err(e) => {
-                eprintln!(
-                    "[ORM worker {id}] Failed z={render_z} x={render_x} y={render_y}: \
+                tracing::warn!(
+                    "worker {id} failed z={render_z} x={render_x} y={render_y}: \
                      {e} ({render_ms}ms)"
                 );
                 renderers.remove(style.as_ref());
@@ -782,7 +782,7 @@ async fn serve_tile(
         Ok(Ok(TileResult::Evicted)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Ok(TileResult::Failed)) => error_tile(StatusCode::INTERNAL_SERVER_ERROR, b"render failed"),
         _ => {
-            eprintln!("[ORM http] TIMEOUT z={z} x={x} y={y}");
+            tracing::warn!("http timeout z={z} x={x} y={y}");
             error_tile(StatusCode::GATEWAY_TIMEOUT, b"render timeout")
         }
     }

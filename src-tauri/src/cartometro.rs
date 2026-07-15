@@ -258,7 +258,7 @@ fn load_cities() -> HashMap<String, City> {
         .filter(|(slug, city)| {
             let ok = city.is_valid();
             if !ok {
-                eprintln!("[cartometro] skipping '{slug}': invalid grid config (empty zoom_sizes or non-positive extent/size)");
+                tracing::warn!("skipping '{slug}': invalid grid config (empty zoom_sizes or non-positive extent/size)");
             }
             ok
         })
@@ -369,7 +369,7 @@ async fn ensure_running(state: &CartoMetroState) -> Result<u16, String> {
 pub async fn autostart(app: tauri::AppHandle) {
     use tauri::Manager;
     if let Err(e) = ensure_running(app.state::<CartoMetroState>().inner()).await {
-        eprintln!("CartoMetro autostart failed: {e}");
+        tracing::error!("CartoMetro autostart failed: {e}");
     }
 }
 

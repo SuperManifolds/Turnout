@@ -651,7 +651,7 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
                 _ => LayerKind::Kmz,
             };
             let Ok(data) = parse_overlay_file(path, kind) else {
-                eprintln!("Restore: failed to parse {path}");
+                tracing::warn!("restore: failed to parse {path}");
                 return;
             };
             handle.add_kmz_layer(data, Some(path.clone()), kind);
@@ -673,7 +673,7 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
         }
         SavedSource::MbTiles { path } => {
             if let Err(e) = handle.add_mbtiles_layer(path.clone(), layer.name.clone()) {
-                eprintln!("Restore: failed to open MBTiles {path}: {e}");
+                tracing::warn!("restore: failed to open MBTiles {path}: {e}");
                 return;
             }
         }
