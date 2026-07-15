@@ -66,9 +66,11 @@ pub fn VectorLayers(
             </header>
 
             <p class="hint">
-                "Builds a vector-tile source of railways in the selected area, split by vertical layer. Add the URL to NIMBY Rails as a map source and enable the "
+                "Builds a vector-tile source of railways in the selected area, split by vertical layer. Add the URL below to NIMBY Rails as a map source, then enable the "
                 <strong>"ORM Vertical Layers"</strong>
-                " mod to colour by type and toggle heights."
+                " mod "
+                <em>"on that source"</em>
+                " (Map sources → the source → stylesheet) — without its stylesheet the source renders nothing. You can then toggle each vertical layer on the source to show or hide heights."
             </p>
 
             <button class="workshop-link" on:click=open_workshop>
