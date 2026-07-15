@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use tauri::{Emitter, Manager};
 
 use crate::mbtiles::{DownloadProgress, ProgressEvent};
-use crate::tile_server::UnpoisonExt;
+use crate::server_core::UnpoisonExt;
 
 /// Union of every distinct MVT source layer referenced by the composite
 /// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs across all seven bundled

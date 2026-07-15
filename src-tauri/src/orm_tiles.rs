@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -14,13 +14,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use image::{ImageBuffer, Rgba};
 use lru::LruCache;
-use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tower_http::cors::CorsLayer;
 
-use crate::tile_server::UnpoisonExt;
+use crate::server_core::{self, UnpoisonExt};
 
 const PREFERRED_PORT: u16 = 17854;
+/// A just-stopped server can hold the preferred port briefly; retry before
+/// falling back to an ephemeral port so the tile URL stays stable across restarts.
+const BIND_ATTEMPTS: u32 = 10;
+const BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
 const TILE_CACHE_CAPACITY: usize = 4096;
 const WORKER_COUNT: usize = 6;
 const ENCODER_COUNT: usize = 2;
@@ -376,15 +379,12 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 }
 
 async fn run_server(state: Arc<OrmTileState>, mut shutdown_rx: watch::Receiver<bool>) {
-    let listener = match TcpListener::bind(format!("127.0.0.1:{PREFERRED_PORT}")).await {
+    let listener = match server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY).await {
         Ok(l) => l,
-        Err(_) => match TcpListener::bind("127.0.0.1:0").await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("ORM tiles: failed to bind: {e}");
-                return;
-            }
-        },
+        Err(e) => {
+            eprintln!("ORM tiles: failed to bind: {e}");
+            return;
+        }
     };
     let port = listener.local_addr().map_or(0, |a| a.port());
     state.shared.bound_port.store(port, Ordering::SeqCst);

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tauri::{Emitter, Manager};
 
-use crate::tile_server::UnpoisonExt;
+use crate::server_core::UnpoisonExt;
 
 const CONCURRENT_REQUESTS: usize = 24;
 const HTTP_TIMEOUT_SECS: u64 = 15;
