@@ -120,8 +120,10 @@ fn expand_url(template: &str, z: u8, x: u32, y: u32, tile_index: usize) -> Strin
     }
 }
 
-pub fn create_mbtiles(path: &str, name: &str, format: &str, bounds: (f64, f64, f64, f64)) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
+/// Create the standard `MBTiles` tables (`images`, `map`, the `tiles` view, and
+/// `metadata`) if they don't already exist. Shared by the raster and vector
+/// writers, which then populate `metadata` differently.
+pub(crate) fn init_mbtiles_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS images (
             tile_id TEXT NOT NULL PRIMARY KEY,
@@ -141,8 +143,13 @@ pub fn create_mbtiles(path: &str, name: &str, format: &str, bounds: (f64, f64, f
             name TEXT NOT NULL,
             value TEXT NOT NULL,
             PRIMARY KEY (name)
-        );"
-    )?;
+        );",
+    )
+}
+
+pub fn create_mbtiles(path: &str, name: &str, format: &str, bounds: (f64, f64, f64, f64)) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    init_mbtiles_schema(&conn)?;
     let (west, south, east, north) = bounds;
     let center_lon = (west + east) / 2.0;
     let center_lat = (south + north) / 2.0;
@@ -159,9 +166,6 @@ pub fn create_mbtiles(path: &str, name: &str, format: &str, bounds: (f64, f64, f
     Ok(conn)
 }
 
-fn mbtiles_y(z: u8, y: u32) -> u32 {
-    (1u32 << z) - 1 - y
-}
 
 fn detect_format(data: &[u8]) -> &'static str {
     if data.starts_with(&[0x89, b'P', b'N', b'G']) {
@@ -173,7 +177,8 @@ fn detect_format(data: &[u8]) -> &'static str {
     }
 }
 
-fn tile_hash(data: &[u8]) -> String {
+/// Content hash used as the `images.tile_id` so identical tiles are stored once.
+pub(crate) fn tile_hash(data: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -272,7 +277,7 @@ pub async fn download_tiles(
                             *format_detected.lock().unpoison() = true;
                         }
                         progress.bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
-                        insert_tile(&conn, z, x, mbtiles_y(z, y), &data);
+                        insert_tile(&conn, z, x, turnout_core::geo::tms_y(z, y), &data);
                         progress.completed.fetch_add(1, Ordering::Relaxed);
                     }
                     FetchResult::NotFound => {
@@ -398,29 +403,3 @@ fn emit_progress(app: &tauri::AppHandle, progress: &DownloadProgress) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::mbtiles_y;
-
-    #[test]
-    fn tms_y_flip_inverts_row() {
-        // z0 has a single row (0 -> 0).
-        assert_eq!(mbtiles_y(0, 0), 0);
-        // z1 has rows 0..=1, flipped.
-        assert_eq!(mbtiles_y(1, 0), 1);
-        assert_eq!(mbtiles_y(1, 1), 0);
-        // Edges at a typical zoom.
-        assert_eq!(mbtiles_y(16, 0), 65_535);
-        assert_eq!(mbtiles_y(16, 65_535), 0);
-    }
-
-    #[test]
-    fn tms_y_flip_is_its_own_inverse() {
-        for z in [0u8, 1, 8, 16] {
-            let rows = 1u32 << z;
-            for y in [0, rows / 3, rows - 1] {
-                assert_eq!(mbtiles_y(z, mbtiles_y(z, y)), y, "z={z} y={y}");
-            }
-        }
-    }
-}

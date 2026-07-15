@@ -1,13 +1,30 @@
 //! Shared geometry and coordinate utilities.
 
-const EARTH_RADIUS: f64 = 6_378_137.0;
+pub const EARTH_RADIUS: f64 = 6_378_137.0;
+
+/// Web Mercator (EPSG:3857) X in meters for a longitude in degrees.
+#[must_use]
+pub fn merc_x(lon: f64) -> f64 {
+    lon.to_radians() * EARTH_RADIUS
+}
+
+/// Web Mercator (EPSG:3857) Y in meters for a latitude in degrees.
+#[must_use]
+pub fn merc_y(lat: f64) -> f64 {
+    (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * EARTH_RADIUS
+}
 
 /// Convert lat/lon (degrees) to Web Mercator (EPSG:3857) meters.
 #[must_use]
 pub fn latlon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
-    let x = lon.to_radians() * EARTH_RADIUS;
-    let y = (lat.to_radians() / 2.0 + std::f64::consts::FRAC_PI_4).tan().ln() * EARTH_RADIUS;
-    (x, y)
+    (merc_x(lon), merc_y(lat))
+}
+
+/// TMS row for an XYZ `y` at zoom `z` (flips the y-axis). Used by the `MBTiles`
+/// writers/readers. `z` must be `< 32`.
+#[must_use]
+pub fn tms_y(z: u8, y: u32) -> u32 {
+    (1u32 << z) - 1 - y
 }
 
 /// Convert Web Mercator meters to lat/lon (degrees).
@@ -255,5 +272,31 @@ mod tests {
     fn count_tiles_degenerate_point_bbox() {
         // A zero-size bbox (a point) covers exactly one tile per zoom level.
         assert_eq!(count_tiles_in_bbox(51.5, -0.1, 51.5, -0.1, 10, 12), 3);
+    }
+
+    #[test]
+    fn tms_y_flip_inverts_row() {
+        assert_eq!(tms_y(0, 0), 0);
+        assert_eq!(tms_y(1, 0), 1);
+        assert_eq!(tms_y(1, 1), 0);
+        assert_eq!(tms_y(16, 0), 65_535);
+        assert_eq!(tms_y(16, 65_535), 0);
+    }
+
+    #[test]
+    fn tms_y_flip_is_its_own_inverse() {
+        for z in [0u8, 1, 8, 16] {
+            let rows = 1u32 << z;
+            for y in [0, rows / 3, rows - 1] {
+                assert_eq!(tms_y(z, tms_y(z, y)), y, "z={z} y={y}");
+            }
+        }
+    }
+
+    #[test]
+    fn merc_helpers_match_latlon_to_mercator() {
+        let (x, y) = latlon_to_mercator(51.5, -0.1);
+        assert!((x - merc_x(-0.1)).abs() < 1e-9);
+        assert!((y - merc_y(51.5)).abs() < 1e-9);
     }
 }
