@@ -1,8 +1,9 @@
 use std::fmt;
 use std::time::Duration;
 
+use crate::server_core::USER_AGENT;
+
 const OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
-const USER_AGENT: &str = "Turnout/0.1.0 (+https://github.com/SuperManifolds/Turnout)";
 
 /// Railway `railway=*` values fetched for the vertical-layers tiler. The lifecycle
 /// values — `construction`/`proposed` (with the eventual type in the same-named

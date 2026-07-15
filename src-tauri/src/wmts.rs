@@ -2,7 +2,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::Serialize;
 
-const USER_AGENT: &str = "Turnout/0.1.0 (+https://github.com/SuperManifolds/Turnout)";
+use crate::server_core::USER_AGENT;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

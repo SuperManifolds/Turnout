@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-const USER_AGENT: &str = "Turnout/0.1.0 (+https://github.com/SuperManifolds/Turnout)";
+use crate::server_core::USER_AGENT;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArcGisServiceInfo {

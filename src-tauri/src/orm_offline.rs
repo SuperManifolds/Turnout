@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use tauri::{Emitter, Manager};
 
 use crate::mbtiles::{DownloadProgress, ProgressEvent};
-use crate::server_core::UnpoisonExt;
+use crate::server_core::{USER_AGENT, UnpoisonExt};
 
 /// Union of every distinct MVT source layer referenced by the composite
 /// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs across all seven bundled
@@ -113,7 +113,7 @@ pub async fn download_orm_offline(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .user_agent("Turnout/0.2.0 (+https://github.com/SuperManifolds/Turnout)")
+        .user_agent(USER_AGENT)
         .http1_only()
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
         .build()

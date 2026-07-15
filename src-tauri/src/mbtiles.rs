@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tauri::{Emitter, Manager};
 
-use crate::server_core::UnpoisonExt;
+use crate::server_core::{USER_AGENT, UnpoisonExt};
 
 const CONCURRENT_REQUESTS: usize = 24;
 const HTTP_TIMEOUT_SECS: u64 = 15;
@@ -233,7 +233,7 @@ pub async fn download_tiles(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .user_agent("Turnout/0.2.0 (+https://github.com/SuperManifolds/Turnout)")
+        .user_agent(USER_AGENT)
         .http2_adaptive_window(true)
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
         .build()
