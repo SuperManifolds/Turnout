@@ -197,6 +197,27 @@ pub async fn get_mods_dir() -> Option<String> {
     result.as_string()
 }
 
+/// Resize the current webview window to `(width, height)` logical pixels via the
+/// Tauri window API. A no-op if any part of the API is unavailable.
+pub fn set_window_logical_size(width: f64, height: f64) {
+    let Some(get_current) = tauri_namespace_fn("window", "getCurrentWindow") else { return };
+    let Ok(win) = get_current.call0(&JsValue::NULL) else { return };
+    let Some(set_size) = js_sys::Reflect::get(&win, &"setSize".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+    else {
+        return;
+    };
+    let Some(logical_size) = tauri_namespace_fn("window", "LogicalSize") else { return };
+    let Ok(size) = js_sys::Reflect::construct(
+        &logical_size,
+        &js_sys::Array::of2(&JsValue::from_f64(width), &JsValue::from_f64(height)),
+    ) else {
+        return;
+    };
+    let _ = set_size.call1(&win, &size);
+}
+
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlueprintInfo {

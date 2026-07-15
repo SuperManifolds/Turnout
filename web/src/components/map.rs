@@ -34,61 +34,14 @@ extern "C" {
     fn map_set_orm_port(port: u16);
 }
 
+use crate::geo::{Handle, apply_handle_drag, bbox_geojson, empty_geojson, format_bbox, handles_geojson};
+
 // Interaction modes
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Idle,
     Drawing,
     Resizing(Handle),
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Handle {
-    NW, N, NE, E, SE, S, SW, W,
-}
-
-impl Handle {
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "nw" => Some(Self::NW), "n" => Some(Self::N), "ne" => Some(Self::NE),
-            "e" => Some(Self::E), "se" => Some(Self::SE), "s" => Some(Self::S),
-            "sw" => Some(Self::SW), "w" => Some(Self::W), _ => None,
-        }
-    }
-
-    fn cursor(self) -> &'static str {
-        match self {
-            Self::NW | Self::SE => "nwse-resize",
-            Self::NE | Self::SW => "nesw-resize",
-            Self::N | Self::S => "ns-resize",
-            Self::E | Self::W => "ew-resize",
-        }
-    }
-}
-
-fn bbox_geojson(w: f64, s: f64, e: f64, n: f64) -> String {
-    format!(
-        r#"{{"type":"Feature","geometry":{{"type":"Polygon","coordinates":[[[{w},{s}],[{e},{s}],[{e},{n}],[{w},{n}],[{w},{s}]]]}}}}"#
-    )
-}
-
-fn handles_geojson(w: f64, s: f64, e: f64, n: f64) -> String {
-    let mx = (w + e) / 2.0;
-    let my = (s + n) / 2.0;
-    let pts = [
-        (w, n, "nw"), (mx, n, "n"), (e, n, "ne"), (e, my, "e"),
-        (e, s, "se"), (mx, s, "s"), (w, s, "sw"), (w, my, "w"),
-    ];
-    let features: Vec<String> = pts.iter().map(|(lng, lat, h)| {
-        format!(
-            r#"{{"type":"Feature","properties":{{"handle":"{h}"}},"geometry":{{"type":"Point","coordinates":[{lng},{lat}]}}}}"#
-        )
-    }).collect();
-    format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(","))
-}
-
-fn empty_geojson() -> &'static str {
-    r#"{"type":"FeatureCollection","features":[]}"#
 }
 
 fn update_bbox_display(s: f64, w: f64, n: f64, e: f64) {
@@ -99,28 +52,6 @@ fn update_bbox_display(s: f64, w: f64, n: f64, e: f64) {
 fn clear_bbox_display() {
     map_set_geojson("bbox", empty_geojson());
     map_set_geojson("handles", empty_geojson());
-}
-
-fn apply_handle_drag(handle: Handle, bbox: (f64, f64, f64, f64), lng: f64, lat: f64) -> (f64, f64, f64, f64) {
-    let (mut s, mut w, mut n, mut e) = bbox;
-    match handle {
-        Handle::NW => { n = lat; w = lng; }
-        Handle::N  => { n = lat; }
-        Handle::NE => { n = lat; e = lng; }
-        Handle::E  => { e = lng; }
-        Handle::SE => { s = lat; e = lng; }
-        Handle::S  => { s = lat; }
-        Handle::SW => { s = lat; w = lng; }
-        Handle::W  => { w = lng; }
-    }
-    // Ensure min < max
-    if s > n { std::mem::swap(&mut s, &mut n); }
-    if w > e { std::mem::swap(&mut w, &mut e); }
-    (s, w, n, e)
-}
-
-fn format_bbox(s: f64, w: f64, n: f64, e: f64) -> String {
-    format!("Selected: {s:.4}°, {w:.4}° to {n:.4}°, {e:.4}°")
 }
 
 #[component]
