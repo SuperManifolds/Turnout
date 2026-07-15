@@ -40,6 +40,8 @@ HALF_STROKE_PX = 12            # 1.2 px half-stroke -> ~2.4 px line
 CASING_EXTRA_PX = 12          # extra half-stroke for the bridge casing pass
 CASING_COLOR = "#1a1a1aff"     # dark casing under bridges
 TUNNEL_TEXTURE = "textures/dash.png"
+# Distinct from the tunnel dash so construction/proposed can't be mistaken for a tunnel.
+CONSTRUCTION_TEXTURE = "textures/construction.png"
 GROUND_LIGHTNESS = 0.56         # level 0; hue-independent so every type ramps alike
 LIGHTNESS_STEP = 0.072         # per level (deeper darker, higher lighter)
 LIGHTNESS_MIN, LIGHTNESS_MAX = 0.20, 0.85
@@ -138,7 +140,7 @@ def rule(level: int, rtype: str) -> str:
             f"and railway = {rtype}",
             f"and lifecycle = {state}",
             f"pass1_color = {color[:-2] + alpha}",
-            f"pass1_texture = {TUNNEL_TEXTURE}",
+            f"pass1_texture = {CONSTRUCTION_TEXTURE}",
             "pass1_half_stroke_phys_mm = 0",
             f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
             f"gameplay_layer = {level}",
@@ -182,24 +184,34 @@ def platform_rules(level: int) -> str:
     return "".join(out)
 
 
-def dash_png() -> bytes:
-    """A 16x4 stroke texture: 10px opaque white + 6px transparent → dashes when
-    tiled along a line. White so `pass1_color` tints it."""
-    w, h = 16, 4
+def stroke_png(width: int, opaque_px: int) -> bytes:
+    """A `width`x4 RGBA stroke texture: `opaque_px` opaque white columns then
+    transparent, tiled along the line. White so `pass1_color` tints it."""
+    h = 4
     raw = bytearray()
     for _y in range(h):
         raw.append(0)  # PNG filter byte per scanline
-        for x in range(w):
-            opaque = x < 10
-            raw += bytes((255, 255, 255, 255 if opaque else 0))
+        for x in range(width):
+            raw += bytes((255, 255, 255, 255 if x < opaque_px else 0))
 
     def chunk(tag: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    ihdr = struct.pack(">IIBBBBB", width, h, 8, 6, 0, 0, 0)  # 8-bit RGBA
     idat = zlib.compress(bytes(raw), 9)
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def dash_png() -> bytes:
+    """Tunnel dash: long marks (10px on / 6px off)."""
+    return stroke_png(16, 10)
+
+
+def construction_png() -> bytes:
+    """Construction/proposed: short, closely-spaced dots (3px on / 5px off) — a
+    finer pattern that reads clearly differently from the tunnel dash."""
+    return stroke_png(8, 3)
 
 
 def main() -> None:
@@ -226,6 +238,8 @@ def main() -> None:
 
     with open(os.path.join(OUT_DIR, "textures", "dash.png"), "wb") as f:
         f.write(dash_png())
+    with open(os.path.join(OUT_DIR, "textures", "construction.png"), "wb") as f:
+        f.write(construction_png())
 
     levels = sum(1 for _ in LEVELS)
     n_rules = levels * (len(TYPE_COLORS) * (3 + len(LIFECYCLE_ALPHA)) + len(PLATFORM_MODES) * 2)
