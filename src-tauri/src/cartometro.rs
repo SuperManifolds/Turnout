@@ -24,11 +24,12 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 
+use turnout_core::geo::{merc_x, merc_y};
+
 use crate::tile_server::UnpoisonExt;
 
-/// Earth radius used by `EPSG:3857` (half-world extent is `R·π`).
-const R: f64 = 6_378_137.0;
-const HALF_WORLD: f64 = std::f64::consts::PI * R;
+/// Half the Web Mercator world extent in meters (`R·π`).
+const HALF_WORLD: f64 = std::f64::consts::PI * turnout_core::geo::EARTH_RADIUS;
 const OUT_TILE: u32 = 256;
 const CM_BASE: &str = "https://cartometro.com/images-maps";
 const CM_TILE: u32 = 300;
@@ -52,8 +53,8 @@ struct City {
     center: [f64; 2],
     /// Full-map pixel `[width, height]` per `CartoMetro` zoom level.
     zoom_sizes: Vec<[u32; 2]>,
-    #[allow(dead_code)]
-    tile_size: u32,
+    // `cities.json` also carries a `tile_size` (always 300 = CM_TILE); it's ignored
+    // here (unknown fields are dropped by serde) since the constant is used instead.
 }
 
 impl City {
@@ -103,14 +104,6 @@ impl City {
         let max = zoom_for(self.zoom_sizes[self.zoom_sizes.len() - 1][0]);
         (min.min(max), min.max(max))
     }
-}
-
-fn merc_x(lon: f64) -> f64 {
-    R * lon.to_radians()
-}
-
-fn merc_y(lat: f64) -> f64 {
-    R * (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0).tan().ln()
 }
 
 /// True for a `CartoMetro` page-background pixel (near-white on every channel),
@@ -514,7 +507,6 @@ mod tests {
             extent: [-1.0, 50.0, 1.0, 51.0],
             center: [0.0, 50.5],
             zoom_sizes: vec![[256, 128], [512, 256]],
-            tile_size: 300,
         }
     }
 

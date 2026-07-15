@@ -480,7 +480,7 @@ fn query_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32) ->
 
 fn overzoom_mbtiles_tile(conn: &rusqlite::Connection, z: u8, x: u32, tms_y: u32, max_zoom: u8) -> Option<Pixmap> {
     let dz = z - max_zoom;
-    let y = (1u32 << z) - 1 - tms_y;
+    let y = turnout_core::geo::tms_y(z, tms_y);
     let parent_x = x >> dz;
     let parent_y = y >> dz;
     let parent_tms_y = (1u32 << max_zoom) - 1 - parent_y;
@@ -699,7 +699,7 @@ async fn serve_tile(
         let layers = state.layers.read().unpoison();
         let mut reqs = Vec::new();
         let mut local = HashMap::new();
-        let tms_y = (1u32 << z) - 1 - y;
+        let tms_y = turnout_core::geo::tms_y(z, y);
         for l in layers.iter() {
             if !l.visible { continue; }
             match &l.source {

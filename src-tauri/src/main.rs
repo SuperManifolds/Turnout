@@ -4,7 +4,7 @@ mod apple_token;
 mod arcgis;
 mod blueprint;
 mod cartometro;
-mod import;
+mod orm_import;
 mod mbtiles;
 mod orm_net;
 mod orm_offline;
@@ -201,8 +201,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             overpass::fetch_overpass,
-            import::import_orm,
-            import::count_track_nodes,
+            orm_import::import_orm,
+            orm_import::count_track_nodes,
             blueprint::get_mods_dir,
             blueprint::save_blueprint,
             blueprint::blueprint_exists,

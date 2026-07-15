@@ -167,7 +167,7 @@ pub async fn download_orm_offline(
     .map_err(|e| format!("Resume scan failed: {e}"))?;
     if !existing.is_empty() {
         let before = tiles.len();
-        tiles.retain(|&(z, x, y)| !existing.contains(&(z, x, (1u32 << z) - 1 - y)));
+        tiles.retain(|&(z, x, y)| !existing.contains(&(z, x, turnout_core::geo::tms_y(z, y))));
         let already = (before - tiles.len()) as u64;
         progress.completed.fetch_add(already, Ordering::Relaxed);
         emit_progress(&app, &progress);
@@ -544,8 +544,8 @@ fn store_tile(
         }
     }
     if !blob.is_empty() {
-        let tms_y = (1u32 << z) - 1 - y;
-        let hash = tile_hash(&blob);
+        let tms_y = turnout_core::geo::tms_y(z, y);
+        let hash = crate::mbtiles::tile_hash(&blob);
         if let Ok(mut stmt) =
             conn.prepare_cached("INSERT OR IGNORE INTO images (tile_id, tile_data) VALUES (?1, ?2)")
         {
@@ -625,8 +625,8 @@ fn existing_tile_rows(conn: &Connection, ranges: &[(u8, u32, u32, u32, u32)]) ->
         return set;
     };
     for &(z, x_min, x_max, y_min, y_max) in ranges {
-        let tms_lo = (1u32 << z) - 1 - y_max;
-        let tms_hi = (1u32 << z) - 1 - y_min;
+        let tms_lo = turnout_core::geo::tms_y(z, y_max);
+        let tms_hi = turnout_core::geo::tms_y(z, y_min);
         let Ok(rows) = stmt.query_map(rusqlite::params![z, x_min, x_max, tms_lo, tms_hi], |r| {
             Ok((r.get::<_, u8>(0)?, r.get::<_, u32>(1)?, r.get::<_, u32>(2)?))
         }) else {
@@ -647,27 +647,7 @@ fn create_vector_mbtiles(
     // WAL + relaxed sync lets the writer commit without an fsync per transaction;
     // `finalize_vector_mbtiles` checkpoints and reverts to a self-contained file.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS images (
-            tile_id TEXT NOT NULL PRIMARY KEY,
-            tile_data BLOB NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS map (
-            zoom_level INTEGER NOT NULL,
-            tile_column INTEGER NOT NULL,
-            tile_row INTEGER NOT NULL,
-            tile_id TEXT,
-            PRIMARY KEY (zoom_level, tile_column, tile_row)
-        );
-        CREATE VIEW IF NOT EXISTS tiles AS
-            SELECT map.zoom_level, map.tile_column, map.tile_row, images.tile_data
-            FROM map JOIN images ON map.tile_id = images.tile_id;
-        CREATE TABLE IF NOT EXISTS metadata (
-            name TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY (name)
-        );"
-    )?;
+    crate::mbtiles::init_mbtiles_schema(&conn)?;
     let (west, south, east, north) = bounds;
     let vector_layers: Vec<Value> = ORM_LAYERS
         .iter()
@@ -696,13 +676,6 @@ fn finalize_vector_mbtiles(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
 }
 
-fn tile_hash(data: &[u8]) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
 
 async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, ()> {
     let resp = client.get(url).send().await.map_err(|_| ())?;
