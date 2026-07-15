@@ -11,6 +11,7 @@ mod orm_offline;
 mod orm_tiles;
 mod overlay;
 mod overpass;
+mod server_core;
 mod settings;
 mod tile_server;
 mod vector_tiles;

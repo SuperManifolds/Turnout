@@ -18,7 +18,7 @@ use maplibre_native::file_source::{
 };
 use tokio::sync::{OnceCell, Semaphore};
 
-use crate::tile_server::UnpoisonExt;
+use crate::server_core::UnpoisonExt;
 
 /// Upper bound on concurrent upstream fetches across all render workers.
 const MAX_CONCURRENT_FETCHES: usize = 32;

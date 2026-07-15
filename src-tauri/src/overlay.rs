@@ -6,7 +6,8 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::arcgis;
-use crate::tile_server::{self, LayerKind, LayerSource, UnpoisonExt};
+use crate::server_core::UnpoisonExt;
+use crate::tile_server::{self, LayerKind, LayerSource};
 use crate::wms;
 use crate::wmts;
 
