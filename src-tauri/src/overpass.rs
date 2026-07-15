@@ -4,9 +4,14 @@ use std::time::Duration;
 const OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const USER_AGENT: &str = "Turnout/0.1.0 (+https://github.com/SuperManifolds/Turnout)";
 
-/// Railway `railway=*` values fetched for the vertical-layers tiler.
-const RAILWAY_TYPES: &[&str] =
-    &["rail", "tram", "subway", "light_rail", "narrow_gauge", "monorail", "funicular"];
+/// Railway `railway=*` values fetched for the vertical-layers tiler. The lifecycle
+/// values — `construction`/`proposed` (with the eventual type in the same-named
+/// tag) and `preserved` (operational heritage track) — are resolved to their target
+/// type by the tiler.
+const RAILWAY_TYPES: &[&str] = &[
+    "rail", "tram", "subway", "light_rail", "narrow_gauge", "monorail", "funicular",
+    "construction", "proposed", "preserved",
+];
 /// Reject selections beyond this many km² up front: larger areas overwhelm the
 /// public Overpass servers (timeouts / fair-use limits). ~200 km on a side.
 const MAX_AREA_KM2: f64 = 40_000.0;

@@ -46,6 +46,9 @@ LIGHTNESS_MIN, LIGHTNESS_MAX = 0.20, 0.85
 PLATFORM_FILL_ALPHA = "aa"     # semi-transparent so the platform reads as a pad
 # Rail modes a platform can serve (via OSM boolean flags), coloured like the tracks.
 PLATFORM_MODES = ["rail", "subway", "light_rail", "tram", "monorail", "funicular"]
+# Not-yet-built track: dashed + faint in the type colour (proposed fainter than
+# construction). Keyed to the tiler's `lifecycle` attribute. Order = draw order.
+LIFECYCLE_ALPHA = {"construction": "b0", "proposed": "70"}
 
 
 def level_color(base_hex: str, level: int) -> str:
@@ -78,6 +81,9 @@ def block(lines: list[str]) -> str:
 def rule(level: int, rtype: str) -> str:
     src = layer_name(level)
     color = level_color(TYPE_COLORS[rtype], level)
+    # Built-track rules exclude lifecycle ways so they don't double-draw with the
+    # dashed construction/proposed rules below.
+    not_lifecycle = [f"and not lifecycle = {s}" for s in LIFECYCLE_ALPHA]
     out = []
 
     # Bridge: casing pass under the fill. Listed first so it draws underneath.
@@ -86,6 +92,7 @@ def rule(level: int, rtype: str) -> str:
         f"source_layer = {src}",
         f"and railway = {rtype}",
         "and bridge = yes",
+        *not_lifecycle,
         f"pass1_color = {CASING_COLOR}",
         "pass1_half_stroke_phys_mm = 0",
         f"pass1_half_stroke_px_dec = {HALF_STROKE_PX + CASING_EXTRA_PX}",
@@ -101,6 +108,7 @@ def rule(level: int, rtype: str) -> str:
         f"source_layer = {src}",
         f"and railway = {rtype}",
         "and tunnel = yes",
+        *not_lifecycle,
         f"pass1_color = {color}",
         f"pass1_texture = {TUNNEL_TEXTURE}",
         "pass1_half_stroke_phys_mm = 0",
@@ -108,18 +116,33 @@ def rule(level: int, rtype: str) -> str:
         f"gameplay_layer = {level}",
     ]))
 
-    # Surface: plain solid line, excluding tunnel/bridge to avoid double-draw.
+    # Surface: plain solid line, excluding tunnel/bridge/lifecycle to avoid double-draw.
     out.append(block([
         "[StyleLine]",
         f"source_layer = {src}",
         f"and railway = {rtype}",
         "and not tunnel = yes",
         "and not bridge = yes",
+        *not_lifecycle,
         f"pass1_color = {color}",
         "pass1_half_stroke_phys_mm = 0",
         f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
         f"gameplay_layer = {level}",
     ]))
+
+    # Not-yet-built: dashed, faint in the type colour (keyed to `lifecycle`).
+    for state, alpha in LIFECYCLE_ALPHA.items():
+        out.append(block([
+            "[StyleLine]",
+            f"source_layer = {src}",
+            f"and railway = {rtype}",
+            f"and lifecycle = {state}",
+            f"pass1_color = {color[:-2] + alpha}",
+            f"pass1_texture = {TUNNEL_TEXTURE}",
+            "pass1_half_stroke_phys_mm = 0",
+            f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+            f"gameplay_layer = {level}",
+        ]))
     return "".join(out)
 
 
@@ -205,7 +228,7 @@ def main() -> None:
         f.write(dash_png())
 
     levels = sum(1 for _ in LEVELS)
-    n_rules = levels * (len(TYPE_COLORS) * 3 + len(PLATFORM_MODES) * 2)
+    n_rules = levels * (len(TYPE_COLORS) * (3 + len(LIFECYCLE_ALPHA)) + len(PLATFORM_MODES) * 2)
     print(f"wrote {mod_path} ({n_rules} style rules) + textures/dash.png")
 
 
