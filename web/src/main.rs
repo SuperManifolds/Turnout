@@ -3,7 +3,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 mod components;
+mod geo;
 pub mod tauri;
+mod tiles;
 mod utils;
 
 #[wasm_bindgen]
