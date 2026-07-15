@@ -191,6 +191,9 @@ struct RailFeature {
     mode: Option<String>,
     tunnel: bool,
     bridge: bool,
+    /// Lifecycle state for not-yet-built track (`construction`/`proposed`), so the
+    /// mod can style it distinctly. `None` for built track (incl. `preserved`).
+    lifecycle: Option<String>,
     /// A closed platform way, emitted as a filled polygon rather than a line.
     area: bool,
     /// `(min_lon, min_lat, max_lon, max_lat)` bounding box for tile-intersection.
@@ -232,6 +235,24 @@ struct LatLon {
 
 fn truthy(v: Option<&String>) -> bool {
     matches!(v.map(String::as_str), Some("yes" | "true" | "1"))
+}
+
+/// Line types the mod colours; used to validate a lifecycle way's target type.
+const LINE_TYPES: &[&str] =
+    &["rail", "tram", "subway", "light_rail", "narrow_gauge", "monorail", "funicular"];
+
+/// `railway=*` lifecycle values that carry a not-yet-built state (styled faint).
+/// `preserved` is deliberately excluded — heritage railways are operational track.
+const LIFECYCLE_STATES: &[&str] = &["construction", "proposed"];
+
+/// The eventual line type of a lifecycle way (`construction`/`proposed`/`preserved`),
+/// read from the same-named tag when it names a known type, else heavy rail.
+fn lifecycle_target(tags: &std::collections::HashMap<String, String>, state: &str) -> String {
+    tags.get(state)
+        .map(String::as_str)
+        .filter(|t| LINE_TYPES.contains(t))
+        .unwrap_or("rail")
+        .to_string()
 }
 
 /// The rail mode a platform serves, from OSM boolean flags (heavy rail first when
@@ -279,13 +300,19 @@ impl RailDataset {
             let railway_tag = el.tags.get("railway").map(String::as_str);
             let is_platform = railway_tag == Some("platform")
                 || el.tags.get("public_transport").map(String::as_str) == Some("platform");
-            let (railway, mode) = if is_platform {
+            let (railway, mode, lifecycle) = if is_platform {
                 let Some(m) = platform_mode(&el.tags, railway_tag == Some("platform")) else {
                     continue; // non-rail platform (bus, …)
                 };
-                ("platform".to_string(), Some(m.to_string()))
+                ("platform".to_string(), Some(m.to_string()), None)
+            } else if railway_tag == Some("preserved") {
+                // Heritage railway: operational track, coloured by its target type.
+                (lifecycle_target(&el.tags, "preserved"), None, None)
+            } else if let Some(state) = railway_tag.filter(|r| LIFECYCLE_STATES.contains(r)) {
+                // construction/proposed: colour by eventual type, flag the state.
+                (lifecycle_target(&el.tags, state), None, Some(state.to_string()))
             } else if let Some(r) = railway_tag {
-                (r.to_string(), None)
+                (r.to_string(), None, None)
             } else {
                 continue;
             };
@@ -319,6 +346,7 @@ impl RailDataset {
                 mode,
                 tunnel: truthy(el.tags.get("tunnel")),
                 bridge: truthy(el.tags.get("bridge")),
+                lifecycle,
                 area,
                 bbox: (fw, fs, fe, fn_),
             });
@@ -375,6 +403,9 @@ impl RailDataset {
                     if let Some(mode) = &f.mode {
                         feature.add_tag_string("mode", mode);
                     }
+                    if let Some(lifecycle) = &f.lifecycle {
+                        feature.add_tag_string("lifecycle", lifecycle);
+                    }
                     if f.tunnel {
                         feature.add_tag_string("tunnel", "yes");
                     }
@@ -407,6 +438,7 @@ impl RailDataset {
                     "fields": {
                         "railway": "Railway type (rail, tram, subway, …, or platform)",
                         "mode": "For platforms, the rail mode served (rail, subway, tram, …)",
+                        "lifecycle": "\"construction\" or \"proposed\" for not-yet-built track",
                         "tunnel": "\"yes\" if in a tunnel",
                         "bridge": "\"yes\" if on a bridge"
                     }
@@ -705,6 +737,41 @@ mod tests {
         let bare = std::collections::HashMap::new();
         assert_eq!(platform_mode(&bare, true), Some("rail")); // railway=platform, no flag
         assert_eq!(platform_mode(&bare, false), None); // not a rail platform
+    }
+
+    const LIFECYCLE: &str = r#"{"elements":[
+        {"type":"way","tags":{"railway":"construction","construction":"subway"},
+         "geometry":[{"lat":52.50,"lon":13.40},{"lat":52.51,"lon":13.41}]},
+        {"type":"way","tags":{"railway":"proposed","proposed":"tram"},
+         "geometry":[{"lat":52.50,"lon":13.42},{"lat":52.51,"lon":13.43}]},
+        {"type":"way","tags":{"railway":"preserved","preserved":"narrow_gauge"},
+         "geometry":[{"lat":52.50,"lon":13.44},{"lat":52.51,"lon":13.45}]},
+        {"type":"way","tags":{"railway":"construction"},
+         "geometry":[{"lat":52.50,"lon":13.46},{"lat":52.51,"lon":13.47}]}
+    ]}"#;
+
+    #[test]
+    fn lifecycle_ways_resolve_to_target_type_and_flag() {
+        let d = RailDataset::from_overpass_json(LIFECYCLE).expect("valid");
+        let by = |r: &str| d.features.iter().find(|f| f.railway == r).expect(r);
+        // construction=subway -> subway line, flagged construction.
+        assert_eq!(by("subway").lifecycle.as_deref(), Some("construction"));
+        // proposed=tram -> tram line, flagged proposed.
+        assert_eq!(by("tram").lifecycle.as_deref(), Some("proposed"));
+        // preserved -> its target type, treated as built (no lifecycle flag).
+        assert_eq!(by("narrow_gauge").lifecycle, None);
+        // Bare railway=construction with no target -> defaults to heavy rail.
+        assert_eq!(by("rail").lifecycle.as_deref(), Some("construction"));
+    }
+
+    #[test]
+    fn lifecycle_target_validates_type() {
+        let mut tags = std::collections::HashMap::new();
+        tags.insert("construction".to_string(), "light_rail".to_string());
+        assert_eq!(lifecycle_target(&tags, "construction"), "light_rail");
+        tags.insert("construction".to_string(), "not_a_type".to_string());
+        assert_eq!(lifecycle_target(&tags, "construction"), "rail"); // unknown -> rail
+        assert_eq!(lifecycle_target(&std::collections::HashMap::new(), "proposed"), "rail");
     }
 
     #[test]
