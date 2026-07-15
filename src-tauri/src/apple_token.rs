@@ -41,6 +41,8 @@ const MIN_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 /// `MAX_RETRY_INTERVAL`.
 const BASE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_mins(5);
+/// Assumed token lifetime when the bootstrap response omits `expiresInSeconds`.
+const DEFAULT_TOKEN_LIFETIME_SECS: u64 = 1800;
 /// Poll interval while auto-refresh is disabled (only reached if the wake signal
 /// is missed).
 const DISABLED_POLL_INTERVAL: Duration = Duration::from_mins(5);
@@ -145,11 +147,19 @@ pub async fn fetch_credentials() -> Result<AppleCredentials, String> {
     let sat_version = version_for(&bootstrap.tile_sources, "satellite")
         .ok_or("bootstrap missing satellite tile version")?;
 
+    let expires_in_seconds = bootstrap.expires_in_seconds.unwrap_or_else(|| {
+        eprintln!(
+            "[apple] bootstrap omitted expiresInSeconds; assuming {DEFAULT_TOKEN_LIFETIME_SECS}s \
+             — tiles may 403 if the real lifetime is shorter"
+        );
+        DEFAULT_TOKEN_LIFETIME_SECS
+    });
+
     Ok(AppleCredentials {
         access_key: encode_access_key(&bootstrap.access_key),
         map_version,
         sat_version,
-        expires_in: Duration::from_secs(bootstrap.expires_in_seconds.unwrap_or(1800)),
+        expires_in: Duration::from_secs(expires_in_seconds),
     })
 }
 

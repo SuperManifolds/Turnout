@@ -397,3 +397,30 @@ fn emit_progress(app: &tauri::AppHandle, progress: &DownloadProgress) {
         bytes: progress.bytes.load(Ordering::Relaxed),
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::mbtiles_y;
+
+    #[test]
+    fn tms_y_flip_inverts_row() {
+        // z0 has a single row (0 -> 0).
+        assert_eq!(mbtiles_y(0, 0), 0);
+        // z1 has rows 0..=1, flipped.
+        assert_eq!(mbtiles_y(1, 0), 1);
+        assert_eq!(mbtiles_y(1, 1), 0);
+        // Edges at a typical zoom.
+        assert_eq!(mbtiles_y(16, 0), 65_535);
+        assert_eq!(mbtiles_y(16, 65_535), 0);
+    }
+
+    #[test]
+    fn tms_y_flip_is_its_own_inverse() {
+        for z in [0u8, 1, 8, 16] {
+            let rows = 1u32 << z;
+            for y in [0, rows / 3, rows - 1] {
+                assert_eq!(mbtiles_y(z, mbtiles_y(z, y)), y, "z={z} y={y}");
+            }
+        }
+    }
+}

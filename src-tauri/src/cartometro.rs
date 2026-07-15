@@ -79,6 +79,18 @@ impl City {
         last
     }
 
+    /// True when the grid config is usable: at least one zoom level, every level
+    /// with positive pixel dimensions, and a positive-area extent. Enforced at load
+    /// so the resample math can't hit an empty `zoom_sizes` or a zero-width extent
+    /// (division by zero / index panic) on a malformed bundled entry.
+    fn is_valid(&self) -> bool {
+        let [lon_min, lat_min, lon_max, lat_max] = self.extent;
+        !self.zoom_sizes.is_empty()
+            && self.zoom_sizes.iter().all(|&[w, h]| w > 0 && h > 0)
+            && lon_max > lon_min
+            && lat_max > lat_min
+    }
+
     /// Standard Web Mercator zoom range this city's data spans, for the `TileJSON`.
     fn std_zoom_range(&self) -> (u32, u32) {
         let (cx0, _, cx1, _) = self.merc_extent();
@@ -99,6 +111,12 @@ fn merc_x(lon: f64) -> f64 {
 
 fn merc_y(lat: f64) -> f64 {
     R * (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0).tan().ln()
+}
+
+/// True for a `CartoMetro` page-background pixel (near-white on every channel),
+/// which is dropped during resampling so the base map shows through.
+fn is_background(px: image::Rgba<u8>) -> bool {
+    px[0] >= WHITE_CUTOFF && px[1] >= WHITE_CUTOFF && px[2] >= WHITE_CUTOFF
 }
 
 /// `metro-tram-london` -> `Metro Tram London`.
@@ -209,7 +227,7 @@ impl ServerData {
                 let iu = ((u - f64::from(col)) as u32).min(src.width().saturating_sub(1));
                 let iv = ((v - f64::from(row)) as u32).min(src.height().saturating_sub(1));
                 let px = *src.get_pixel(iu, iv);
-                if px[0] >= WHITE_CUTOFF && px[1] >= WHITE_CUTOFF && px[2] >= WHITE_CUTOFF {
+                if is_background(px) {
                     continue; // CartoMetro's white page background -> transparent
                 }
                 out.put_pixel(ox, oy, px);
@@ -244,7 +262,17 @@ impl ServerData {
 
 fn load_cities() -> HashMap<String, City> {
     let raw = include_str!("../resources/cartometro/cities.json");
-    serde_json::from_str(raw).expect("bundled cartometro cities.json is valid")
+    let all: HashMap<String, City> =
+        serde_json::from_str(raw).expect("bundled cartometro cities.json is valid");
+    all.into_iter()
+        .filter(|(slug, city)| {
+            let ok = city.is_valid();
+            if !ok {
+                eprintln!("[cartometro] skipping '{slug}': invalid grid config (empty zoom_sizes or non-positive extent/size)");
+            }
+            ok
+        })
+        .collect()
 }
 
 // --- Server ---
@@ -477,5 +505,66 @@ mod tests {
         let (min, max) = london.std_zoom_range();
         assert!(min < max);
         assert!((6..=20).contains(&min) && (10..=22).contains(&max), "got {min}..{max}");
+    }
+
+    fn sample_city() -> City {
+        City {
+            prefix: "carto_test".into(),
+            version: "1.0".into(),
+            extent: [-1.0, 50.0, 1.0, 51.0],
+            center: [0.0, 50.5],
+            zoom_sizes: vec![[256, 128], [512, 256]],
+            tile_size: 300,
+        }
+    }
+
+    #[test]
+    fn is_valid_rejects_malformed_configs() {
+        assert!(sample_city().is_valid());
+
+        let mut empty = sample_city();
+        empty.zoom_sizes.clear();
+        assert!(!empty.is_valid(), "empty zoom_sizes");
+
+        let mut zero_px = sample_city();
+        zero_px.zoom_sizes = vec![[0, 100]];
+        assert!(!zero_px.is_valid(), "zero-width pixel size");
+
+        let mut flat = sample_city();
+        flat.extent = [1.0, 50.0, 1.0, 51.0];
+        assert!(!flat.is_valid(), "zero-width extent");
+
+        let mut inverted = sample_city();
+        inverted.extent = [1.0, 51.0, -1.0, 50.0];
+        assert!(!inverted.is_valid(), "inverted extent");
+    }
+
+    #[test]
+    fn all_bundled_cities_are_valid() {
+        // load_cities filters invalid entries; the bundled catalogue must all pass.
+        assert!(load_cities().values().all(City::is_valid));
+    }
+
+    #[test]
+    fn background_key_is_boundary_correct() {
+        assert!(is_background(image::Rgba([255, 255, 255, 255])));
+        assert!(is_background(image::Rgba([WHITE_CUTOFF, WHITE_CUTOFF, WHITE_CUTOFF, 255])));
+        assert!(!is_background(image::Rgba([WHITE_CUTOFF - 1, 255, 255, 255])));
+        assert!(!is_background(image::Rgba([10, 20, 200, 255]))); // a coloured line
+    }
+
+    #[test]
+    fn city_center_maps_near_source_center() {
+        // Exercises the Mercator + pixel mapping used in render(): the city's own
+        // centre must land near the middle of its source image (no y-flip/axis swap).
+        let london = &load_cities()["metro-tram-london"];
+        let cz = london.zoom_sizes.len() - 1;
+        let [w, h] = london.zoom_sizes[cz];
+        let (cx0, cy0, cx1, cy1) = london.merc_extent();
+        let (mx, my) = (merc_x(london.center[0]), merc_y(london.center[1]));
+        let u_frac = (mx - cx0) / (cx1 - cx0);
+        let v_frac = (cy1 - my) / (cy1 - cy0);
+        assert!((0.35..0.65).contains(&u_frac), "u_frac {u_frac} (w={w})");
+        assert!((0.35..0.65).contains(&v_frac), "v_frac {v_frac} (h={h})");
     }
 }
