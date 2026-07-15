@@ -246,28 +246,13 @@ pub fn AppSettings() -> impl IntoView {
 
     // React to the background refresher: pull fresh values on success, surface the
     // error on repeated failure.
-    spawn_local(async move {
-        let Ok(tauri_obj) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
-        let Ok(event_mod) = js_sys::Reflect::get(&tauri_obj, &"event".into()) else { return };
-        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
-        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
-
-        let refreshed = Closure::wrap(Box::new(move |_: JsValue| {
-            sync_apple_from_store();
-            set_apple_refresh_status.set("Token refreshed".to_string());
-        }) as Box<dyn Fn(JsValue)>);
-        let _ = listen_fn.call2(&event_mod, &"apple-token-refreshed".into(), refreshed.as_ref().unchecked_ref());
-        refreshed.forget();
-
-        let failed = Closure::wrap(Box::new(move |event: JsValue| {
-            let msg = js_sys::Reflect::get(&event, &"payload".into())
-                .ok()
-                .and_then(|p| p.as_string())
-                .unwrap_or_else(|| "unknown error".to_string());
-            set_apple_refresh_status.set(format!("Auto-refresh failing: {msg}"));
-        }) as Box<dyn Fn(JsValue)>);
-        let _ = listen_fn.call2(&event_mod, &"apple-token-refresh-failed".into(), failed.as_ref().unchecked_ref());
-        failed.forget();
+    crate::tauri::listen_to_events(&["apple-token-refreshed"], move |_| {
+        sync_apple_from_store();
+        set_apple_refresh_status.set("Token refreshed".to_string());
+    });
+    crate::tauri::listen_to_events(&["apple-token-refresh-failed"], move |payload| {
+        let msg = payload.as_string().unwrap_or_else(|| "unknown error".to_string());
+        set_apple_refresh_status.set(format!("Auto-refresh failing: {msg}"));
     });
 
     let on_browse = move |_| {

@@ -1,6 +1,5 @@
 use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, create_signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, spawn_local, Show, CollectView};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
 use crate::tauri::BlueprintInfo;
 
@@ -75,21 +74,11 @@ pub fn BlueprintDrawer(
         is_open
     });
 
-    // Listen for filesystem changes from the backend watcher (one-shot registration)
-    spawn_local(async move {
-        let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
-        let Ok(event_mod) = js_sys::Reflect::get(&tauri, &"event".into()) else { return };
-        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
-        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
-
-        let callback = Closure::wrap(Box::new(move |_: JsValue| {
-            if open.get_untracked() {
-                refresh();
-            }
-        }) as Box<dyn Fn(JsValue)>);
-
-        let _ = listen_fn.call2(&event_mod, &"blueprints-changed".into(), callback.as_ref().unchecked_ref());
-        callback.forget();
+    // Listen for filesystem changes from the backend watcher.
+    crate::tauri::listen_to_events(&["blueprints-changed"], move |_| {
+        if open.get_untracked() {
+            refresh();
+        }
     });
 
     let on_fly_to = move |bp: BlueprintInfo| {
