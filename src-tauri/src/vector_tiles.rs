@@ -15,6 +15,7 @@ use axum::routing::get;
 use lru::LruCache;
 use mvt::{GeomData, GeomEncoder, GeomType, Tile};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 use turnout_core::geo::{latlon_to_tile_pixel, tile_bounds};
 
@@ -29,6 +30,11 @@ const LAYER_MIN: i32 = -5;
 const LAYER_MAX: i32 = 5;
 const MIN_ZOOM: u32 = 5;
 const MAX_ZOOM: u32 = 16;
+/// Reject absurd zooms before the tile-grid bit shifts (`1 << z`) misbehave; well
+/// above any real request (the source advertises maxzoom 16).
+const MAX_REQUEST_ZOOM: u32 = 24;
+/// Fallback bound on concurrent tile encodes when core count is unavailable.
+const DEFAULT_ENCODE_CONCURRENCY: usize = 4;
 const PREFERRED_PORT: u16 = 17971;
 const MVT_CONTENT_TYPE: &str = "application/vnd.mapbox-vector-tile";
 /// Extent-space padding when clipping geometry to a tile (matches `ST_AsMVTGeom`'s
@@ -485,11 +491,13 @@ pub struct LevelInfo {
     pub description: String,
 }
 
-/// The dataset, the port-aware tile-URL template, and an LRU of encoded tiles.
+/// The dataset, the port-aware tile-URL template, an LRU of encoded tiles, and a
+/// permit pool bounding how many tile encodes run on the blocking pool at once.
 struct ServerData {
     dataset: RailDataset,
     tile_template: String,
     tile_cache: Mutex<LruCache<(u32, u32, u32), Vec<u8>>>,
+    encode_limit: Semaphore,
 }
 
 fn tile_url_template(port: u16) -> String {
@@ -500,10 +508,14 @@ async fn start(dataset: RailDataset) -> Result<ServerHandle, String> {
     let listener = server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY).await?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
+    // Bound concurrent encodes to the core count so a burst of tile requests can't
+    // spawn a runaway number of blocking tasks.
+    let concurrency = std::thread::available_parallelism().map_or(DEFAULT_ENCODE_CONCURRENCY, std::num::NonZero::get);
     let data = Arc::new(ServerData {
         dataset,
         tile_template: tile_url_template(port),
         tile_cache: server_core::lru_cache(TILE_CACHE_CAPACITY),
+        encode_limit: Semaphore::new(concurrency),
     });
     let app = Router::new()
         .route("/tilejson.json", get(serve_tilejson))
@@ -530,16 +542,32 @@ async fn serve_tile(
         return (axum::http::StatusCode::BAD_REQUEST, content_type, Vec::new());
     };
 
+    if z > MAX_REQUEST_ZOOM {
+        return (axum::http::StatusCode::NO_CONTENT, content_type, Vec::new());
+    }
+
     let key = (z, x, y);
     if let Some(bytes) = data.tile_cache.lock().unpoison().get(&key).cloned() {
         return (axum::http::StatusCode::OK, content_type, bytes);
     }
-    match data.dataset.encode_tile(z, x, y) {
-        Ok(bytes) => {
+
+    // Tile encoding is CPU-bound (a full pass over the level's features + MVT
+    // encoding). Run it on the blocking pool, bounded by a permit, so a burst of
+    // tile requests during a pan can't block the shared async runtime (which also
+    // serves IPC, Overpass fetches, and the other tile servers).
+    let Ok(_permit) = data.encode_limit.acquire().await else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, content_type, Vec::new());
+    };
+    let d = Arc::clone(&data);
+    let encoded = tokio::task::spawn_blocking(move || d.dataset.encode_tile(z, x, y)).await;
+    match encoded {
+        Ok(Ok(bytes)) => {
             data.tile_cache.lock().unpoison().put(key, bytes.clone());
             (axum::http::StatusCode::OK, content_type, bytes)
         }
-        Err(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, content_type, Vec::new()),
+        // An encode error, or a panic in the blocking task, fails just this tile —
+        // the server keeps serving other requests.
+        _ => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, content_type, Vec::new()),
     }
 }
 
