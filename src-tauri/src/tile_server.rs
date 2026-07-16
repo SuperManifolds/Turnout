@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::server_core::{self, UnpoisonExt};
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -148,7 +149,9 @@ impl Layer {
     }
 }
 
-type RenderCache = LruCache<(u8, u32, u32), Vec<u8>>;
+// Cached PNG bytes are `Bytes` (Arc-backed) so a cache put and every cache hit
+// share the buffer instead of memcpy-ing ~100-200 KB per tile.
+type RenderCache = LruCache<(u8, u32, u32), Bytes>;
 type DecodedTile = (Vec<u8>, u32, u32);
 type RemoteCache = LruCache<(u32, u8, u32, u32), DecodedTile>;
 
@@ -725,7 +728,7 @@ async fn serve_tile(
 ) -> impl IntoResponse {
     let max_coord = 1u32 << z.min(MAX_ZOOM);
     if z > MAX_ZOOM || x >= max_coord || y >= max_coord {
-        return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], b"invalid tile coordinates".to_vec());
+        return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], Bytes::from_static(b"invalid tile coordinates"));
     }
 
     {
@@ -816,7 +819,7 @@ async fn serve_tile(
         .collect();
     remote_tiles.extend(mbtiles_tiles);
 
-    let png = render_tile(&state, &remote_tiles, z.into(), x, y);
+    let png = Bytes::from(render_tile(&state, &remote_tiles, z.into(), x, y));
 
     if !any_failed {
         let mut cache = state.render_cache.lock().unpoison();
