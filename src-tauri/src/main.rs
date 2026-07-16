@@ -178,6 +178,11 @@ fn main() {
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
+            // Restore persisted overlays synchronously here, before the Apple-token
+            // refresher is spawned below. The refresher touches live overlay state
+            // at startup; restoring first makes the lifecycle deterministic (the
+            // frontend then only reads via get_overlay_status, never re-restores).
+            tauri::async_runtime::block_on(overlay::restore_overlays(app.handle().clone()));
             app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));

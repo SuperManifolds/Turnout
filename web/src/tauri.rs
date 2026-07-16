@@ -370,10 +370,6 @@ pub async fn pick_kmz_file() -> Option<String> {
     result.as_string()
 }
 
-pub async fn restore_overlays() -> OverlayStatus {
-    overlay_command("restore_overlays", js_sys::Object::new()).await
-}
-
 pub async fn get_overlay_status() -> OverlayStatus {
     overlay_command("get_overlay_status", js_sys::Object::new()).await
 }

@@ -8,7 +8,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::arcgis;
 use crate::server_core::UnpoisonExt;
 use crate::settings;
-use crate::tile_server::{self, LayerKind, LayerSource};
+use crate::tile_server::{self, LayerKind, SourceDef};
 use crate::wms;
 use crate::wmts;
 
@@ -385,9 +385,9 @@ pub fn move_layer(
     let to = groups.iter().find(|g| g.id == to_group_id)
         .ok_or("Destination group not found")?;
 
-    let layer = from.handle.take_layer(layer_id)
+    let (layer, runtime) = from.handle.take_layer(layer_id)
         .ok_or("Layer not found in source group")?;
-    to.handle.insert_layer(layer);
+    to.handle.insert_layer(layer, runtime);
 
     let status = build_status(&groups);
     drop(groups);
@@ -498,8 +498,11 @@ pub fn update_apple_urls(
 }
 
 /// Rewrites every live Apple layer's tile URL with a fresh access key and per-kind
-/// version, then persists the overlay set. Shared by the manual `update_apple_urls`
-/// command and the automatic token refresher.
+/// version. Shared by the manual `update_apple_urls` command and the automatic
+/// token refresher. It does NOT persist: the token is not part of the saved layer
+/// (only the `sat` flag is), so there is nothing new to write — and the refresher
+/// runs at startup before the overlays are restored, so a save here would persist
+/// the still-empty group set over the saved overlays and wipe them.
 pub(crate) fn apply_apple_credentials(
     app: &tauri::AppHandle,
     access_key: &str,
@@ -510,12 +513,11 @@ pub(crate) fn apply_apple_credentials(
     let groups = state.groups.lock().unpoison();
     for group in groups.iter() {
         let layers = group.handle.state.layers.read().unpoison();
-        let apple_layers: Vec<(u32, bool)> = layers.iter().filter_map(|l| {
-            if l.kind != LayerKind::Apple { return None; }
-            if let tile_server::LayerSource::Xyz { url_template } = &l.source {
-                let is_sat = url_template.contains(APPLE_SAT_MARKER);
-                Some((l.id, is_sat))
-            } else { None }
+        // Read whether each Apple layer is satellite straight from its definition —
+        // no URL parsing, since the source records it.
+        let apple_layers: Vec<(u32, bool)> = layers.iter().filter_map(|l| match &l.source {
+            tile_server::SourceDef::Apple { sat } => Some((l.id, *sat)),
+            _ => None,
         }).collect();
         drop(layers);
 
@@ -523,12 +525,11 @@ pub(crate) fn apply_apple_credentials(
             let ver = if is_sat { sat_version } else { map_version };
             let Some(ver) = ver else { continue };
             let url = turnout_core::geo::apple_tile_url(access_key, ver, is_sat);
-            group.handle.update_xyz_url(id, url);
+            group.handle.update_apple_url(id, url);
         }
     }
     let status = build_status(&groups);
     drop(groups);
-    save_groups(app);
     status
 }
 
@@ -765,8 +766,10 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
                 tilejson_url: format!("http://127.0.0.1:{}/tilejson.json", g.handle.port),
                 layers: layers.iter().map(|l| {
                     let source_url = match &l.source {
-                        LayerSource::Xyz { url_template } => Some(url_template.clone()),
-                        LayerSource::Wms { base_url, layer_name } => Some(format!(
+                        SourceDef::Xyz { url_template }
+                        | SourceDef::Wmts { url_template }
+                        | SourceDef::Bing { url_template } => Some(url_template.clone()),
+                        SourceDef::Wms { base_url, layer_name } => Some(format!(
                             "{base_url}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={layer_name}\
                              &SRS=EPSG:3857&FORMAT=image/png&WIDTH=256&HEIGHT=256&BBOX={{bbox}}"
                         )),
@@ -775,7 +778,7 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
                     LayerInfo {
                         id: l.id,
                         name: l.name.clone(),
-                        kind: l.kind,
+                        kind: l.kind(),
                         visible: l.visible,
                         opacity: l.opacity,
                         bbox: [l.bbox.1, l.bbox.0, l.bbox.3, l.bbox.2],
@@ -801,33 +804,24 @@ fn save_groups(app: &tauri::AppHandle) {
             id: Some(g.id),
             name: g.name.clone(),
             layers: layers.iter().filter_map(|l| {
-                let source = match (&l.source, l.kind) {
-                    (LayerSource::Kmz { path: Some(p), .. }, LayerKind::Kmz) =>
-                        SavedSource::Kmz { path: p.clone() },
-                    (LayerSource::Kmz { path: Some(p), .. }, LayerKind::Shp) =>
-                        SavedSource::Shp { path: p.clone() },
-                    (LayerSource::Kmz { path: Some(p), .. }, LayerKind::GeoJson) =>
-                        SavedSource::GeoJson { path: p.clone() },
-                    (LayerSource::Wms { base_url, layer_name }, _) =>
+                // 1:1 map from the live source to its persisted form. File layers
+                // without a path can't be re-parsed on restore, so they're dropped.
+                let source = match &l.source {
+                    SourceDef::Kmz { path: Some(p) } => SavedSource::Kmz { path: p.clone() },
+                    SourceDef::Shp { path: Some(p) } => SavedSource::Shp { path: p.clone() },
+                    SourceDef::GeoJson { path: Some(p) } => SavedSource::GeoJson { path: p.clone() },
+                    SourceDef::Kmz { path: None } | SourceDef::Shp { path: None } | SourceDef::GeoJson { path: None } =>
+                        return None,
+                    SourceDef::Wms { base_url, layer_name } =>
                         SavedSource::Wms { wms_url: base_url.clone(), wms_layer: layer_name.clone() },
-                    (LayerSource::ArcGis { base_url, service_name }, _) =>
+                    SourceDef::ArcGis { base_url, service_name } =>
                         SavedSource::ArcGis { arcgis_url: base_url.clone(), arcgis_service: service_name.clone() },
-                    (LayerSource::Xyz { url_template }, kind) => {
-                        let url = url_template.clone();
-                        match kind {
-                            LayerKind::Wmts => SavedSource::Wmts { xyz_url: url },
-                            // Persist only which imagery it is, not the tokenized URL.
-                            LayerKind::Apple => SavedSource::Apple {
-                                sat: url.contains(APPLE_SAT_MARKER),
-                                xyz_url: None,
-                            },
-                            LayerKind::Bing => SavedSource::Bing { xyz_url: url },
-                            _ => SavedSource::Xyz { xyz_url: url },
-                        }
-                    }
-                    (LayerSource::MbTiles { path, .. }, _) =>
-                        SavedSource::MbTiles { path: path.clone() },
-                    _ => return None,
+                    SourceDef::Xyz { url_template } => SavedSource::Xyz { xyz_url: url_template.clone() },
+                    SourceDef::Wmts { url_template } => SavedSource::Wmts { xyz_url: url_template.clone() },
+                    SourceDef::Bing { url_template } => SavedSource::Bing { xyz_url: url_template.clone() },
+                    // Persist only which imagery it is, never the tokenized URL.
+                    SourceDef::Apple { sat } => SavedSource::Apple { sat: *sat, xyz_url: None },
+                    SourceDef::MbTiles { path, .. } => SavedSource::MbTiles { path: path.clone() },
                 };
                 Some(SavedLayer {
                     name: l.name.clone(),
