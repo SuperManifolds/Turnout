@@ -22,6 +22,11 @@ env:
   # edits. Only bumping the maplibre rev forces a true cold rebuild. This replaces
   # Swatinem/rust-cache, which is exact-match only: any Cargo.lock or toolchain
   # change missed and rebuilt the core from scratch (~50 min).
+  #
+  # `~/.cargo/git` is cached whole (not just `git/db`): on Windows maplibre builds
+  # its C/C++ deps via vcpkg INTO the git checkout, and `target/` links against
+  # those libs (libcurl.lib, icu*.lib, …) by absolute path, so restoring `target/`
+  # without the checkout's built libs breaks the link (LNK1181).
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -54,7 +59,7 @@ jobs:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
@@ -94,7 +99,7 @@ jobs:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
@@ -155,7 +160,7 @@ jobs:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
