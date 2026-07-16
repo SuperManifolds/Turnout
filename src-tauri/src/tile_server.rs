@@ -114,8 +114,10 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    pub fn add_kmz_layer(&self, data: OverlayData, path: Option<String>, kind: LayerKind) -> bool {
-        let Some(bbox) = data.bbox() else { return false };
+    /// Adds a KMZ/Shp/GeoJson layer, returning its new id, or `None` when the file
+    /// carries no drawable geometry (no bounding box) and nothing was added.
+    pub fn add_kmz_layer(&self, data: OverlayData, path: Option<String>, kind: LayerKind) -> Option<u32> {
+        let bbox = data.bbox()?;
         let name = data.name.clone().unwrap_or_else(|| "Overlay".to_string());
         let images = decode_images(&data);
         let id = self.next_id();
@@ -127,7 +129,7 @@ impl ServerHandle {
         });
         drop(layers);
         self.clear_cache();
-        true
+        Some(id)
     }
 
     pub fn add_wms_layer(&self, base_url: String, layer_name: String, display_name: String) -> u32 {
