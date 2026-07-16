@@ -4,6 +4,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tauri::{Emitter, Manager};
 
+use crate::error::{CommandError, CommandResult};
 use crate::server_core::{USER_AGENT, UnpoisonExt};
 
 const CONCURRENT_REQUESTS: usize = 24;
@@ -210,7 +211,7 @@ pub async fn download_tiles(
     z_min: u8,
     z_max: u8,
     progress: Arc<DownloadProgress>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     use turnout_core::geo::latlon_to_tile_xy;
 
     let mut tiles: Vec<(u8, u32, u32)> = Vec::new();
@@ -229,7 +230,7 @@ pub async fn download_tiles(
 
     let format_detected = std::sync::Mutex::new(false);
     let conn = create_mbtiles(&path, &name, "png", (west, south, east, north))
-        .map_err(|e| format!("Failed to create MBTiles: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to create MBTiles: {e}")))?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -237,14 +238,14 @@ pub async fn download_tiles(
         .http2_adaptive_window(true)
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
         .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+        .map_err(|e| CommandError::Network(format!("HTTP client error: {e}")))?;
 
     let conn = std::sync::Mutex::new(conn);
     let mut throttle_delay = std::time::Duration::ZERO;
 
     for (chunk_idx, chunk) in tiles.chunks(CONCURRENT_REQUESTS).enumerate() {
         if !progress.wait_while_paused().await {
-            return Err("Download cancelled".into());
+            return Err(CommandError::Other("Download cancelled".into()));
         }
 
         if !throttle_delay.is_zero() {
@@ -342,7 +343,7 @@ pub async fn start_tile_download(
     east: f64,
     z_min: u8,
     z_max: u8,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     use tauri_plugin_dialog::DialogExt;
 
     let path = app.dialog()
@@ -350,7 +351,7 @@ pub async fn start_tile_download(
         .add_filter("MBTiles", &["mbtiles"])
         .set_file_name(format!("{name}.mbtiles"))
         .blocking_save_file()
-        .ok_or("No save location selected")?
+        .ok_or_else(|| CommandError::NotFound("No save location selected".into()))?
         .to_string();
 
     let progress = Arc::new(DownloadProgress::new());

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use crate::error::{CommandError, CommandResult};
 use crate::server_core::{self, UnpoisonExt};
 
 use axum::Router;
@@ -213,11 +214,11 @@ impl ServerHandle {
         id
     }
 
-    pub fn add_mbtiles_layer(&self, path: String, display_name: String) -> Result<u32, String> {
+    pub fn add_mbtiles_layer(&self, path: String, display_name: String) -> CommandResult<u32> {
         let conn = rusqlite::Connection::open_with_flags(
             &path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ).map_err(|e| format!("Failed to open MBTiles: {e}"))?;
+        ).map_err(|e| CommandError::Io(format!("Failed to open MBTiles: {e}")))?;
 
         let bbox = conn.query_row(
             "SELECT value FROM metadata WHERE name = 'bounds'",

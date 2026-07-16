@@ -1,6 +1,8 @@
 use tauri::{Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
+use crate::error::{CommandError, CommandResult};
+
 const SETTINGS_STORE: &str = "settings.json";
 
 /// Host serving `OpenRailwayMap` vector tiles, glyphs and sprites. Overridable via
@@ -107,8 +109,8 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
-    let store = app.store(SETTINGS_STORE).map_err(|e| e.to_string())?;
+pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<()> {
+    let store = app.store(SETTINGS_STORE).map_err(|e| CommandError::Io(e.to_string()))?;
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
     store.set("check_for_updates", serde_json::json!(settings.check_for_updates));
     store.set("map_theme", serde_json::json!(settings.map_theme));
@@ -124,7 +126,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
         store.set("apple_map_version", serde_json::json!(settings.apple_map_version));
         store.set("apple_sat_version", serde_json::json!(settings.apple_sat_version));
     }
-    store.save().map_err(|e| e.to_string())?;
+    store.save().map_err(|e| CommandError::Io(e.to_string()))?;
     // Re-point the live ORM renderer at the (possibly changed) base URL without a
     // restart; it rebuilds its renderers and clears cached tiles.
     if let Some(handle) = app.try_state::<crate::orm_tiles::OrmHandle>() {

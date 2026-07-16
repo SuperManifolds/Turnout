@@ -4,6 +4,7 @@ mod apple_token;
 mod arcgis;
 mod blueprint;
 mod cartometro;
+mod error;
 mod orm_import;
 mod mbtiles;
 mod orm_net;

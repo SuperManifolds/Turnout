@@ -19,6 +19,7 @@ use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 use turnout_core::geo::{latlon_to_tile_pixel, tile_bounds};
 
+use crate::error::{CommandError, CommandResult};
 use crate::overpass;
 use crate::server_core::{self, ServerHandle, UnpoisonExt};
 
@@ -504,9 +505,11 @@ fn tile_url_template(port: u16) -> String {
     format!("http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}.pbf")
 }
 
-async fn start(dataset: RailDataset) -> Result<ServerHandle, String> {
-    let listener = server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY).await?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+async fn start(dataset: RailDataset) -> CommandResult<ServerHandle> {
+    let listener = server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY)
+        .await
+        .map_err(CommandError::Server)?;
+    let port = listener.local_addr().map_err(|e| CommandError::Server(e.to_string()))?.port();
 
     // Bound concurrent encodes to the core count so a burst of tile requests can't
     // spawn a runaway number of blocking tasks.
@@ -582,13 +585,13 @@ pub async fn start_orm_vector_layers(
     north: f64,
     east: f64,
     timeout_secs: u32,
-) -> Result<VectorLayersInfo, String> {
+) -> CommandResult<VectorLayersInfo> {
     use tauri::Manager;
 
     let body = overpass::fetch_railways(south, west, north, east, timeout_secs)
         .await
-        .map_err(|e| e.to_string())?;
-    let dataset = RailDataset::from_overpass_json(&body).map_err(|e| e.to_string())?;
+        .map_err(|e| CommandError::Network(e.to_string()))?;
+    let dataset = RailDataset::from_overpass_json(&body).map_err(|e| CommandError::Parse(e.to_string()))?;
 
     let levels: Vec<LevelInfo> = dataset
         .level_layers()
@@ -626,9 +629,9 @@ pub fn stop_orm_vector_layers(app: tauri::AppHandle) {
 
 /// Open the companion styling mod's Steam Workshop page in the default browser.
 #[tauri::command]
-pub fn open_workshop_mod() -> Result<(), String> {
+pub fn open_workshop_mod() -> CommandResult<()> {
     tauri_plugin_opener::open_url(WORKSHOP_MOD_URL, None::<&str>)
-        .map_err(|e| format!("Failed to open Workshop page: {e}"))
+        .map_err(|e| CommandError::Other(format!("Failed to open Workshop page: {e}")))
 }
 
 #[cfg(test)]
