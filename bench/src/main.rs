@@ -162,3 +162,18 @@ fn main() {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tile_xy_matches_slippy_reference_points() {
+        // z0 has a single tile covering the world.
+        assert_eq!(tile_xy(51.5, -0.1, 0), (0, 0));
+        // z1 splits into a 2×2 grid; the equator/prime-meridian corner is (1, 1).
+        assert_eq!(tile_xy(0.0, 0.0, 1), (1, 1));
+        // Berlin at z12 (known OSM slippy coords).
+        assert_eq!(tile_xy(52.52, 13.405, 12), (2200, 1343));
+    }
+}

@@ -1,7 +1,9 @@
-fn main() {
-    let path = std::env::args().nth(1).expect("usage: check_coords <file.nrclip>");
-    let data = std::fs::read(&path).expect("read");
-    let file = turnout_core::nrc1::NrclipFile::from_bytes(&data).expect("parse");
+use anyhow::{Context, Result};
+
+fn main() -> Result<()> {
+    let path = std::env::args().nth(1).context("usage: check_coords <file.nrclip>")?;
+    let data = std::fs::read(&path).with_context(|| format!("read {path}"))?;
+    let file = turnout_core::nrc1::NrclipFile::from_bytes(&data).context("parse nrclip")?;
     for (ci, coll) in file.collections.iter().enumerate() {
         for (cli, clip) in coll.clips.iter().enumerate() {
             eprintln!("Coll {ci} clip {cli} \"{}\": tracks={} kinds={:?}",
@@ -32,4 +34,5 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
