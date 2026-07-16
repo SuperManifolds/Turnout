@@ -403,7 +403,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
         http: reqwest::Client::builder()
             .user_agent(server_core::USER_AGENT)
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .connect_timeout(Duration::from_secs(5))
+            .connect_timeout(server_core::CONNECT_TIMEOUT)
             .build()
             .unwrap_or_default(),
         mbtiles_conns: server_core::lru_cache(MBTILES_CONN_CACHE),

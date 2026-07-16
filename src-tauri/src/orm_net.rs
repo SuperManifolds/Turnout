@@ -18,11 +18,10 @@ use maplibre_native::file_source::{
 };
 use tokio::sync::{OnceCell, Semaphore};
 
-use crate::server_core::{USER_AGENT, UnpoisonExt};
+use crate::server_core::{UnpoisonExt, CONNECT_TIMEOUT, USER_AGENT};
 
 /// Upper bound on concurrent upstream fetches across all render workers.
 const MAX_CONCURRENT_FETCHES: usize = 32;
-const CONNECT_TIMEOUT_SECS: u64 = 5;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Fallback freshness when the upstream response carries no cache metadata, so
 /// mbgl does not re-fetch unconditionally on every ambient-cache revalidation.
@@ -68,7 +67,7 @@ impl OrmNetworkSource {
         let client = reqwest::Client::builder()
             .http1_only()
             .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .pool_max_idle_per_host(MAX_CONCURRENT_FETCHES)
             .build()?;

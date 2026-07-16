@@ -18,6 +18,19 @@ use tokio::sync::watch;
 pub const USER_AGENT: &str =
     concat!("Turnout/", env!("CARGO_PKG_VERSION"), " (+https://github.com/SuperManifolds/Turnout)");
 
+/// Connection-establishment timeout shared by every outbound client. Separate
+/// from the per-request timeout so a dead host fails fast rather than hanging
+/// for the full request budget.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Retry policy for the shared tile-fetch helper: attempt counts and the
+/// exponential-backoff bounds applied to transient failures.
+const MAX_RETRIES: u32 = 5;
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
+/// Fallback pause when a `429`/`503` response omits a parseable `Retry-After`.
+const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(5);
+
 /// Recover a poisoned lock guard instead of panicking: a worker that panicked
 /// mid-update must not wedge every later request, so we take the (possibly stale)
 /// guard and carry on.
@@ -124,11 +137,73 @@ impl<K: Hash + Eq> TileCache<K> {
     }
 }
 
-/// A reqwest client with the app User-Agent and a single request timeout. Servers
-/// needing extra knobs (connect timeout, pool size) build their own with
-/// [`USER_AGENT`].
+/// A reqwest client with the app User-Agent, the shared [`CONNECT_TIMEOUT`], and
+/// the given per-request timeout. Servers needing extra knobs (pool size, HTTP
+/// version) build their own with [`USER_AGENT`] and [`CONNECT_TIMEOUT`].
 pub fn http_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder().user_agent(USER_AGENT).timeout(timeout).build()
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(timeout)
+        .build()
+}
+
+/// Why a [`send_with_retry`] call gave up. Callers map these to their own
+/// domain: `NotFound` typically means "no such tile" (skip, don't retry),
+/// `Throttled` means the server kept returning `429` past the retry budget,
+/// and `Failed` covers exhausted transient errors and non-retryable responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchError {
+    NotFound,
+    Throttled,
+    Failed,
+}
+
+/// Parse a `Retry-After` header expressed in delta-seconds (the form tile
+/// servers use). HTTP-date values are not supported and yield `None`.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+/// Send a request with the shared retry policy and return the successful
+/// response for the caller to read. `build` is invoked once per attempt so
+/// query parameters and headers are reapplied on retry. Transient network
+/// errors and non-success responses back off exponentially; `404` short-circuits
+/// to [`FetchError::NotFound`]; `429` honors `Retry-After` and, once the budget
+/// is spent, resolves to [`FetchError::Throttled`].
+pub async fn send_with_retry<F>(build: F) -> Result<reqwest::Response, FetchError>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    let mut delay = INITIAL_RETRY_DELAY;
+    for attempt in 0..=MAX_RETRIES {
+        match build().send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(resp),
+            Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                return Err(FetchError::NotFound);
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                if attempt == MAX_RETRIES {
+                    return Err(FetchError::Throttled);
+                }
+                let wait = parse_retry_after(resp.headers()).unwrap_or(DEFAULT_RETRY_AFTER);
+                tokio::time::sleep(wait).await;
+            }
+            _ if attempt < MAX_RETRIES => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_RETRY_DELAY);
+            }
+            _ => return Err(FetchError::Failed),
+        }
+    }
+    Err(FetchError::Failed)
 }
 
 /// A running local tile server: its bound port and a graceful-shutdown signal.
@@ -167,4 +242,25 @@ pub fn spawn_server(listener: TcpListener, app: axum::Router) -> ServerHandle {
     let port = listener.local_addr().map_or(0, |a| a.port());
     let shutdown_tx = spawn_with_shutdown(listener, app);
     ServerHandle { port, shutdown_tx }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+    #[test]
+    fn parse_retry_after_reads_delta_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("12"));
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(12)));
+    }
+
+    #[test]
+    fn parse_retry_after_ignores_http_dates_and_missing() {
+        assert_eq!(parse_retry_after(&HeaderMap::new()), None);
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("Wed, 21 Oct 2025 07:28:00 GMT"));
+        assert_eq!(parse_retry_after(&headers), None);
+    }
 }

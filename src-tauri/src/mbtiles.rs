@@ -4,13 +4,10 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tauri::{Emitter, Manager};
 
-use crate::server_core::{USER_AGENT, UnpoisonExt};
+use crate::server_core::{self, FetchError, UnpoisonExt, CONNECT_TIMEOUT, USER_AGENT};
 
 const CONCURRENT_REQUESTS: usize = 24;
 const HTTP_TIMEOUT_SECS: u64 = 15;
-const MAX_RETRIES: u32 = 5;
-const INITIAL_RETRY_DELAY_MS: u64 = 500;
-const MAX_RETRY_DELAY_MS: u64 = 10_000;
 const PROGRESS_INTERVAL: usize = 48;
 const SUBDOMAINS: &[&str] = &["a", "b", "c", "d"];
 
@@ -75,36 +72,13 @@ enum FetchResult {
 }
 
 async fn fetch_with_retry(client: &reqwest::Client, url: &str) -> FetchResult {
-    let mut delay = std::time::Duration::from_millis(INITIAL_RETRY_DELAY_MS);
-    for attempt in 0..=MAX_RETRIES {
-        match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                return resp.bytes().await
-                    .map_or(FetchResult::Failed, |b| FetchResult::Ok(b.to_vec()));
-            }
-            Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                return FetchResult::NotFound;
-            }
-            Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                let retry_after = resp.headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(5);
-                if attempt < MAX_RETRIES {
-                    tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
-                    continue;
-                }
-                return FetchResult::Throttled;
-            }
-            _ if attempt < MAX_RETRIES => {
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(std::time::Duration::from_millis(MAX_RETRY_DELAY_MS));
-            }
-            _ => return FetchResult::Failed,
-        }
+    match server_core::send_with_retry(|| client.get(url)).await {
+        Ok(resp) => resp.bytes().await
+            .map_or(FetchResult::Failed, |b| FetchResult::Ok(b.to_vec())),
+        Err(FetchError::NotFound) => FetchResult::NotFound,
+        Err(FetchError::Throttled) => FetchResult::Throttled,
+        Err(FetchError::Failed) => FetchResult::Failed,
     }
-    FetchResult::Failed
 }
 
 fn expand_url(template: &str, z: u8, x: u32, y: u32, tile_index: usize) -> String {
@@ -233,6 +207,7 @@ pub async fn download_tiles(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .connect_timeout(CONNECT_TIMEOUT)
         .user_agent(USER_AGENT)
         .http2_adaptive_window(true)
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)

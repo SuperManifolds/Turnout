@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tiny_skia::Pixmap;
 use turnout_core::geo::{latlon_to_mercator, tile_bounds};
 
-use crate::server_core::UnpoisonExt;
+use crate::server_core::{self, UnpoisonExt};
 
 use super::{DecodedTile, TileState, TILE_SIZE};
 
@@ -112,9 +112,8 @@ pub(super) async fn fetch_wms_tile(
 
     let bbox_str = format!("{minx},{miny},{maxx},{maxy}");
 
-    let req = client
-        .get(base_url)
-        .query(&[
+    let resp = server_core::send_with_retry(|| {
+        client.get(base_url).query(&[
             ("service", "WMS"),
             ("version", "1.1.1"),
             ("request", "GetMap"),
@@ -126,18 +125,11 @@ pub(super) async fn fetch_wms_tile(
             ("height", "256"),
             ("format", "image/png"),
             ("transparent", "true"),
-        ]);
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| tracing::warn!("WMS fetch error: {e}"))
-        .ok()?;
-
-    if !resp.status().is_success() {
-        tracing::warn!("WMS returned HTTP {}", resp.status());
-        return None;
-    }
+        ])
+    })
+    .await
+    .map_err(|e| tracing::warn!("WMS fetch for layer={layer_name} gave up: {e:?}"))
+    .ok()?;
 
     let content_type = resp
         .headers()
@@ -177,18 +169,12 @@ pub(super) async fn fetch_xyz_tile(
         .replace("{y}", &y.to_string())
         .replace("{q}", &xyz_to_quadkey(z, x, y));
 
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "Mozilla/5.0")
-        .send()
-        .await
-        .map_err(|e| tracing::warn!("XYZ fetch error for {url}: {e}"))
-        .ok()?;
-
-    if !resp.status().is_success() {
-        tracing::warn!("XYZ returned HTTP {} for {url}", resp.status());
-        return None;
-    }
+    let resp = server_core::send_with_retry(|| {
+        client.get(&url).header("User-Agent", "Mozilla/5.0")
+    })
+    .await
+    .map_err(|e| tracing::warn!("XYZ fetch for {url} gave up: {e:?}"))
+    .ok()?;
 
     Some(resp.bytes().await.ok()?.to_vec())
 }
@@ -201,16 +187,10 @@ pub(super) async fn fetch_arcgis_tile(
 ) -> Option<Vec<u8>> {
     let url = format!("{base_url}/{service_name}/MapServer/tile/{z}/{y}/{x}");
 
-    let resp = client
-        .get(&url)
-        .send()
+    let resp = server_core::send_with_retry(|| client.get(&url))
         .await
-        .map_err(|e| tracing::warn!("ArcGIS fetch error: {e}"))
+        .map_err(|e| tracing::warn!("ArcGIS fetch for {url} gave up: {e:?}"))
         .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
 
     Some(resp.bytes().await.ok()?.to_vec())
 }
