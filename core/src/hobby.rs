@@ -206,3 +206,56 @@ fn normalize_angle(mut a: f64) -> f64 {
 fn rotate_unit(angle: f64) -> (f64, f64) {
     (angle.cos(), angle.sin())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f64, b: f64) -> bool { (a - b).abs() < 1e-9 }
+
+    #[test]
+    fn fewer_than_two_points_yields_no_segments() {
+        assert!(hobby_spline(&[]).is_empty());
+        assert!(hobby_spline(&[(0.0, 0.0)]).is_empty());
+    }
+
+    #[test]
+    fn n_points_yield_n_minus_one_segments_through_the_knots() {
+        let pts = [(0.0, 0.0), (1.0, 2.0), (3.0, 1.0), (4.0, 4.0)];
+        let segs = hobby_spline(&pts);
+        assert_eq!(segs.len(), pts.len() - 1);
+        // The curve interpolates every input point: each segment starts/ends on a knot.
+        for (i, seg) in segs.iter().enumerate() {
+            assert!(close(seg.p0.0, pts[i].0) && close(seg.p0.1, pts[i].1), "seg {i} start");
+            assert!(close(seg.p1.0, pts[i + 1].0) && close(seg.p1.1, pts[i + 1].1), "seg {i} end");
+        }
+    }
+
+    #[test]
+    fn bezier_point_endpoints_match_the_segment() {
+        let seg = &hobby_spline(&[(0.0, 0.0), (5.0, 3.0)])[0];
+        assert_eq!(bezier_point(seg, 0.0), seg.p0);
+        assert_eq!(bezier_point(seg, 1.0), seg.p1);
+    }
+
+    #[test]
+    fn collinear_points_stay_on_the_line() {
+        // A straight horizontal run must produce a curve that never leaves y=0.
+        let pts = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0)];
+        let segs = hobby_spline(&pts);
+        for seg in &segs {
+            for step in 0..=10 {
+                let (_x, y) = bezier_point(seg, f64::from(step) / 10.0);
+                assert!(y.abs() < 1e-9, "point left the line: y={y}");
+            }
+        }
+        // ...and the tangent points straight along +x.
+        let (dx, dy) = spline_direction_at(&segs, 0.5);
+        assert!(dx > 0.99 && dy.abs() < 1e-6, "direction ({dx},{dy})");
+    }
+
+    #[test]
+    fn direction_of_empty_spline_is_defined() {
+        assert_eq!(spline_direction_at(&[], 0.5), (1.0, 0.0));
+    }
+}

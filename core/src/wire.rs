@@ -253,3 +253,95 @@ impl PayloadWriter {
         self.write_string(name);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip every scalar writer through its matching reader.
+    #[test]
+    fn varint_roundtrips_across_leb128_boundaries() {
+        for v in [0u64, 1, 127, 128, 16_383, 16_384, 300, u64::from(u32::MAX), u64::MAX] {
+            let mut w = PayloadWriter::new();
+            w.write_varint(v);
+            let bytes = w.into_bytes();
+            let mut r = PayloadReader::new(&bytes);
+            assert_eq!(r.read_varint().expect("read"), v, "varint {v}");
+            assert_eq!(r.remaining(), 0, "consumed all bytes for {v}");
+        }
+    }
+
+    #[test]
+    fn zigzag_i64_roundtrips_including_extremes() {
+        for v in [0i64, 1, -1, 2, -2, i64::from(i32::MIN), i64::MIN, i64::MAX, -123_456_789] {
+            let mut w = PayloadWriter::new();
+            w.write_i64z(v);
+            let bytes = w.into_bytes();
+            let mut r = PayloadReader::new(&bytes);
+            assert_eq!(r.read_i64z().expect("read"), v, "i64z {v}");
+        }
+    }
+
+    #[test]
+    fn zigzag_i32_roundtrips_including_extremes() {
+        for v in [0i32, 1, -1, i32::MIN, i32::MAX, -70_000] {
+            let mut w = PayloadWriter::new();
+            w.write_i32z(v);
+            let bytes = w.into_bytes();
+            let mut r = PayloadReader::new(&bytes);
+            assert_eq!(r.read_i32z().expect("read"), v, "i32z {v}");
+        }
+    }
+
+    #[test]
+    fn float_and_byte_roundtrip() {
+        let mut w = PayloadWriter::new();
+        w.write_raw_u8(0xAB);
+        w.write_f32(std::f32::consts::PI);
+        w.write_f64(-1.234_567_890_123e42);
+        let bytes = w.into_bytes();
+        let mut r = PayloadReader::new(&bytes);
+        assert_eq!(r.read_raw_u8().expect("u8"), 0xAB);
+        assert_eq!(r.read_f32().expect("f32"), std::f32::consts::PI);
+        assert_eq!(r.read_f64().expect("f64"), -1.234_567_890_123e42);
+    }
+
+    #[test]
+    fn string_roundtrip_empty_unicode_and_long() {
+        for s in ["", "a", "Bahnhof Zürich HB · 日本語 🚆", &"x".repeat(5000)] {
+            let mut w = PayloadWriter::new();
+            w.write_string(s);
+            let bytes = w.into_bytes();
+            let mut r = PayloadReader::new(&bytes);
+            assert_eq!(r.read_string().expect("read"), s);
+        }
+    }
+
+    #[test]
+    fn vec_set_i64_roundtrip() {
+        for v in [vec![], vec![0], vec![-1, 1, i64::MIN, i64::MAX, 42]] {
+            let mut w = PayloadWriter::new();
+            w.write_vec_set_i64(&v);
+            let bytes = w.into_bytes();
+            let mut r = PayloadReader::new(&bytes);
+            assert_eq!(r.read_vec_set_i64().expect("read"), v);
+        }
+    }
+
+    #[test]
+    fn truncated_varint_errors_instead_of_panicking() {
+        // 0x80 = "continuation bit set" but no following byte -> clean EOF error.
+        let mut r = PayloadReader::new(&[0x80]);
+        assert!(r.read_varint().is_err());
+    }
+
+    #[test]
+    fn string_with_length_past_eof_errors() {
+        // Claims length 10 but has no payload bytes.
+        let mut w = PayloadWriter::new();
+        w.write_varint(10);
+        let bytes = w.into_bytes();
+        let mut r = PayloadReader::new(&bytes);
+        assert!(r.read_string().is_err());
+    }
+}
