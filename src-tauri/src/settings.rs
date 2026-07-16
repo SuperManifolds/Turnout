@@ -43,6 +43,11 @@ fn default_overpass_timeout() -> u32 {
     60
 }
 
+/// Sane bounds for the Overpass query timeout (seconds). A stored 0 would make
+/// every query fail instantly; an absurd value would hang the UI on a bad server.
+const OVERPASS_TIMEOUT_MIN: u32 = 5;
+const OVERPASS_TIMEOUT_MAX: u32 = 600;
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -75,7 +80,8 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .unwrap_or_else(|| "system".to_string()),
         overpass_timeout: store.get("overpass_timeout")
             .and_then(|v| u32::try_from(v.as_u64()?).ok())
-            .unwrap_or(60),
+            .unwrap_or(60)
+            .clamp(OVERPASS_TIMEOUT_MIN, OVERPASS_TIMEOUT_MAX),
         type_speed_overrides: store.get("type_speed_overrides")
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default(),

@@ -121,7 +121,14 @@ fn parse_blueprint_infos(mods_dir: &std::path::Path, folder_name: &str, app: &ta
     let Ok(data) = fs::read(&nrclip_path) else { return Vec::new() };
     let file_size = data.len() as u64;
     let modified = file_modified_secs(&nrclip_path);
-    let Ok(file) = turnout_core::nrc1::NrclipFile::from_bytes(&data) else { return Vec::new() };
+    let file = match turnout_core::nrc1::NrclipFile::from_bytes(&data) {
+        Ok(file) => file,
+        Err(e) => {
+            // A corrupt blueprint would otherwise vanish from the list silently.
+            tracing::warn!("skipping unreadable blueprint '{folder_name}': {e}");
+            return Vec::new();
+        }
+    };
 
     let mut results = Vec::new();
     let mut clip_index = 0;
@@ -383,12 +390,19 @@ pub fn delete_blueprint(app: tauri::AppHandle, folder_name: String) -> Result<()
     Ok(())
 }
 
-fn remove_thumbnails_for(app: &tauri::AppHandle, prefix: &str) {
+/// Remove every cached thumbnail for a blueprint folder. Thumbnails are named
+/// `{folder}.png` (clip 0) and `{folder}_{clip_index}.png`, so match on the exact
+/// name or the `{folder}_` prefix — never a bare `starts_with(folder)`, which would
+/// also delete a sibling blueprint's thumbnails (e.g. folder "train" vs "train yard").
+fn remove_thumbnails_for(app: &tauri::AppHandle, folder_name: &str) {
     let Some(thumb_dir) = thumbnail_dir(app) else { return };
     let Ok(entries) = fs::read_dir(&thumb_dir) else { return };
+    let exact = format!("{folder_name}.png");
+    let indexed_prefix = format!("{folder_name}_");
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(prefix) && std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+        let is_png = std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+        if is_png && (name == exact || name.starts_with(&indexed_prefix)) {
             let _ = fs::remove_file(entry.path());
         }
     }
