@@ -26,6 +26,9 @@ const MBTILES_CONN_CACHE: usize = 16;
 pub const PREFERRED_PORT: u16 = 17853;
 const MAX_ZOOM: u8 = 22;
 const HTTP_TIMEOUT_SECS: u64 = 15;
+/// Substring unique to Apple's satellite tile host, used to tell a satellite Apple
+/// layer from a standard-map one when a layer is added.
+pub const APPLE_SAT_MARKER: &str = "sat-cdn";
 
 const DEFAULT_LINE_COLOR: [u8; 4] = [255, 100, 0, 200];
 const DEFAULT_LINE_WIDTH: f32 = 2.0;
@@ -69,25 +72,80 @@ pub(crate) struct DecodedImage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LayerKind {
-    Kmz, Shp, GeoJson, Wms, ArcGis, Xyz, Wmts, Apple, Bing, Image, MbTiles,
+    Kmz, Shp, GeoJson, Wms, ArcGis, Xyz, Wmts, Apple, Bing, MbTiles,
 }
 
-pub enum LayerSource {
-    Kmz { data: OverlayData, images: Vec<DecodedImage>, path: Option<String> },
+/// A layer's data source: the single, self-describing, serializable definition of
+/// where a layer's tiles come from. This is both the live description and the
+/// persisted form — there is no parallel "saved" type. Runtime-only data (parsed
+/// file geometry + rasterized ground overlays for file layers, and Apple's live
+/// tokenized URL) is NOT here; it lives in [`TileState::runtime`], keyed by layer
+/// id, so the definition stays serializable and free of secrets.
+#[derive(Clone)]
+pub enum SourceDef {
+    Kmz { path: Option<String> },
+    Shp { path: Option<String> },
+    GeoJson { path: Option<String> },
     Wms { base_url: String, layer_name: String },
     ArcGis { base_url: String, service_name: String },
     Xyz { url_template: String },
+    Wmts { url_template: String },
+    /// Apple imagery. Only whether it is satellite is persisted (via `SavedSource`);
+    /// the tokenized URL is runtime state in [`TileState::runtime`].
+    Apple { sat: bool },
+    Bing { url_template: String },
     MbTiles { path: String, max_zoom: u8 },
 }
 
+impl SourceDef {
+    pub fn kind(&self) -> LayerKind {
+        match self {
+            SourceDef::Kmz { .. } => LayerKind::Kmz,
+            SourceDef::Shp { .. } => LayerKind::Shp,
+            SourceDef::GeoJson { .. } => LayerKind::GeoJson,
+            SourceDef::Wms { .. } => LayerKind::Wms,
+            SourceDef::ArcGis { .. } => LayerKind::ArcGis,
+            SourceDef::Xyz { .. } => LayerKind::Xyz,
+            SourceDef::Wmts { .. } => LayerKind::Wmts,
+            SourceDef::Apple { .. } => LayerKind::Apple,
+            SourceDef::Bing { .. } => LayerKind::Bing,
+            SourceDef::MbTiles { .. } => LayerKind::MbTiles,
+        }
+    }
+
+    /// True for the file-backed kinds, whose geometry is rendered locally from
+    /// [`RuntimeData::File`] rather than fetched as remote raster tiles.
+    fn is_file(&self) -> bool {
+        matches!(self, SourceDef::Kmz { .. } | SourceDef::Shp { .. } | SourceDef::GeoJson { .. })
+    }
+}
+
+/// Runtime-only companion to a [`Layer`], held in [`TileState::runtime`] keyed by
+/// layer id. Never persisted: it is rebuilt on restore (re-parse the file, or
+/// rebuild Apple's URL from credentials).
+pub enum RuntimeData {
+    /// Parsed geometry + rasterized ground overlays for a file layer.
+    File { data: OverlayData, images: Vec<DecodedImage> },
+    /// The live tokenized Apple tile URL.
+    Apple { url_template: String },
+}
+
+/// A layer: its data-source definition plus display state. The persisted form
+/// lives in `overlay::SavedSource`, mapped 1:1 from `source` on save.
+#[derive(Clone)]
 pub struct Layer {
     pub id: u32,
     pub name: String,
     pub bbox: (f64, f64, f64, f64),
-    pub kind: LayerKind,
     pub visible: bool,
     pub opacity: f32,
-    pub source: LayerSource,
+    pub source: SourceDef,
+}
+
+impl Layer {
+    pub fn kind(&self) -> LayerKind {
+        self.source.kind()
+    }
 }
 
 type RenderCache = LruCache<(u8, u32, u32), Vec<u8>>;
@@ -96,6 +154,9 @@ type RemoteCache = LruCache<(u32, u8, u32, u32), DecodedTile>;
 
 pub struct TileState {
     pub(crate) layers: RwLock<Vec<Layer>>,
+    /// Runtime-only per-layer data (parsed file geometry / rasterized overlays, and
+    /// Apple's live URL), keyed by layer id. Rebuilt on restore; never persisted.
+    runtime: RwLock<HashMap<u32, RuntimeData>>,
     render_cache: Mutex<RenderCache>,
     remote_cache: Mutex<RemoteCache>,
     pub(crate) error_layers: Mutex<std::collections::HashSet<u32>>,
@@ -116,58 +177,56 @@ pub struct ServerHandle {
 impl ServerHandle {
     /// Adds a KMZ/Shp/GeoJson layer, returning its new id, or `None` when the file
     /// carries no drawable geometry (no bounding box) and nothing was added.
+    /// Adds a KMZ/Shp/GeoJson layer, returning its new id, or `None` when the file
+    /// carries no drawable geometry (no bounding box) and nothing was added.
     pub fn add_kmz_layer(&self, data: OverlayData, path: Option<String>, kind: LayerKind) -> Option<u32> {
         let bbox = data.bbox()?;
         let name = data.name.clone().unwrap_or_else(|| "Overlay".to_string());
         let images = decode_images(&data);
         let id = self.next_id();
-
-        let mut layers = self.state.layers.write().unpoison();
-        layers.push(Layer {
-            id, name, bbox, kind, visible: true, opacity: 1.0,
-            source: LayerSource::Kmz { data, images, path },
-        });
-        drop(layers);
-        self.clear_cache();
+        let source = match kind {
+            LayerKind::Shp => SourceDef::Shp { path },
+            LayerKind::GeoJson => SourceDef::GeoJson { path },
+            _ => SourceDef::Kmz { path },
+        };
+        self.state.runtime.write().unpoison().insert(id, RuntimeData::File { data, images });
+        self.push_layer(Layer { id, name, bbox, visible: true, opacity: 1.0, source });
         Some(id)
     }
 
     pub fn add_wms_layer(&self, base_url: String, layer_name: String, display_name: String) -> u32 {
         let id = self.next_id();
-
-        let mut layers = self.state.layers.write().unpoison();
-        layers.push(Layer {
-            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, kind: LayerKind::Wms, visible: true, opacity: 1.0,
-            source: LayerSource::Wms { base_url, layer_name },
+        self.push_layer(Layer {
+            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, visible: true, opacity: 1.0,
+            source: SourceDef::Wms { base_url, layer_name },
         });
-        drop(layers);
-        self.clear_cache();
         id
     }
 
     pub fn add_xyz_layer_with_kind(&self, url_template: String, display_name: String, kind: LayerKind) -> u32 {
         let id = self.next_id();
-
-        let mut layers = self.state.layers.write().unpoison();
-        layers.push(Layer {
-            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, kind, visible: true, opacity: 1.0,
-            source: LayerSource::Xyz { url_template },
+        let source = match kind {
+            LayerKind::Wmts => SourceDef::Wmts { url_template },
+            LayerKind::Bing => SourceDef::Bing { url_template },
+            LayerKind::Apple => {
+                let sat = url_template.contains(APPLE_SAT_MARKER);
+                self.state.runtime.write().unpoison().insert(id, RuntimeData::Apple { url_template });
+                SourceDef::Apple { sat }
+            }
+            _ => SourceDef::Xyz { url_template },
+        };
+        self.push_layer(Layer {
+            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, visible: true, opacity: 1.0, source,
         });
-        drop(layers);
-        self.clear_cache();
         id
     }
 
     pub fn add_arcgis_layer(&self, base_url: String, service_name: String, display_name: String) -> u32 {
         let id = self.next_id();
-
-        let mut layers = self.state.layers.write().unpoison();
-        layers.push(Layer {
-            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, kind: LayerKind::ArcGis, visible: true, opacity: 1.0,
-            source: LayerSource::ArcGis { base_url, service_name },
+        self.push_layer(Layer {
+            id, name: display_name, bbox: WEB_MERCATOR_EXTENT, visible: true, opacity: 1.0,
+            source: SourceDef::ArcGis { base_url, service_name },
         });
-        drop(layers);
-        self.clear_cache();
         id
     }
 
@@ -192,14 +251,17 @@ impl ServerHandle {
         ).unwrap_or(22);
 
         let id = self.next_id();
-        let mut layers = self.state.layers.write().unpoison();
-        layers.push(Layer {
-            id, name: display_name, bbox, kind: LayerKind::MbTiles, visible: true, opacity: 1.0,
-            source: LayerSource::MbTiles { path, max_zoom },
+        self.push_layer(Layer {
+            id, name: display_name, bbox, visible: true, opacity: 1.0,
+            source: SourceDef::MbTiles { path, max_zoom },
         });
-        drop(layers);
-        self.clear_cache();
         Ok(id)
+    }
+
+    /// Append a layer and invalidate the render cache.
+    fn push_layer(&self, layer: Layer) {
+        self.state.layers.write().unpoison().push(layer);
+        self.clear_cache();
     }
 
     pub fn remove_layer(&self, id: u32) -> bool {
@@ -209,19 +271,23 @@ impl ServerHandle {
         let removed = layers.len() < before;
         drop(layers);
         if removed {
+            self.state.runtime.write().unpoison().remove(&id);
             self.evict_remote_cache(id);
             self.clear_cache();
         }
         removed
     }
 
-    pub fn take_layer(&self, id: u32) -> Option<Layer> {
+    /// Remove a layer and hand back its definition plus any runtime data, so the
+    /// caller can move both to another group's server.
+    pub fn take_layer(&self, id: u32) -> Option<(Layer, Option<RuntimeData>)> {
         let mut layers = self.state.layers.write().unpoison();
         let idx = layers.iter().position(|l| l.id == id)?;
         let layer = layers.remove(idx);
         drop(layers);
+        let runtime = self.state.runtime.write().unpoison().remove(&id);
         self.clear_cache();
-        Some(layer)
+        Some((layer, runtime))
     }
 
     pub fn move_layer_up(&self, id: u32) -> bool {
@@ -244,26 +310,23 @@ impl ServerHandle {
         true
     }
 
-    pub fn insert_layer(&self, layer: Layer) {
+    pub fn insert_layer(&self, layer: Layer, runtime: Option<RuntimeData>) {
         let mut next = self.state.next_id.lock().unpoison();
         if layer.id >= *next {
             *next = layer.id + 1;
         }
         drop(next);
-        let mut layers = self.state.layers.write().unpoison();
-        layers.push(layer);
-        drop(layers);
+        if let Some(rt) = runtime {
+            self.state.runtime.write().unpoison().insert(layer.id, rt);
+        }
+        self.state.layers.write().unpoison().push(layer);
         self.clear_cache();
     }
 
-    pub fn update_xyz_url(&self, id: u32, url_template: String) {
-        let mut layers = self.state.layers.write().unpoison();
-        if let Some(layer) = layers.iter_mut().find(|l| l.id == id)
-            && let LayerSource::Xyz { url_template: ref mut tpl } = layer.source
-        {
-            *tpl = url_template;
-        }
-        drop(layers);
+    /// Set an Apple layer's live tokenized URL. The URL is runtime-only (never
+    /// persisted), so it is stored in the runtime cache rather than the definition.
+    pub fn update_apple_url(&self, id: u32, url_template: String) {
+        self.state.runtime.write().unpoison().insert(id, RuntimeData::Apple { url_template });
         self.clear_cache();
         self.evict_remote_cache(id);
     }
@@ -349,6 +412,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
 
     let state = Arc::new(TileState {
         layers: RwLock::new(Vec::new()),
+        runtime: RwLock::new(HashMap::new()),
         render_cache: server_core::lru_cache(RENDER_CACHE_CAPACITY),
         remote_cache: server_core::lru_cache(REMOTE_CACHE_CAPACITY),
         error_layers: Mutex::new(std::collections::HashSet::new()),
@@ -673,19 +737,28 @@ async fn serve_tile(
 
     let (remote_requests, mbtiles_tiles): (Vec<(u32, RemoteReq)>, HashMap<u32, Pixmap>) = {
         let layers = state.layers.read().unpoison();
+        let runtime = state.runtime.read().unpoison();
         let mut reqs = Vec::new();
         let mut local = HashMap::new();
         let tms_y = turnout_core::geo::tms_y(z, y);
         for l in layers.iter() {
             if !l.visible { continue; }
             match &l.source {
-                LayerSource::Wms { base_url, layer_name } =>
+                SourceDef::Kmz { .. } | SourceDef::Shp { .. } | SourceDef::GeoJson { .. } => {}
+                SourceDef::Wms { base_url, layer_name } =>
                     reqs.push((l.id, RemoteReq::Wms(base_url.clone(), layer_name.clone()))),
-                LayerSource::ArcGis { base_url, service_name } =>
+                SourceDef::ArcGis { base_url, service_name } =>
                     reqs.push((l.id, RemoteReq::ArcGis(base_url.clone(), service_name.clone()))),
-                LayerSource::Xyz { url_template } =>
+                SourceDef::Xyz { url_template }
+                | SourceDef::Wmts { url_template }
+                | SourceDef::Bing { url_template } =>
                     reqs.push((l.id, RemoteReq::Xyz(url_template.clone()))),
-                LayerSource::MbTiles { path, max_zoom } => {
+                SourceDef::Apple { .. } => {
+                    if let Some(RuntimeData::Apple { url_template }) = runtime.get(&l.id) {
+                        reqs.push((l.id, RemoteReq::Xyz(url_template.clone())));
+                    }
+                }
+                SourceDef::MbTiles { path, max_zoom } => {
                     if let Some(cached) = get_remote_cached(&state, l.id, z, x, y) {
                         if let Some(pm) = decoded_to_pixmap(&cached) {
                             local.insert(l.id, pm);
@@ -699,7 +772,6 @@ async fn serve_tile(
                         }
                     }
                 }
-                LayerSource::Kmz { .. } => {}
             }
         }
         (reqs, local)
@@ -760,28 +832,27 @@ fn render_tile(state: &TileState, remote_tiles: &HashMap<u32, Pixmap>, z: u32, x
 
     {
         let layers = state.layers.read().unpoison();
+        let runtime = state.runtime.read().unpoison();
         for layer in layers.iter() {
             if !layer.visible {
                 continue;
             }
             let opacity = layer.opacity;
-            match &layer.source {
-                LayerSource::Kmz { data, images, .. } => {
+            if layer.source.is_file() {
+                // Locally rendered from the layer's parsed geometry + overlays.
+                if let Some(RuntimeData::File { data, images }) = runtime.get(&layer.id) {
                     render_ground_overlays(&mut pixmap, images, opacity, &ctx);
                     render_geometry(&mut pixmap, data, opacity, &ctx);
                 }
-                LayerSource::Wms { .. } | LayerSource::ArcGis { .. } | LayerSource::Xyz { .. } | LayerSource::MbTiles { .. } => {
-                    if let Some(remote_pixmap) = remote_tiles.get(&layer.id) {
-                        let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
-                        pixmap.draw_pixmap(
-                            0, 0,
-                            remote_pixmap.as_ref(),
-                            &paint,
-                            Transform::identity(),
-                            None,
-                        );
-                    }
-                }
+            } else if let Some(remote_pixmap) = remote_tiles.get(&layer.id) {
+                let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
+                pixmap.draw_pixmap(
+                    0, 0,
+                    remote_pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
             }
         }
     }
