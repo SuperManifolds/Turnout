@@ -1,9 +1,9 @@
-use anyhow::{Context, Result};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::error::CoreError;
 use crate::geo::mercator_to_latlon;
 use crate::kml::{Geometry, OverlayData, Placemark, Style};
 use crate::overlay_style::{self, DefaultColors};
@@ -26,21 +26,27 @@ enum Crs {
     WebMercator,
 }
 
-pub fn parse_shapefile(shp_path: &Path) -> Result<OverlayData> {
+pub fn parse_shapefile(shp_path: &Path) -> Result<OverlayData, CoreError> {
     let dir = shp_path.parent().unwrap_or(Path::new("."));
-    let stem = shp_path.file_stem().context("no file stem")?.to_string_lossy();
+    let stem = shp_path
+        .file_stem()
+        .ok_or_else(|| CoreError::Parse { format: "shapefile", detail: "no file stem".into() })?
+        .to_string_lossy();
 
     let crs = detect_crs(&dir.join(format!("{stem}.prj")));
     let rules = load_style_rules(dir, &stem);
 
-    let mut reader = shapefile::Reader::from_path(shp_path)
-        .with_context(|| format!("failed to open {}", shp_path.display()))?;
+    let mut reader = shapefile::Reader::from_path(shp_path).map_err(|e| CoreError::Parse {
+        format: "shapefile",
+        detail: format!("failed to open {}: {e}", shp_path.display()),
+    })?;
 
     let mut placemarks = Vec::new();
     let mut styles: HashMap<String, Style> = HashMap::new();
 
     for (i, result) in reader.iter_shapes_and_records().enumerate() {
-        let (shape, record) = result.with_context(|| format!("record {i}"))?;
+        let (shape, record) = result
+            .map_err(|e| CoreError::Parse { format: "shapefile", detail: format!("record {i}: {e}") })?;
 
         let geometry = shape_to_geometry(&shape, &crs);
         let Some(geometry) = geometry else { continue };

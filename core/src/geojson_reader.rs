@@ -1,5 +1,6 @@
-use anyhow::{Result, bail};
 use std::collections::HashMap;
+
+use crate::error::{CoreError, Result};
 
 use crate::kml::{Geometry, OverlayData, Placemark, Style};
 use crate::overlay_style::{self, DefaultColors};
@@ -13,7 +14,8 @@ const COLORS: DefaultColors = DefaultColors {
 };
 
 pub fn parse_geojson(json: &str) -> Result<OverlayData> {
-    let root: serde_json::Value = serde_json::from_str(json)?;
+    let root: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| CoreError::Parse { format: "geojson", detail: e.to_string() })?;
     let features = extract_features(&root)?;
 
     let mut placemarks = Vec::new();
@@ -65,7 +67,10 @@ fn extract_features(root: &serde_json::Value) -> Result<Vec<serde_json::Value>> 
     match root["type"].as_str() {
         Some("FeatureCollection") => {
             let Some(arr) = root["features"].as_array() else {
-                bail!("FeatureCollection has no features array");
+                return Err(CoreError::Parse {
+                    format: "geojson",
+                    detail: "FeatureCollection has no features array".into(),
+                });
             };
             Ok(arr.clone())
         }
@@ -77,7 +82,7 @@ fn extract_features(root: &serde_json::Value) -> Result<Vec<serde_json::Value>> 
                 "geometry": root
             })])
         }
-        _ => bail!("not a valid GeoJSON document"),
+        _ => Err(CoreError::Parse { format: "geojson", detail: "not a valid GeoJSON document".into() }),
     }
 }
 

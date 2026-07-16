@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use crate::error::CoreError;
 
 const KML_COLOR_HEX_LENGTH: usize = 8;
 use quick_xml::Reader;
@@ -111,24 +111,28 @@ fn geometry_visit_coords(geom: &Geometry, f: &mut impl FnMut(f64, f64)) {
 }
 
 /// Parse a KMZ (zipped KML + images) or plain KML file.
-pub fn parse_kmz(data: &[u8]) -> Result<OverlayData> {
+pub fn parse_kmz(data: &[u8]) -> Result<OverlayData, CoreError> {
     let cursor = std::io::Cursor::new(data);
     if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
         parse_kmz_archive(&mut archive)
     } else {
-        let xml = std::str::from_utf8(data).context("file is neither valid KMZ nor KML")?;
+        let xml = std::str::from_utf8(data).map_err(|_| CoreError::Parse {
+            format: "kml",
+            detail: "file is neither valid KMZ nor KML".into(),
+        })?;
         parse_kml(xml, &HashMap::new())
     }
 }
 
-fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<OverlayData> {
+fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<OverlayData, CoreError> {
     let mut kml_xml = None;
     let mut images = HashMap::new();
 
     let image_exts: &[&str] = &["png", "jpg", "jpeg", "bmp", "gif"];
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
+        let mut file = archive.by_index(i)
+            .map_err(|e| CoreError::Parse { format: "kml", detail: e.to_string() })?;
         let name = file.name().to_string();
         let ext = std::path::Path::new(&name)
             .extension()
@@ -147,11 +151,14 @@ fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result
         }
     }
 
-    let xml = kml_xml.context("KMZ archive contains no .kml file")?;
+    let xml = kml_xml.ok_or_else(|| CoreError::Parse {
+        format: "kml",
+        detail: "KMZ archive contains no .kml file".into(),
+    })?;
     parse_kml(&xml, &images)
 }
 
-fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<OverlayData> {
+fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<OverlayData, CoreError> {
     let mut reader = Reader::from_str(xml);
     let mut data = OverlayData {
         images: images.clone(),
@@ -414,7 +421,10 @@ fn parse_kml(xml: &str, images: &HashMap<String, Vec<u8>>) -> Result<OverlayData
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => bail!("KML parse error at position {}: {e}", reader.error_position()),
+            Err(e) => return Err(CoreError::Parse {
+                format: "kml",
+                detail: format!("parse error at position {}: {e}", reader.error_position()),
+            }),
             _ => {}
         }
     }
