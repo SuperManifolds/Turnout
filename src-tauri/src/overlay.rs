@@ -247,7 +247,8 @@ pub async fn add_overlay(
 
     let groups = state.groups.lock().unpoison();
     let group = find_group(&groups, group_id)?;
-    group.handle.add_kmz_layer(data, Some(path), kind);
+    // bbox was validated above, so the add succeeds; the id isn't needed here.
+    let _ = group.handle.add_kmz_layer(data, Some(path), kind);
     let status = build_status(&groups);
     drop(groups);
     save_groups(&app);
@@ -643,7 +644,11 @@ fn kind_for_saved_source(source: &SavedSource) -> LayerKind {
 }
 
 fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
-    match &layer.source {
+    // Capture the id the add actually assigned so the follow-up name/visibility/
+    // opacity apply to THIS layer. A `.last()` guess would silently target the
+    // previous layer whenever an add no-ops (e.g. a file whose geometry vanished
+    // between sessions), corrupting the sibling.
+    let id = match &layer.source {
         SavedSource::Kmz { path } | SavedSource::Shp { path } | SavedSource::GeoJson { path } => {
             let kind = match &layer.source {
                 SavedSource::Shp { .. } => LayerKind::Shp,
@@ -654,13 +659,17 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
                 tracing::warn!("restore: failed to parse {path}");
                 return;
             };
-            handle.add_kmz_layer(data, Some(path.clone()), kind);
+            let Some(id) = handle.add_kmz_layer(data, Some(path.clone()), kind) else {
+                tracing::warn!("restore: {path} has no geometry to display");
+                return;
+            };
+            id
         }
         SavedSource::Wms { wms_url, wms_layer } => {
-            handle.add_wms_layer(wms_url.clone(), wms_layer.clone(), layer.name.clone());
+            handle.add_wms_layer(wms_url.clone(), wms_layer.clone(), layer.name.clone())
         }
         SavedSource::ArcGis { arcgis_url, arcgis_service } => {
-            handle.add_arcgis_layer(arcgis_url.clone(), arcgis_service.clone(), layer.name.clone());
+            handle.add_arcgis_layer(arcgis_url.clone(), arcgis_service.clone(), layer.name.clone())
         }
         SavedSource::Xyz { xyz_url }
         | SavedSource::Wmts { xyz_url }
@@ -669,24 +678,22 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
             // Preserve the specific kind — a restored Apple layer must come back
             // as LayerKind::Apple, otherwise the token refresher (which only
             // rewrites Apple layers) never renews it and its tiles die on expiry.
-            handle.add_xyz_layer_with_kind(xyz_url.clone(), layer.name.clone(), kind_for_saved_source(&layer.source));
+            handle.add_xyz_layer_with_kind(xyz_url.clone(), layer.name.clone(), kind_for_saved_source(&layer.source))
         }
         SavedSource::MbTiles { path } => {
-            if let Err(e) = handle.add_mbtiles_layer(path.clone(), layer.name.clone()) {
-                tracing::warn!("restore: failed to open MBTiles {path}: {e}");
-                return;
+            match handle.add_mbtiles_layer(path.clone(), layer.name.clone()) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!("restore: failed to open MBTiles {path}: {e}");
+                    return;
+                }
             }
         }
-    }
+    };
 
-    let layers = handle.state.layers.read().unpoison();
-    if let Some(last) = layers.last() {
-        let id = last.id;
-        drop(layers);
-        handle.rename_layer(id, layer.name.clone());
-        handle.set_layer_visible(id, layer.visible);
-        handle.set_layer_opacity(id, layer.opacity);
-    }
+    handle.rename_layer(id, layer.name.clone());
+    handle.set_layer_visible(id, layer.visible);
+    handle.set_layer_opacity(id, layer.opacity);
 }
 
 fn find_group(groups: &[TileGroup], group_id: Option<u32>) -> Result<&TileGroup, String> {
