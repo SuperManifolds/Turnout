@@ -23,13 +23,17 @@ fn main() -> Result<()> {
         let elements = data["elements"].as_array().context("no elements")?;
         for e in elements {
             match e["type"].as_str() {
+                // Skip malformed elements rather than panicking on a bad OSM dump.
                 Some("node") => {
-                    let id = e["id"].as_u64().expect("OSM node id is u64");
-                    osm_nodes.insert(id, (e["lat"].as_f64().expect("OSM node lat is f64"), e["lon"].as_f64().expect("OSM node lon is f64")));
+                    if let (Some(id), Some(lat), Some(lon)) =
+                        (e["id"].as_u64(), e["lat"].as_f64(), e["lon"].as_f64())
+                    {
+                        osm_nodes.insert(id, (lat, lon));
+                    }
                 }
                 Some("way") => {
-                    let nids: Vec<u64> = e["nodes"].as_array().expect("OSM way nodes is array")
-                        .iter().map(|n| n.as_u64().expect("OSM way node id is u64")).collect();
+                    let Some(nodes) = e["nodes"].as_array() else { continue };
+                    let nids: Vec<u64> = nodes.iter().filter_map(serde_json::Value::as_u64).collect();
                     if nids.len() >= 2 { osm_ways.push(nids); }
                 }
                 _ => {}
@@ -115,24 +119,26 @@ fn main() -> Result<()> {
             let max_dev = devs.iter().copied().fold(0.0f64, f64::max);
             let avg_dev = devs.iter().sum::<f64>() / devs.len() as f64;
             let mut sorted = devs.clone();
-            sorted.sort_by(|a, b| a.partial_cmp(b).expect("deviation values are not NaN"));
-            let p95 = sorted[sorted.len() * 95 / 100];
+            // total_cmp gives a total order over f64, so a stray NaN sorts rather
+            // than panicking a comparison.
+            sorted.sort_by(f64::total_cmp);
+            let p95 = sorted.get(sorted.len() * 95 / 100).copied().unwrap_or(0.0);
 
             chain_stats.push((chain.len(), chain_len, avg_dev, p95, max_dev));
             all_devs.extend(devs);
         }
 
-        all_devs.sort_by(|a, b| a.partial_cmp(b).expect("deviation values are not NaN"));
+        all_devs.sort_by(f64::total_cmp);
         let total = all_devs.len();
-        let overall_avg = all_devs.iter().sum::<f64>() / total as f64;
-        let overall_p95 = all_devs[total * 95 / 100];
-        let overall_max = *all_devs.last().expect("all_devs is non-empty");
+        let overall_avg = if total > 0 { all_devs.iter().sum::<f64>() / total as f64 } else { 0.0 };
+        let overall_p95 = all_devs.get(total * 95 / 100).copied().unwrap_or(0.0);
+        let overall_max = all_devs.last().copied().unwrap_or(0.0);
 
         println!("=== Hobby Spline vs OSM Deviation ===");
         println!("Chains: {}, sample points: {}", chains.len(), total);
         println!("Overall: avg={overall_avg:.1}m  p95={overall_p95:.1}m  max={overall_max:.1}m");
 
-        chain_stats.sort_by(|a, b| b.4.partial_cmp(&a.4).expect("deviation values are not NaN"));
+        chain_stats.sort_by(|a, b| b.4.total_cmp(&a.4));
         println!("\nWorst chains:");
         for &(nodes, length, avg, p95, max) in chain_stats.iter().take(15) {
             println!("  {nodes:>3} nodes  {length:>6.0}m  avg={avg:>5.1}m  p95={p95:>5.1}m  max={max:>6.1}m");
