@@ -44,6 +44,10 @@ const MAX_NATIVE_ZOOM: u8 = 19;
 const RENDER_TIMEOUT_SECS: u64 = 30;
 const STATS_INTERVAL: u64 = 50;
 const WORKER_RESTART_DELAY_SECS: u64 = 1;
+/// Cap on consecutive panic-restarts of a render worker. Past this it stays down
+/// rather than spinning forever (each restart burns a `WORKER_RESTART_DELAY_SECS`
+/// sleep + a re-render attempt); the renderer degrades to fewer workers.
+const MAX_WORKER_RESTARTS: u32 = 10;
 const CACHE_CONTROL: &str = "public, max-age=3600";
 const OFFLINE_MBTILES_FILE: &str = "tiles.mbtiles";
 /// Number of independently locked PNG cache shards. Requests are spread across
@@ -343,19 +347,30 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         let cache = Arc::clone(&cache);
         std::thread::Builder::new()
             .name(format!("orm-render-{i}"))
-            .spawn(move || loop {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    render_worker_inner(i, &dispatch, &cache, &cache_path, &encode_tx, &shared);
-                }));
-                match result {
-                    Ok(()) => {
-                        tracing::debug!("worker {i} exited cleanly");
-                        break;
-                    }
-                    Err(e) => {
-                        let msg = extract_panic_message(&e);
-                        tracing::error!("worker {i} panicked: {msg} — restarting");
-                        std::thread::sleep(std::time::Duration::from_secs(WORKER_RESTART_DELAY_SECS));
+            .spawn(move || {
+                let mut restarts = 0u32;
+                loop {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        render_worker_inner(i, &dispatch, &cache, &cache_path, &encode_tx, &shared);
+                    }));
+                    match result {
+                        // Clean exit: the dispatch queue was closed (shutdown).
+                        Ok(()) => {
+                            tracing::debug!("worker {i} exited cleanly");
+                            break;
+                        }
+                        Err(e) => {
+                            let msg = extract_panic_message(&e);
+                            restarts += 1;
+                            if restarts > MAX_WORKER_RESTARTS {
+                                // A worker that keeps panicking would otherwise spin
+                                // forever burning CPU; give up and let it stay down.
+                                tracing::error!("worker {i} panicked {restarts}× (last: {msg}); giving up");
+                                break;
+                            }
+                            tracing::error!("worker {i} panicked: {msg} — restarting ({restarts}/{MAX_WORKER_RESTARTS})");
+                            std::thread::sleep(std::time::Duration::from_secs(WORKER_RESTART_DELAY_SECS));
+                        }
                     }
                 }
             })?;
