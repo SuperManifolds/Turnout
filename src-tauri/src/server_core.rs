@@ -4,11 +4,12 @@
 //! (raster compositing, MVT encoding, native rendering, resampling) and layers it
 //! on top of these primitives.
 
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
+use axum::body::Bytes;
 use lru::LruCache;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -62,6 +63,65 @@ pub async fn bind_with_retry(port: u16, attempts: u32, delay: Duration) -> Resul
 /// A `Mutex<LruCache>` of the given capacity.
 pub fn lru_cache<K: Hash + Eq, V>(capacity: usize) -> Mutex<LruCache<K, V>> {
     Mutex::new(LruCache::new(NonZeroUsize::new(capacity).expect("nonzero cache capacity")))
+}
+
+/// A hash-striped LRU cache of encoded tile bytes, shared by the local tile
+/// servers. `stripes == 1` is a plain single-lock cache; a higher stripe count
+/// spreads lock contention for a high-throughput server (a key always maps to one
+/// stripe, so no op ever holds two stripe locks). Values are [`Bytes`] so a get or
+/// put shares the buffer by refcount instead of copying the tile.
+pub struct TileCache<K> {
+    stripes: Vec<Mutex<LruCache<K, Bytes>>>,
+}
+
+impl<K: Hash + Eq> TileCache<K> {
+    /// A cache holding up to `total_capacity` tiles, split evenly across `stripes`
+    /// independently-locked shards (at least one).
+    pub fn new(total_capacity: usize, stripes: usize) -> Self {
+        let stripes = stripes.max(1);
+        let per_stripe = (total_capacity / stripes).max(1);
+        let cap = NonZeroUsize::new(per_stripe).expect("nonzero cache capacity");
+        Self { stripes: (0..stripes).map(|_| Mutex::new(LruCache::new(cap))).collect() }
+    }
+
+    fn stripe(&self, key: &K) -> &Mutex<LruCache<K, Bytes>> {
+        if self.stripes.len() == 1 {
+            return &self.stripes[0];
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        &self.stripes[(hasher.finish() as usize) % self.stripes.len()]
+    }
+
+    pub fn get(&self, key: &K) -> Option<Bytes> {
+        self.stripe(key).lock().unpoison().get(key).cloned()
+    }
+
+    pub fn contains(&self, key: &K) -> bool {
+        self.stripe(key).lock().unpoison().contains(key)
+    }
+
+    pub fn put(&self, key: K, value: Bytes) {
+        self.stripe(&key).lock().unpoison().put(key, value);
+    }
+
+    /// Insert only if `keep()` — evaluated while the stripe lock is held — returns
+    /// true. Lets a caller gate the insert on state (e.g. a generation counter)
+    /// that a concurrent [`clear`](Self::clear) also mutates under the same lock,
+    /// so a stale tile can't survive the clear.
+    pub fn put_if(&self, key: K, value: Bytes, keep: impl FnOnce() -> bool) {
+        let stripe = self.stripe(&key);
+        let mut guard = stripe.lock().unpoison();
+        if keep() {
+            guard.put(key, value);
+        }
+    }
+
+    pub fn clear(&self) {
+        for stripe in &self.stripes {
+            stripe.lock().unpoison().clear();
+        }
+    }
 }
 
 /// A reqwest client with the app User-Agent and a single request timeout. Servers

@@ -149,9 +149,6 @@ impl Layer {
     }
 }
 
-// Cached PNG bytes are `Bytes` (Arc-backed) so a cache put and every cache hit
-// share the buffer instead of memcpy-ing ~100-200 KB per tile.
-type RenderCache = LruCache<(u8, u32, u32), Bytes>;
 type DecodedTile = (Vec<u8>, u32, u32);
 type RemoteCache = LruCache<(u32, u8, u32, u32), DecodedTile>;
 
@@ -160,7 +157,9 @@ pub struct TileState {
     /// Runtime-only per-layer data (parsed file geometry / rasterized overlays, and
     /// Apple's live URL), keyed by layer id. Rebuilt on restore; never persisted.
     runtime: RwLock<HashMap<u32, RuntimeData>>,
-    render_cache: Mutex<RenderCache>,
+    /// Composited PNG tiles keyed by `(z, x, y)`. Single-stripe (this server sees
+    /// modest traffic); `Bytes` so a hit shares the buffer instead of copying.
+    render_cache: server_core::TileCache<(u8, u32, u32)>,
     remote_cache: Mutex<RemoteCache>,
     pub(crate) error_layers: Mutex<std::collections::HashSet<u32>>,
     next_id: Mutex<u32>,
@@ -178,8 +177,6 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    /// Adds a KMZ/Shp/GeoJson layer, returning its new id, or `None` when the file
-    /// carries no drawable geometry (no bounding box) and nothing was added.
     /// Adds a KMZ/Shp/GeoJson layer, returning its new id, or `None` when the file
     /// carries no drawable geometry (no bounding box) and nothing was added.
     pub fn add_kmz_layer(&self, data: OverlayData, path: Option<String>, kind: LayerKind) -> Option<u32> {
@@ -386,8 +383,7 @@ impl ServerHandle {
     }
 
     pub fn clear_cache(&self) {
-        let mut cache = self.state.render_cache.lock().unpoison();
-        cache.clear();
+        self.state.render_cache.clear();
     }
 
     pub fn evict_remote_cache(&self, layer_id: u32) {
@@ -416,7 +412,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
     let state = Arc::new(TileState {
         layers: RwLock::new(Vec::new()),
         runtime: RwLock::new(HashMap::new()),
-        render_cache: server_core::lru_cache(RENDER_CACHE_CAPACITY),
+        render_cache: server_core::TileCache::new(RENDER_CACHE_CAPACITY, 1),
         remote_cache: server_core::lru_cache(REMOTE_CACHE_CAPACITY),
         error_layers: Mutex::new(std::collections::HashSet::new()),
         next_id: Mutex::new(0),
@@ -731,11 +727,8 @@ async fn serve_tile(
         return (StatusCode::BAD_REQUEST, [("content-type", "text/plain")], Bytes::from_static(b"invalid tile coordinates"));
     }
 
-    {
-        let mut cache = state.render_cache.lock().unpoison();
-        if let Some(png) = cache.get(&(z, x, y)) {
-            return (StatusCode::OK, [("content-type", "image/png")], png.clone());
-        }
+    if let Some(png) = state.render_cache.get(&(z, x, y)) {
+        return (StatusCode::OK, [("content-type", "image/png")], png);
     }
 
     let (remote_requests, mbtiles_tiles): (Vec<(u32, RemoteReq)>, HashMap<u32, Pixmap>) = {
@@ -822,8 +815,7 @@ async fn serve_tile(
     let png = Bytes::from(render_tile(&state, &remote_tiles, z.into(), x, y));
 
     if !any_failed {
-        let mut cache = state.render_cache.lock().unpoison();
-        cache.put((z, x, y), png.clone());
+        state.render_cache.put((z, x, y), png.clone());
     }
 
     (StatusCode::OK, [("content-type", "image/png")], png)

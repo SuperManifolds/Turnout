@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -136,7 +137,7 @@ struct ServerData {
     cities: HashMap<String, City>,
     port: u16,
     client: reqwest::Client,
-    out_cache: Mutex<LruCache<OutKey, Vec<u8>>>,
+    out_cache: server_core::TileCache<OutKey>,
     src_cache: Mutex<LruCache<SrcKey, Option<Arc<RgbaImage>>>>,
 }
 
@@ -281,7 +282,7 @@ async fn start() -> Result<ServerHandle, String> {
         cities: load_cities(),
         port,
         client,
-        out_cache: server_core::lru_cache(OUT_CACHE_CAPACITY),
+        out_cache: server_core::TileCache::new(OUT_CACHE_CAPACITY, 1),
         src_cache: server_core::lru_cache(SRC_CACHE_CAPACITY),
     });
 
@@ -311,23 +312,24 @@ async fn serve_tile(
 ) -> impl IntoResponse {
     let png = [(axum::http::header::CONTENT_TYPE, "image/png")];
     let Ok(y) = y.trim_end_matches(".png").parse::<u32>() else {
-        return (axum::http::StatusCode::BAD_REQUEST, png, Vec::new());
+        return (axum::http::StatusCode::BAD_REQUEST, png, Bytes::new());
     };
     let Some(c) = data.cities.get(&city).cloned() else {
-        return (axum::http::StatusCode::NOT_FOUND, png, Vec::new());
+        return (axum::http::StatusCode::NOT_FOUND, png, Bytes::new());
     };
 
     let key = (city.clone(), z, x, y);
-    if let Some(bytes) = data.out_cache.lock().unpoison().get(&key).cloned() {
+    if let Some(bytes) = data.out_cache.get(&key) {
         return (axum::http::StatusCode::OK, png, bytes);
     }
     match data.render(&c, z, x, y).await {
         Some(bytes) => {
-            data.out_cache.lock().unpoison().put(key, bytes.clone());
+            let bytes = Bytes::from(bytes);
+            data.out_cache.put(key, bytes.clone());
             (axum::http::StatusCode::OK, png, bytes)
         }
         // No coverage here — 204 so the game doesn't cache/retry an error.
-        None => (axum::http::StatusCode::NO_CONTENT, png, Vec::new()),
+        None => (axum::http::StatusCode::NO_CONTENT, png, Bytes::new()),
     }
 }
 

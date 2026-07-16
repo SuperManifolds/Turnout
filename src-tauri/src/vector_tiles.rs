@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use lru::LruCache;
 use mvt::{GeomData, GeomEncoder, GeomType, Tile};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -496,7 +496,7 @@ pub struct LevelInfo {
 struct ServerData {
     dataset: RailDataset,
     tile_template: String,
-    tile_cache: Mutex<LruCache<(u32, u32, u32), Vec<u8>>>,
+    tile_cache: server_core::TileCache<(u32, u32, u32)>,
     encode_limit: Semaphore,
 }
 
@@ -514,7 +514,7 @@ async fn start(dataset: RailDataset) -> Result<ServerHandle, String> {
     let data = Arc::new(ServerData {
         dataset,
         tile_template: tile_url_template(port),
-        tile_cache: server_core::lru_cache(TILE_CACHE_CAPACITY),
+        tile_cache: server_core::TileCache::new(TILE_CACHE_CAPACITY, 1),
         encode_limit: Semaphore::new(concurrency),
     });
     let app = Router::new()
@@ -539,15 +539,15 @@ async fn serve_tile(
 ) -> impl IntoResponse {
     let content_type = [(axum::http::header::CONTENT_TYPE, MVT_CONTENT_TYPE)];
     let Ok(y) = y.trim_end_matches(".pbf").trim_end_matches(".mvt").parse::<u32>() else {
-        return (axum::http::StatusCode::BAD_REQUEST, content_type, Vec::new());
+        return (axum::http::StatusCode::BAD_REQUEST, content_type, Bytes::new());
     };
 
     if z > MAX_REQUEST_ZOOM {
-        return (axum::http::StatusCode::NO_CONTENT, content_type, Vec::new());
+        return (axum::http::StatusCode::NO_CONTENT, content_type, Bytes::new());
     }
 
     let key = (z, x, y);
-    if let Some(bytes) = data.tile_cache.lock().unpoison().get(&key).cloned() {
+    if let Some(bytes) = data.tile_cache.get(&key) {
         return (axum::http::StatusCode::OK, content_type, bytes);
     }
 
@@ -556,18 +556,19 @@ async fn serve_tile(
     // tile requests during a pan can't block the shared async runtime (which also
     // serves IPC, Overpass fetches, and the other tile servers).
     let Ok(_permit) = data.encode_limit.acquire().await else {
-        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, content_type, Vec::new());
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, content_type, Bytes::new());
     };
     let d = Arc::clone(&data);
     let encoded = tokio::task::spawn_blocking(move || d.dataset.encode_tile(z, x, y)).await;
     match encoded {
         Ok(Ok(bytes)) => {
-            data.tile_cache.lock().unpoison().put(key, bytes.clone());
+            let bytes = Bytes::from(bytes);
+            data.tile_cache.put(key, bytes.clone());
             (axum::http::StatusCode::OK, content_type, bytes)
         }
         // An encode error, or a panic in the blocking task, fails just this tile —
         // the server keeps serving other requests.
-        _ => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, content_type, Vec::new()),
+        _ => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, content_type, Bytes::new()),
     }
 }
 
