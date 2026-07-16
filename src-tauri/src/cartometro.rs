@@ -24,6 +24,7 @@ use tower_http::cors::CorsLayer;
 
 use turnout_core::geo::{merc_x, merc_y};
 
+use crate::error::{CommandError, CommandResult};
 use crate::server_core::{self, ServerHandle, UnpoisonExt};
 
 /// Half the Web Mercator world extent in meters (`R·π`).
@@ -270,10 +271,12 @@ pub struct CartoMetroState {
     handle: Mutex<Option<ServerHandle>>,
 }
 
-async fn start() -> Result<ServerHandle, String> {
-    let listener = server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY).await?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let client = server_core::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+async fn start() -> CommandResult<ServerHandle> {
+    let listener = server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY)
+        .await
+        .map_err(CommandError::Server)?;
+    let port = listener.local_addr().map_err(|e| CommandError::Server(e.to_string()))?.port();
+    let client = server_core::http_client(HTTP_TIMEOUT).map_err(|e| CommandError::Server(e.to_string()))?;
 
     let data = Arc::new(ServerData {
         cities: load_cities(),
@@ -353,7 +356,7 @@ pub struct CartoMetroInfo {
 }
 
 /// Starts the proxy if it isn't already running and returns its bound port.
-async fn ensure_running(state: &CartoMetroState) -> Result<u16, String> {
+async fn ensure_running(state: &CartoMetroState) -> CommandResult<u16> {
     if let Some(port) = state.handle.lock().unpoison().as_ref().map(|h| h.port) {
         return Ok(port);
     }
@@ -375,7 +378,7 @@ pub async fn autostart(app: tauri::AppHandle) {
 /// Ensures the proxy is running and returns the catalog of cities, each with the
 /// tile-URL template to add as a persistent map layer.
 #[tauri::command]
-pub async fn start_cartometro(app: tauri::AppHandle) -> Result<CartoMetroInfo, String> {
+pub async fn start_cartometro(app: tauri::AppHandle) -> CommandResult<CartoMetroInfo> {
     use tauri::Manager;
 
     let port = ensure_running(app.state::<CartoMetroState>().inner()).await?;

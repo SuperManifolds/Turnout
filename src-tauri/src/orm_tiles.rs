@@ -16,6 +16,7 @@ use lru::LruCache;
 use tokio::sync::{oneshot, watch};
 use tower_http::cors::CorsLayer;
 
+use crate::error::{CommandError, CommandResult};
 use crate::server_core::{self, UnpoisonExt};
 
 const PREFERRED_PORT: u16 = 17854;
@@ -786,12 +787,12 @@ fn error_tile(status: StatusCode, body: &'static [u8]) -> Response {
 pub async fn set_orm_offline(
     handle: tauri::State<'_, OrmHandle>,
     dir: Option<String>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let dir = dir.map(PathBuf::from);
     if let Some(d) = &dir {
         let mbtiles = d.join(OFFLINE_MBTILES_FILE);
         if !mbtiles.is_file() {
-            return Err(format!("no offline tile store at {}", mbtiles.display()));
+            return Err(CommandError::NotFound(format!("no offline tile store at {}", mbtiles.display())));
         }
     }
     handle.set_offline_dir(dir);
@@ -802,7 +803,7 @@ pub async fn set_orm_offline(
 /// background runtime, so this polls the shared value (published at bind time)
 /// until it is set rather than assuming `PREFERRED_PORT`.
 #[tauri::command]
-pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> Result<u16, String> {
+pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> CommandResult<u16> {
     for _ in 0..PORT_WAIT_ATTEMPTS {
         let port = handle.shared.bound_port.load(Ordering::SeqCst);
         if port != 0 {
@@ -810,5 +811,5 @@ pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> Result<u16, St
         }
         tokio::time::sleep(std::time::Duration::from_millis(PORT_WAIT_INTERVAL_MS)).await;
     }
-    Err("ORM tile server not bound".into())
+    Err(CommandError::Server("ORM tile server not bound".into()))
 }

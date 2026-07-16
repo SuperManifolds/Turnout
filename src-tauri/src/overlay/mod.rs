@@ -5,6 +5,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::arcgis;
+use crate::error::{CommandError, CommandResult};
 use crate::server_core::UnpoisonExt;
 use crate::settings;
 use crate::tile_server::{self, LayerKind, SourceDef};
@@ -90,14 +91,14 @@ pub async fn pick_kmz_file(app: tauri::AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn create_group(app: tauri::AppHandle, name: String) -> Result<OverlayStatus, String> {
+pub async fn create_group(app: tauri::AppHandle, name: String) -> CommandResult<OverlayStatus> {
     let state = app.state::<OverlayState>();
     let group_id = state.next_group_id();
     let port = port_for_id(group_id);
 
     let handle = tile_server::start(port)
         .await
-        .map_err(|e| format!("Failed to start tile server: {e}"))?;
+        .map_err(|e| CommandError::Server(format!("Failed to start tile server: {e}")))?;
 
     let mut groups = state.groups.lock().unpoison();
     groups.push(TileGroup { id: group_id, name, handle });
@@ -159,7 +160,7 @@ pub async fn add_overlay(
     app: tauri::AppHandle,
     path: String,
     group_id: Option<u32>,
-) -> Result<OverlayStatus, String> {
+) -> CommandResult<OverlayStatus> {
     let ext = std::path::Path::new(&path)
         .extension()
         .and_then(|e| e.to_str())
@@ -177,7 +178,7 @@ pub async fn add_overlay(
     let mut data = parse_overlay_file(&path, kind)?;
 
     if data.bbox().is_none() {
-        return Err("File contains no geometry or overlays".into());
+        return Err(CommandError::Invalid("File contains no geometry or overlays".into()));
     }
 
     if data.name.is_none() {
@@ -211,7 +212,7 @@ pub async fn add_wms_layer(
     layer_name: String,
     display_name: String,
     group_id: Option<u32>,
-) -> Result<OverlayStatus, String> {
+) -> CommandResult<OverlayStatus> {
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
@@ -236,7 +237,7 @@ pub async fn add_arcgis_layer(
     service_name: String,
     display_name: String,
     group_id: Option<u32>,
-) -> Result<OverlayStatus, String> {
+) -> CommandResult<OverlayStatus> {
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
@@ -261,7 +262,7 @@ pub async fn add_xyz_layer(
     display_name: String,
     group_id: Option<u32>,
     kind: Option<String>,
-) -> Result<OverlayStatus, String> {
+) -> CommandResult<OverlayStatus> {
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
@@ -286,7 +287,7 @@ pub async fn add_mbtiles_layer(
     path: String,
     display_name: String,
     group_id: Option<u32>,
-) -> Result<OverlayStatus, String> {
+) -> CommandResult<OverlayStatus> {
     let state = app.state::<OverlayState>();
     ensure_group_exists(&state, &app, group_id).await?;
 
@@ -306,17 +307,17 @@ pub fn move_layer(
     layer_id: u32,
     from_group_id: u32,
     to_group_id: u32,
-) -> Result<OverlayStatus, String> {
+) -> CommandResult<OverlayStatus> {
     let state = app.state::<OverlayState>();
     let groups = state.groups.lock().unpoison();
 
     let from = groups.iter().find(|g| g.id == from_group_id)
-        .ok_or("Source group not found")?;
+        .ok_or_else(|| CommandError::NotFound("Source group not found".into()))?;
     let to = groups.iter().find(|g| g.id == to_group_id)
-        .ok_or("Destination group not found")?;
+        .ok_or_else(|| CommandError::NotFound("Destination group not found".into()))?;
 
     let (layer, runtime) = from.handle.take_layer(layer_id)
-        .ok_or("Layer not found in source group")?;
+        .ok_or_else(|| CommandError::NotFound("Layer not found in source group".into()))?;
     to.handle.insert_layer(layer, runtime);
 
     let status = build_status(&groups);
@@ -531,7 +532,7 @@ async fn ensure_group_exists(
     state: &OverlayState,
     _app: &tauri::AppHandle,
     group_id: Option<u32>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let has_target = {
         let groups = state.groups.lock().unpoison();
         match group_id {
@@ -549,7 +550,7 @@ async fn ensure_group_exists(
 
     let handle = tile_server::start(port)
         .await
-        .map_err(|e| format!("Failed to start tile server: {e}"))?;
+        .map_err(|e| CommandError::Server(format!("Failed to start tile server: {e}")))?;
     let mut groups = state.groups.lock().unpoison();
     if group_id.is_none() && groups.is_empty() || group_id.is_some() && !groups.iter().any(|g| g.id == group_id.expect("checked")) {
         groups.push(TileGroup { id: gid, name: "Default".to_string(), handle });
@@ -559,17 +560,17 @@ async fn ensure_group_exists(
     Ok(())
 }
 
-fn parse_overlay_file(path: &str, kind: LayerKind) -> Result<turnout_core::kml::OverlayData, String> {
+fn parse_overlay_file(path: &str, kind: LayerKind) -> CommandResult<turnout_core::kml::OverlayData> {
     match kind {
         LayerKind::Shp => turnout_core::shapefile_reader::parse_shapefile(std::path::Path::new(path))
-            .map_err(|e| e.to_string()),
+            .map_err(|e| CommandError::Parse(e.to_string())),
         LayerKind::GeoJson => {
-            let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-            turnout_core::geojson_reader::parse_geojson(&text).map_err(|e| e.to_string())
+            let text = std::fs::read_to_string(path).map_err(|e| CommandError::Io(e.to_string()))?;
+            turnout_core::geojson_reader::parse_geojson(&text).map_err(|e| CommandError::Parse(e.to_string()))
         }
         _ => {
-            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-            turnout_core::kml::parse_kmz(&bytes).map_err(|e| e.to_string())
+            let bytes = std::fs::read(path).map_err(|e| CommandError::Io(e.to_string()))?;
+            turnout_core::kml::parse_kmz(&bytes).map_err(|e| CommandError::Parse(e.to_string()))
         }
     }
 }
@@ -591,10 +592,10 @@ fn kind_for_extension(path: &str) -> LayerKind {
 
 
 
-fn find_group(groups: &[TileGroup], group_id: Option<u32>) -> Result<&TileGroup, String> {
+fn find_group(groups: &[TileGroup], group_id: Option<u32>) -> CommandResult<&TileGroup> {
     match group_id {
-        Some(id) => groups.iter().find(|g| g.id == id).ok_or("Group not found".into()),
-        None => groups.first().ok_or("No groups exist".into()),
+        Some(id) => groups.iter().find(|g| g.id == id).ok_or_else(|| CommandError::NotFound("Group not found".into())),
+        None => groups.first().ok_or_else(|| CommandError::NotFound("No groups exist".into())),
     }
 }
 

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use tauri::Emitter;
 
+use crate::error::CommandResult;
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn import_orm(
@@ -12,7 +14,7 @@ pub fn import_orm(
     clip_bbox: Option<(f64, f64, f64, f64)>,
     tangent_mode: bool,
     type_speed_overrides: HashMap<String, u32>,
-) -> Result<(Vec<u8>, usize), String> {
+) -> CommandResult<(Vec<u8>, usize)> {
     let track_kinds = turnout_core::import::default_track_kinds();
     let mod_metas = Vec::new();
 
@@ -20,11 +22,10 @@ pub fn import_orm(
         let _ = app.emit("import-progress", stage);
     };
 
-    turnout_core::import::import_orm(
+    Ok(turnout_core::import::import_orm(
         &json, &name, &railway_types, apply_speed_limits, clip_bbox, tangent_mode,
         &type_speed_overrides, track_kinds, mod_metas, &on_progress,
-    )
-    .map_err(|e| e.to_string())
+    )?)
 }
 
 #[tauri::command]
@@ -34,7 +35,6 @@ pub fn count_track_nodes(
     railway_types: Vec<String>,
     clip_bbox: Option<(f64, f64, f64, f64)>,
     tangent_mode: bool,
-) -> Result<usize, String> {
-    turnout_core::import::count_track_nodes(&json, &railway_types, clip_bbox, tangent_mode)
-        .map_err(|e| e.to_string())
+) -> CommandResult<usize> {
+    Ok(turnout_core::import::count_track_nodes(&json, &railway_types, clip_bbox, tangent_mode)?)
 }

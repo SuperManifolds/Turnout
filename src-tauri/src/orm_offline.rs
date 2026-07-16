@@ -10,6 +10,7 @@ use rusqlite::Connection;
 use serde_json::{Map, Value};
 use tauri::{Emitter, Manager};
 
+use crate::error::{CommandError, CommandResult};
 use crate::mbtiles::{DownloadProgress, ProgressEvent};
 use crate::server_core::{USER_AGENT, UnpoisonExt};
 
@@ -99,10 +100,10 @@ pub async fn download_orm_offline(
     z_min: u8,
     z_max: u8,
     progress: Arc<DownloadProgress>,
-) -> Result<PathBuf, String> {
+) -> CommandResult<PathBuf> {
     use turnout_core::geo::latlon_to_tile_xy;
 
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::Io(format!("Failed to create dir: {e}")))?;
 
     let orm_base = crate::settings::resolve_orm_base(crate::settings::load(&app).orm_base_url.as_deref());
 
@@ -117,7 +118,7 @@ pub async fn download_orm_offline(
         .http1_only()
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
         .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+        .map_err(|e| CommandError::Network(format!("HTTP client error: {e}")))?;
 
     let z_min = z_min.max(ORM_MIN_ZOOM);
     let mut tiles: Vec<(u8, u32, u32)> = Vec::new();
@@ -138,7 +139,7 @@ pub async fn download_orm_offline(
     // Resources (sprites + glyph ranges) are counted into the same progress total
     // so the bar advances from the first file rather than sitting at 0/0 while
     // ~1000 glyph requests run.
-    let resources = resource_list(&dir, &orm_base).map_err(|e| format!("Failed to prepare resources: {e}"))?;
+    let resources = resource_list(&dir, &orm_base).map_err(|e| CommandError::Io(format!("Failed to prepare resources: {e}")))?;
     progress.total.store((tiles.len() + resources.len()) as u64, Ordering::Relaxed);
     emit_progress(&app, &progress);
 
@@ -153,7 +154,7 @@ pub async fn download_orm_offline(
         z_min,
         z_max,
     )
-    .map_err(|e| format!("Failed to create MBTiles: {e}"))?;
+    .map_err(|e| CommandError::Io(format!("Failed to create MBTiles: {e}")))?;
 
     // Resume support: drop tiles already stored (e.g. from an aborted run). They
     // still count toward `total`, so pre-credit them as completed to keep the bar
@@ -164,7 +165,7 @@ pub async fn download_orm_offline(
         (conn, existing)
     })
     .await
-    .map_err(|e| format!("Resume scan failed: {e}"))?;
+    .map_err(|e| CommandError::Other(format!("Resume scan failed: {e}")))?;
     if !existing.is_empty() {
         let before = tiles.len();
         tiles.retain(|&(z, x, y)| !existing.contains(&(z, x, turnout_core::geo::tms_y(z, y))));
@@ -270,12 +271,12 @@ pub async fn download_orm_offline(
     // Stop fetching, then close the channel so the writer flushes its open transaction.
     drop(stream);
     drop(tx);
-    let conn = writer.join().map_err(|_| "Tile writer thread panicked".to_string())?;
-    finalize_vector_mbtiles(&conn).map_err(|e| format!("Failed to finalize MBTiles: {e}"))?;
+    let conn = writer.join().map_err(|_| CommandError::Other("Tile writer thread panicked".to_string()))?;
+    finalize_vector_mbtiles(&conn).map_err(|e| CommandError::Io(format!("Failed to finalize MBTiles: {e}")))?;
     emit_progress(&app, &progress);
 
     if cancelled {
-        return Err("Download cancelled".into());
+        return Err(CommandError::Other("Download cancelled".into()));
     }
 
     // Phase 3: Generate self-contained offline styles pointing at local resources
@@ -385,10 +386,10 @@ async fn download_resources(
     client: &reqwest::Client,
     resources: &[(String, PathBuf)],
     progress: &DownloadProgress,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     for chunk in resources.chunks(CONCURRENT_REQUESTS) {
         if progress.cancelled.load(Ordering::Relaxed) {
-            return Err("Download cancelled".into());
+            return Err(CommandError::Other("Download cancelled".into()));
         }
 
         let futures = chunk.iter().map(|(url, dest)| async move {
@@ -412,9 +413,9 @@ async fn download_resources(
 /// Rewrites the bundled styles into fully self-contained offline styles that
 /// reference the local `MBTiles`, sprites and fonts, and writes them to
 /// `<dir>/styles/{name}_offline.json`.
-fn generate_offline_styles(dir: &Path) -> Result<(), String> {
+fn generate_offline_styles(dir: &Path) -> CommandResult<()> {
     let styles_dir = dir.join("styles");
-    std::fs::create_dir_all(&styles_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&styles_dir).map_err(|e| CommandError::Io(e.to_string()))?;
 
     let dir_str = dir.to_string_lossy();
     let orm_source = serde_json::json!({
@@ -428,11 +429,11 @@ fn generate_offline_styles(dir: &Path) -> Result<(), String> {
     let glyphs = Value::String(format!("file://{dir_str}/fonts/{{fontstack}}/{{range}}.pbf"));
 
     for (name, raw) in crate::orm_tiles::STYLES {
-        let mut style: Value = serde_json::from_str(raw).map_err(|e| format!("{name}: {e}"))?;
+        let mut style: Value = serde_json::from_str(raw).map_err(|e| CommandError::Parse(format!("{name}: {e}")))?;
         rewrite_offline_style(&mut style, &orm_source, &sprite, &glyphs);
         let out = styles_dir.join(format!("{name}_offline.json"));
-        let json = serde_json::to_string(&style).map_err(|e| format!("{name}: {e}"))?;
-        std::fs::write(out, json).map_err(|e| format!("{name}: {e}"))?;
+        let json = serde_json::to_string(&style).map_err(|e| CommandError::Parse(format!("{name}: {e}")))?;
+        std::fs::write(out, json).map_err(|e| CommandError::Io(format!("{name}: {e}")))?;
     }
     Ok(())
 }
@@ -797,13 +798,13 @@ pub async fn download_orm_tiles(
     east: f64,
     z_min: u8,
     z_max: u8,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     use tauri_plugin_dialog::DialogExt;
 
     let dir = app.dialog()
         .file()
         .blocking_pick_folder()
-        .ok_or("No folder selected")?
+        .ok_or_else(|| CommandError::NotFound("No folder selected".into()))?
         .to_string();
 
     let dir = PathBuf::from(dir).join("orm_offline");
