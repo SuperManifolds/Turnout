@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::Result;
 use std::fmt;
 use crate::wire::{PayloadReader, PayloadWriter};
 use super::{NrclipRead, NrclipWrite};

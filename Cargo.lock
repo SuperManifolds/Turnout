@@ -6741,7 +6741,6 @@ dependencies = [
 name = "turnout-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "quick-xml 0.37.5",
  "serde",
  "serde_json",

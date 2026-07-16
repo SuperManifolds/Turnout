@@ -8,7 +8,7 @@
 //! 5. Generate game track nodes with junction topology
 //! 6. Serialize to .nrclip
 
-use anyhow::{Context, Result};
+use crate::error::{Context, CoreError, Result};
 use std::collections::{HashMap, HashSet};
 
 use crate::geo::latlon_to_mercator;
@@ -137,7 +137,9 @@ pub fn extract_vanilla_track_kinds(collections_path: &str) -> Result<VanillaTrac
         }
     }
 
-    anyhow::bail!("vanilla track kinds (1,2,3) not found in collections.nrclip")
+    Err(CoreError::Import(
+        "vanilla track kinds (1,2,3) not found in collections.nrclip".into(),
+    ))
 }
 
 /// Hardcoded vanilla track kind definitions (keys 1–3). These reference the game's
@@ -260,10 +262,10 @@ pub fn import_orm(
 
     let node_count = track_nodes.len();
     if node_count > MAX_TRACK_NODES {
-        anyhow::bail!(
+        return Err(CoreError::Import(format!(
             "Blueprint has {node_count} track nodes, exceeding the {MAX_TRACK_NODES} limit. \
              Reduce the selection area or disable some track types."
-        );
+        )));
     }
 
     on_progress("Attaching junctions...");
@@ -291,8 +293,11 @@ pub fn import_orm(
 // ══════════════════════════════════════════════════════════════════════
 
 fn parse_osm_data(json: &str, railway_types: &[String]) -> Result<OsmData> {
-    let data: serde_json::Value = serde_json::from_str(json).context("parse JSON")?;
-    let elements = data["elements"].as_array().context("no elements")?;
+    let data: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| CoreError::Parse { format: "osm", detail: e.to_string() })?;
+    let elements = data["elements"]
+        .as_array()
+        .ok_or_else(|| CoreError::Parse { format: "osm", detail: "no elements".into() })?;
 
     let mut osm = OsmData {
         nodes: HashMap::new(),

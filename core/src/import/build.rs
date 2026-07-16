@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::geo::{inverse_geodesic, merc_y_to_lat_rad};
 use crate::nrc1::NrclipFile;

@@ -1,3 +1,4 @@
+pub mod error;
 pub mod wire;
 pub mod types;
 pub mod nrc1;
@@ -10,3 +11,5 @@ pub mod geo;
 pub mod kml;
 pub mod overlay_style;
 pub mod shapefile_reader;
+
+pub use error::{CoreError, Result};

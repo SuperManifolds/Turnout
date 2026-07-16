@@ -1,7 +1,7 @@
 //! Wire-format primitives matching the game's serde vtable.
 //! `PayloadReader` for deserialization, `PayloadWriter` for serialization.
 
-use anyhow::Result;
+use crate::error::{CoreError, Result};
 
 // ══════════════════════════════════════════════════════════════════════
 // Reader
@@ -33,7 +33,7 @@ impl<'a> PayloadReader<'a> {
         let mut shift = 0u32;
         loop {
             if self.pos >= self.data.len() {
-                anyhow::bail!("EOF reading varint at {start}");
+                return Err(CoreError::UnexpectedEof { reading: "varint", pos: start });
             }
             let b = self.data[self.pos];
             self.pos += 1;
@@ -43,7 +43,7 @@ impl<'a> PayloadReader<'a> {
             }
             shift += 7;
             if shift >= 64 {
-                anyhow::bail!("varint overflow at {start}");
+                return Err(CoreError::VarintOverflow { pos: start });
             }
         }
     }
@@ -62,7 +62,7 @@ impl<'a> PayloadReader<'a> {
     /// Raw u8 (NOT varint).
     pub fn read_raw_u8(&mut self) -> Result<u8> {
         if self.pos >= self.data.len() {
-            anyhow::bail!("EOF reading u8 at {}", self.pos);
+            return Err(CoreError::UnexpectedEof { reading: "u8", pos: self.pos });
         }
         let v = self.data[self.pos];
         self.pos += 1;
@@ -72,7 +72,7 @@ impl<'a> PayloadReader<'a> {
     /// Raw f32 LE.
     pub fn read_f32(&mut self) -> Result<f32> {
         if self.pos + 4 > self.data.len() {
-            anyhow::bail!("EOF reading f32 at {}", self.pos);
+            return Err(CoreError::UnexpectedEof { reading: "f32", pos: self.pos });
         }
         let v = f32::from_le_bytes(self.data[self.pos..self.pos + 4].try_into().expect("4-byte slice"));
         self.pos += 4;
@@ -82,7 +82,7 @@ impl<'a> PayloadReader<'a> {
     /// Raw f64 LE.
     pub fn read_f64(&mut self) -> Result<f64> {
         if self.pos + 8 > self.data.len() {
-            anyhow::bail!("EOF reading f64 at {}", self.pos);
+            return Err(CoreError::UnexpectedEof { reading: "f64", pos: self.pos });
         }
         let v = f64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().expect("8-byte slice"));
         self.pos += 8;
@@ -93,12 +93,12 @@ impl<'a> PayloadReader<'a> {
     pub fn read_string(&mut self) -> Result<String> {
         let len = self.read_varint()? as usize;
         if self.pos + len > self.data.len() {
-            anyhow::bail!("EOF reading string({}) at {}", len, self.pos);
+            return Err(CoreError::UnexpectedEof { reading: "string", pos: self.pos });
         }
         let bytes = &self.data[self.pos..self.pos + len];
         self.pos += len;
         String::from_utf8(bytes.to_vec())
-            .map_err(|e| anyhow::anyhow!("invalid UTF-8 string at {}: {}", self.pos - len, e))
+            .map_err(|_| CoreError::InvalidUtf8 { pos: self.pos - len })
     }
 
     /// `vec_set`<i64>: varint(count) + count × zigzag i64.

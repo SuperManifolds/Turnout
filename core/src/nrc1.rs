@@ -1,6 +1,6 @@
 //! NRC1 container: header + zstd + wyhash checksum.
 
-use anyhow::Result;
+use crate::error::{CoreError, Result};
 use crate::wire::{PayloadReader, PayloadWriter};
 use crate::types::{Collection, NrclipRead, NrclipWrite};
 
@@ -25,8 +25,11 @@ impl NrclipFile {
             collections.push(Collection::nrclip_read(&mut r, version)?);
         }
         if r.remaining() > 0 {
-            anyhow::bail!("{} trailing bytes at offset {} (payload size {})",
-                r.remaining(), r.position(), payload.len());
+            return Err(CoreError::TrailingBytes {
+                remaining: r.remaining(),
+                offset: r.position(),
+                payload_len: payload.len(),
+            });
         }
         Ok(NrclipFile { version, collections })
     }
@@ -53,7 +56,9 @@ impl NrclipFile {
         use zstd_pure_rs::prelude::*;
 
         if data.len() < 32 || &data[0..4] != b"NRC1" {
-            anyhow::bail!("not an NRC1 file (too short or bad magic)");
+            return Err(CoreError::BadContainer(
+                "not an NRC1 file (too short or bad magic)".into(),
+            ));
         }
         let version = u32::from_le_bytes(data[4..8].try_into().expect("4-byte slice"));
         let uncompressed_size = u64::from_le_bytes(data[8..16].try_into().expect("8-byte slice")) as usize;
@@ -62,7 +67,7 @@ impl NrclipFile {
         let mut payload = vec![0u8; uncompressed_size];
         let decoded_size = ZSTD_decompress(&mut payload, compressed);
         if ERR_isError(decoded_size) {
-            anyhow::bail!("zstd decompress failed");
+            return Err(CoreError::Compression("decompress"));
         }
         payload.truncate(decoded_size);
 
@@ -76,7 +81,7 @@ impl NrclipFile {
         let mut compressed = vec![0u8; ZSTD_compressBound(payload.len())];
         let c_size = ZSTD_compress(&mut compressed, payload, 3);
         if ERR_isError(c_size) {
-            anyhow::bail!("zstd compress failed");
+            return Err(CoreError::Compression("compress"));
         }
         compressed.truncate(c_size);
 
