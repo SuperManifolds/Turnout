@@ -40,7 +40,10 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: check
+          # Share one Linux cache across check, clippy, and the Linux test job:
+          # they build the same maplibre-native core, and 5 separate ~2.6 GB
+          # caches would blow the 10 GB repo cache budget and evict each other.
+          shared-key: ubuntu-22.04
 
       - run: cargo check --all-targets
 
@@ -67,7 +70,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: clippy
+          shared-key: ubuntu-22.04
 
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -117,7 +120,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}
+          # Per-OS shared key; the ubuntu-22.04 variant reuses the same cache as
+          # the check and clippy jobs above.
+          shared-key: ${{ matrix.os }}
 
       # turnout-web is a wasm-only frontend crate (no host tests); it is
       # exercised by `trunk build` in the release workflow.
