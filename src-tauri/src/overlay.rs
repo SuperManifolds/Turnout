@@ -470,6 +470,7 @@ pub fn set_layer_visible(app: tauri::AppHandle, group_id: u32, layer_id: u32, vi
     }
     let status = build_status(&groups);
     drop(groups);
+    save_groups(&app);
     status
 }
 
@@ -483,6 +484,7 @@ pub fn set_layer_opacity(app: tauri::AppHandle, group_id: u32, layer_id: u32, op
     }
     let status = build_status(&groups);
     drop(groups);
+    save_groups(&app);
     status
 }
 
@@ -834,9 +836,14 @@ fn save_groups(app: &tauri::AppHandle) {
     }).collect();
     drop(groups);
 
-    if let Ok(store) = app.store("settings.json") {
-        store.set(STORE_KEY, serde_json::json!(saved));
-        let _ = store.save();
+    match app.store("settings.json") {
+        Ok(store) => {
+            store.set(STORE_KEY, serde_json::json!(saved));
+            if let Err(e) = store.save() {
+                tracing::error!("failed to persist overlays: {e}");
+            }
+        }
+        Err(e) => tracing::error!("failed to open store to persist overlays: {e}"),
     }
 }
 
@@ -886,6 +893,30 @@ mod tests {
     #[test]
     fn mixed_legacy_and_saved_ids_avoid_collision() {
         assert_eq!(allocate_group_ids(&[Some(2), None, None]), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn saved_group_json_round_trips_stably() {
+        // Locks the on-disk overlay schema: a group with a mix of source kinds must
+        // serialize and deserialize back to the identical JSON. A field rename or a
+        // variant change that broke this would silently drop users' overlays.
+        let group = SavedGroup {
+            id: Some(2),
+            name: "Reference".to_string(),
+            layers: vec![
+                SavedLayer { name: "kmz".into(), visible: true, opacity: 1.0,
+                    source: SavedSource::Kmz { path: "/a/b.kmz".into() } },
+                SavedLayer { name: "wms".into(), visible: false, opacity: 0.5,
+                    source: SavedSource::Wms { wms_url: "http://w".into(), wms_layer: "L".into() } },
+                SavedLayer { name: "sat".into(), visible: true, opacity: 0.8,
+                    source: SavedSource::Apple { sat: true, xyz_url: None } },
+                SavedLayer { name: "mb".into(), visible: true, opacity: 1.0,
+                    source: SavedSource::MbTiles { path: "/t.mbtiles".into() } },
+            ],
+        };
+        let json = serde_json::to_string(&group).expect("serialize");
+        let back: SavedGroup = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).expect("re-serialize"), json);
     }
 
     #[test]
