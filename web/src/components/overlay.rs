@@ -166,8 +166,10 @@ pub fn OverlayDrawer(
         set_status.set(new_status);
     };
 
+    // Overlays are restored in the backend at startup; the frontend only reads the
+    // current status and mirrors it onto the map.
     spawn_local(async move {
-        let s = tauri::restore_overlays().await;
+        let s = tauri::get_overlay_status().await;
         if !s.groups.is_empty() {
             apply_status(s);
         }

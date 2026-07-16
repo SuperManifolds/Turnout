@@ -498,8 +498,11 @@ pub fn update_apple_urls(
 }
 
 /// Rewrites every live Apple layer's tile URL with a fresh access key and per-kind
-/// version, then persists the overlay set. Shared by the manual `update_apple_urls`
-/// command and the automatic token refresher.
+/// version. Shared by the manual `update_apple_urls` command and the automatic
+/// token refresher. It does NOT persist: the token is not part of the saved layer
+/// (only the `sat` flag is), so there is nothing new to write — and the refresher
+/// runs at startup before the overlays are restored, so a save here would persist
+/// the still-empty group set over the saved overlays and wipe them.
 pub(crate) fn apply_apple_credentials(
     app: &tauri::AppHandle,
     access_key: &str,
@@ -528,7 +531,6 @@ pub(crate) fn apply_apple_credentials(
     }
     let status = build_status(&groups);
     drop(groups);
-    save_groups(app);
     status
 }
 
