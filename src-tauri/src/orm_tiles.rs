@@ -1,5 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
@@ -75,7 +74,6 @@ pub(crate) const STYLES: &[(&str, &str)] = &[
 ];
 
 type Key = (Arc<str>, u8, u32, u32);
-type TileCache = LruCache<Key, Bytes>;
 type RawImage = ImageBuffer<Rgba<u8>, Vec<u8>>;
 type Waiters = HashMap<Key, Vec<oneshot::Sender<TileResult>>>;
 
@@ -89,42 +87,9 @@ enum TileResult {
     Failed,
 }
 
-/// A hash-striped PNG cache. Each stripe is an independently locked LRU holding a
-/// `TILE_CACHE_CAPACITY / CACHE_STRIPES` slice of the total capacity. A key always
-/// maps to one stripe, so no operation ever needs to hold two stripe locks.
-struct StripedCache {
-    stripes: Vec<Mutex<TileCache>>,
-}
-
-impl StripedCache {
-    fn new(total_capacity: usize) -> Self {
-        let per_stripe = (total_capacity / CACHE_STRIPES).max(1);
-        let cap = NonZeroUsize::new(per_stripe).expect("nonzero");
-        let stripes = (0..CACHE_STRIPES).map(|_| Mutex::new(LruCache::new(cap))).collect();
-        Self { stripes }
-    }
-
-    fn stripe(&self, key: &Key) -> &Mutex<TileCache> {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        let idx = (hasher.finish() as usize) % CACHE_STRIPES;
-        &self.stripes[idx]
-    }
-
-    fn get(&self, key: &Key) -> Option<Bytes> {
-        self.stripe(key).lock().unpoison().get(key).cloned()
-    }
-
-    fn contains(&self, key: &Key) -> bool {
-        self.stripe(key).lock().unpoison().contains(key)
-    }
-
-    fn clear(&self) {
-        for stripe in &self.stripes {
-            stripe.lock().unpoison().clear();
-        }
-    }
-}
+/// The PNG tile cache: a hash-striped shared [`server_core::TileCache`] keyed by
+/// `(style, z, x, y)`, sized to `TILE_CACHE_CAPACITY` across `CACHE_STRIPES` shards.
+type TileCache = server_core::TileCache<Key>;
 
 fn canonical_style(name: &str) -> Arc<str> {
     if STYLES.iter().any(|(n, _)| *n == name) {
@@ -205,7 +170,7 @@ struct OrmShared {
 }
 
 struct OrmTileState {
-    cache: Arc<StripedCache>,
+    cache: Arc<TileCache>,
     dispatch: Arc<Dispatch>,
     shared: Arc<OrmShared>,
 }
@@ -213,7 +178,7 @@ struct OrmTileState {
 pub struct OrmHandle {
     _shutdown_tx: watch::Sender<bool>,
     shared: Arc<OrmShared>,
-    cache: Arc<StripedCache>,
+    cache: Arc<TileCache>,
 }
 
 impl OrmHandle {
@@ -283,7 +248,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         tracing::warn!("shared network source unavailable ({e}); using mbgl default");
     }
 
-    let cache: Arc<StripedCache> = Arc::new(StripedCache::new(TILE_CACHE_CAPACITY));
+    let cache: Arc<TileCache> = Arc::new(TileCache::new(TILE_CACHE_CAPACITY, CACHE_STRIPES));
 
     let (encode_tx, encode_rx) = std::sync::mpsc::channel::<(Key, RawImage, u64)>();
     let encode_rx = Arc::new(Mutex::new(encode_rx));
@@ -318,15 +283,14 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 
                 // Lock order: waiters → cache stripe (matches serve_tile double-check order).
                 let mut waiters = dispatch.waiters.lock().unpoison();
-                // Compare the render's generation and insert under the stripe lock so
-                // a concurrent offline toggle (which bumps then clears every stripe)
-                // can never let a stale tile survive the clear.
+                // Insert only if the render's generation still matches, evaluated
+                // under the stripe lock so a concurrent offline toggle (which bumps
+                // the generation then clears every stripe) can't let a stale tile
+                // survive the clear.
                 if let TileResult::Png(ref png) = outcome {
-                    let stripe = cache.stripe(&key);
-                    let mut stripe = stripe.lock().unpoison();
-                    if generation == shared.generation.load(Ordering::SeqCst) {
-                        stripe.put(key.clone(), png.clone());
-                    }
+                    cache.put_if(key.clone(), png.clone(), || {
+                        generation == shared.generation.load(Ordering::SeqCst)
+                    });
                 }
                 let senders = waiters.remove(&key);
                 drop(waiters);
@@ -522,7 +486,7 @@ fn try_pop_key(dispatch: &Dispatch) -> Option<(Key, bool)> {
 /// already cached, already awaited, or already queued. Prefetch entries carry no
 /// waiters; they only warm the cache so a subsequent pan resolves from it. Bounded
 /// to `PREFETCH_QUEUE_CAP`. Returns how many keys were enqueued.
-fn enqueue_prefetch_ring(q: &mut Queues, waiters: &Waiters, cache: &StripedCache, key: &Key) -> usize {
+fn enqueue_prefetch_ring(q: &mut Queues, waiters: &Waiters, cache: &TileCache, key: &Key) -> usize {
     let (style, z, x, y) = (&key.0, key.1, key.2, key.3);
     let max = i64::from(1u32 << z);
     let mut added = 0;
@@ -596,7 +560,7 @@ fn warm_one_style(
 fn render_worker_inner(
     id: usize,
     dispatch: &Dispatch,
-    cache: &Arc<StripedCache>,
+    cache: &Arc<TileCache>,
     cache_path: &std::path::Path,
     encode_tx: &std::sync::mpsc::Sender<(Key, RawImage, u64)>,
     shared: &OrmShared,
