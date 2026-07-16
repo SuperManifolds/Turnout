@@ -1009,3 +1009,30 @@ fn line_rect_intersect(
     )?;
     Some((lat, lon))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maxspeed_parses_units_and_defaults_to_zero() {
+        assert_eq!(parse_maxspeed_kmh("80"), 80.0);
+        assert_eq!(parse_maxspeed_kmh("  100 "), 100.0);
+        assert!((parse_maxspeed_kmh("50 mph") - 50.0 * 1.60934).abs() < 1e-6);
+        assert!((parse_maxspeed_kmh("50mph") - 50.0 * 1.60934).abs() < 1e-6);
+        assert!((parse_maxspeed_kmh("10 knots") - 10.0 * 1.852).abs() < 1e-6);
+        // Unparseable tags (e.g. "none", "RU:rural") fall back to 0, not a panic.
+        assert_eq!(parse_maxspeed_kmh("none"), 0.0);
+        assert_eq!(parse_maxspeed_kmh(""), 0.0);
+    }
+
+    #[test]
+    fn line_rect_intersect_crosses_the_north_edge_with_latlon_order() {
+        // Rect lat[0,10] lon[0,10]; segment from inside (lat5,lon5) north to (lat15,lon5)
+        // must cross the north edge at lat=10, lon=5 — and return (lat, lon), not (lon, lat).
+        let hit = line_rect_intersect(5.0, 5.0, 15.0, 5.0, 0.0, 0.0, 10.0, 10.0)
+            .expect("segment crosses the rect boundary");
+        assert!((hit.0 - 10.0).abs() < 1e-9, "lat should be the north edge, got {}", hit.0);
+        assert!((hit.1 - 5.0).abs() < 1e-9, "lon should be unchanged, got {}", hit.1);
+    }
+}
