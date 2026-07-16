@@ -45,6 +45,12 @@ impl Default for Settings {
 
 const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
 
+/// Settings-window auto-fit geometry: fixed width, content-height padding, and a
+/// ceiling so a long panel scrolls rather than growing off-screen.
+const SETTINGS_WINDOW_WIDTH: f64 = 480.0;
+const SETTINGS_WINDOW_PADDING: f64 = 40.0;
+const SETTINGS_WINDOW_MAX_HEIGHT: f64 = 900.0;
+
 const SPEED_TRACK_TYPES: &[(&str, &str, u32)] = &[
     ("rail", "Rail", 160),
     ("rail:yard", "Rail — Yard", 40),
@@ -108,25 +114,8 @@ fn fit_window_to_content() {
         let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 
         let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) else { return };
-        let height = f64::from(body.scroll_height()) + 40.0;
-
-        let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
-        let Ok(window_mod) = js_sys::Reflect::get(&tauri, &"window".into()) else { return };
-        let Ok(get_current) = js_sys::Reflect::get(&window_mod, &"getCurrentWindow".into()) else { return };
-        let Ok(get_current) = get_current.dyn_into::<js_sys::Function>() else { return };
-        let Ok(win) = get_current.call0(&JsValue::NULL) else { return };
-        let Ok(set_size) = js_sys::Reflect::get(&win, &"setSize".into()) else { return };
-        let Ok(set_size) = set_size.dyn_into::<js_sys::Function>() else { return };
-
-        // Create LogicalSize
-        let Ok(logical_size_class) = js_sys::Reflect::get(&window_mod, &"LogicalSize".into()) else { return };
-        let Ok(logical_size_class) = logical_size_class.dyn_into::<js_sys::Function>() else { return };
-        let Ok(size) = js_sys::Reflect::construct(&logical_size_class, &js_sys::Array::of2(
-            &JsValue::from_f64(480.0),
-            &JsValue::from_f64(height.min(900.0)),
-        )) else { return };
-
-        let _ = set_size.call1(&win, &size);
+        let height = (f64::from(body.scroll_height()) + SETTINGS_WINDOW_PADDING).min(SETTINGS_WINDOW_MAX_HEIGHT);
+        crate::tauri::set_window_logical_size(SETTINGS_WINDOW_WIDTH, height);
     });
 }
 
@@ -246,28 +235,13 @@ pub fn AppSettings() -> impl IntoView {
 
     // React to the background refresher: pull fresh values on success, surface the
     // error on repeated failure.
-    spawn_local(async move {
-        let Ok(tauri_obj) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return };
-        let Ok(event_mod) = js_sys::Reflect::get(&tauri_obj, &"event".into()) else { return };
-        let Ok(listen_fn) = js_sys::Reflect::get(&event_mod, &"listen".into()) else { return };
-        let Ok(listen_fn) = listen_fn.dyn_into::<js_sys::Function>() else { return };
-
-        let refreshed = Closure::wrap(Box::new(move |_: JsValue| {
-            sync_apple_from_store();
-            set_apple_refresh_status.set("Token refreshed".to_string());
-        }) as Box<dyn Fn(JsValue)>);
-        let _ = listen_fn.call2(&event_mod, &"apple-token-refreshed".into(), refreshed.as_ref().unchecked_ref());
-        refreshed.forget();
-
-        let failed = Closure::wrap(Box::new(move |event: JsValue| {
-            let msg = js_sys::Reflect::get(&event, &"payload".into())
-                .ok()
-                .and_then(|p| p.as_string())
-                .unwrap_or_else(|| "unknown error".to_string());
-            set_apple_refresh_status.set(format!("Auto-refresh failing: {msg}"));
-        }) as Box<dyn Fn(JsValue)>);
-        let _ = listen_fn.call2(&event_mod, &"apple-token-refresh-failed".into(), failed.as_ref().unchecked_ref());
-        failed.forget();
+    crate::tauri::listen_to_events(&["apple-token-refreshed"], move |_| {
+        sync_apple_from_store();
+        set_apple_refresh_status.set("Token refreshed".to_string());
+    });
+    crate::tauri::listen_to_events(&["apple-token-refresh-failed"], move |payload| {
+        let msg = payload.as_string().unwrap_or_else(|| "unknown error".to_string());
+        set_apple_refresh_status.set(format!("Auto-refresh failing: {msg}"));
     });
 
     let on_browse = move |_| {

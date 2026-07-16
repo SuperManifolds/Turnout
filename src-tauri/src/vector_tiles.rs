@@ -5,7 +5,6 @@
 //! tiles do not carry — is read straight from the raw Overpass response.
 
 use std::collections::BTreeSet;
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,13 +15,12 @@ use axum::routing::get;
 use lru::LruCache;
 use mvt::{GeomData, GeomEncoder, GeomType, Tile};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 use turnout_core::geo::{latlon_to_tile_pixel, tile_bounds};
 
 use crate::overpass;
-use crate::tile_server::UnpoisonExt;
+use crate::server_core::{self, ServerHandle, UnpoisonExt};
 
 const EXTENT: u32 = 4096;
 const PIXELS_PER_TILE: f64 = 256.0;
@@ -471,17 +469,6 @@ impl RailDataset {
 
 // --- HTTP server ---
 
-pub struct ServerHandle {
-    pub port: u16,
-    shutdown_tx: watch::Sender<bool>,
-}
-
-impl ServerHandle {
-    fn shutdown(&self) {
-        let _ = self.shutdown_tx.send(true);
-    }
-}
-
 /// Live server state managed by Tauri (at most one running at a time).
 #[derive(Default)]
 pub struct VectorLayerState {
@@ -517,28 +504,17 @@ fn tile_url_template(port: u16) -> String {
     format!("http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}.pbf")
 }
 
-async fn bind_local() -> Result<TcpListener, String> {
-    for _ in 0..BIND_ATTEMPTS {
-        if let Ok(listener) = TcpListener::bind(format!("127.0.0.1:{PREFERRED_PORT}")).await {
-            return Ok(listener);
-        }
-        tokio::time::sleep(BIND_RETRY_DELAY).await;
-    }
-    TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())
-}
-
 async fn start(dataset: RailDataset) -> Result<ServerHandle, String> {
-    let listener = bind_local().await?;
+    let listener = server_core::bind_with_retry(PREFERRED_PORT, BIND_ATTEMPTS, BIND_RETRY_DELAY).await?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
-    let cache = LruCache::new(NonZeroUsize::new(TILE_CACHE_CAPACITY).expect("nonzero capacity"));
     // Bound concurrent encodes to the core count so a burst of tile requests can't
     // spawn a runaway number of blocking tasks.
     let concurrency = std::thread::available_parallelism().map_or(DEFAULT_ENCODE_CONCURRENCY, std::num::NonZero::get);
     let data = Arc::new(ServerData {
         dataset,
         tile_template: tile_url_template(port),
-        tile_cache: Mutex::new(cache),
+        tile_cache: server_core::lru_cache(TILE_CACHE_CAPACITY),
         encode_limit: Semaphore::new(concurrency),
     });
     let app = Router::new()
@@ -547,21 +523,7 @@ async fn start(dataset: RailDataset) -> Result<ServerHandle, String> {
         .layer(CorsLayer::permissive())
         .with_state(data);
 
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-    tokio::spawn(async move {
-        // Surface an unexpected exit (e.g. an accept error) rather than swallowing
-        // it — a silently-dead accept loop looks like a hang from the game's side.
-        if let Err(e) = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.changed().await;
-            })
-            .await
-        {
-            eprintln!("[orm-layers] tile server exited: {e}");
-        }
-    });
-
-    Ok(ServerHandle { port, shutdown_tx })
+    Ok(server_core::spawn_server(listener, app))
 }
 
 async fn serve_tilejson(State(data): State<Arc<ServerData>>) -> impl IntoResponse {

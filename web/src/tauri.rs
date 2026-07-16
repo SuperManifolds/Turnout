@@ -1,28 +1,64 @@
 //! Tauri command invocation bridge for WASM frontend.
 
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 pub async fn invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
-    let tauri = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
-        .map_err(|_| "Tauri not available")?;
-    let core = js_sys::Reflect::get(&tauri, &"core".into())
-        .map_err(|_| "Tauri core not available")?;
-    let invoke_fn: js_sys::Function = js_sys::Reflect::get(&core, &"invoke".into())
-        .map_err(|_| "invoke not available")?
-        .unchecked_into();
+    let invoke_fn = tauri_namespace_fn("core", "invoke").ok_or("Tauri not available")?;
     let promise = invoke_fn.call2(&JsValue::NULL, &cmd.into(), args)
         .map_err(|e| format!("{e:?}"))?;
-    JsFuture::from(js_sys::Promise::from(promise))
-        .await
-        .map_err(|e| format!("{e:?}"))
+    await_promise(promise).await
 }
 
-pub fn js_set(obj: &js_sys::Object, key: &str, val: &JsValue) -> Result<(), String> {
-    js_sys::Reflect::set(obj, &key.into(), val)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to set {key}: {e:?}"))
+/// Invoke a command whose arguments are an args object, taking ownership so the
+/// converted [`JsValue`] outlives the await without a borrow dance at call sites.
+async fn invoke_obj(cmd: &str, args: js_sys::Object) -> Result<JsValue, String> {
+    invoke(cmd, &args.into()).await
+}
+
+/// Set a property on an args object. Setting a property on the fresh objects
+/// built here cannot fail (they are never frozen), so the result is ignored —
+/// centralizing the one unavoidable ignore instead of scattering `let _ =`.
+fn set(obj: &js_sys::Object, key: &str, val: impl Into<JsValue>) {
+    let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &val.into());
+}
+
+/// Deserialize a Tauri result (a JS value) into a Rust type, or `None` on shape
+/// mismatch. Symmetric with the backend's `serde` serialization.
+fn from_js<T: serde::de::DeserializeOwned>(val: JsValue) -> Option<T> {
+    serde_wasm_bindgen::from_value(val).ok()
+}
+
+/// Resolve `__TAURI__.<namespace>.<method>` as a callable JS function.
+fn tauri_namespace_fn(namespace: &str, method: &str) -> Option<js_sys::Function> {
+    let tauri = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()).ok()?;
+    let ns = js_sys::Reflect::get(&tauri, &namespace.into()).ok()?;
+    js_sys::Reflect::get(&ns, &method.into()).ok()?.dyn_into().ok()
+}
+
+/// Await a JS `Promise` returned by a Tauri call.
+async fn await_promise(promise: JsValue) -> Result<JsValue, String> {
+    JsFuture::from(js_sys::Promise::from(promise)).await.map_err(|e| format!("{e:?}"))
+}
+
+/// Register `callback` for each named Tauri event. The callback receives the
+/// event's `payload` (or `JsValue::UNDEFINED` when absent). The listener lives
+/// for the app's lifetime — the closure is leaked, matching the prior `.forget()`.
+pub fn listen_to_events(events: &[&str], callback: impl Fn(JsValue) + 'static) {
+    let events: Vec<String> = events.iter().map(|s| (*s).to_string()).collect();
+    spawn_local(async move {
+        let Some(listen_fn) = tauri_namespace_fn("event", "listen") else { return };
+        let closure = Closure::wrap(Box::new(move |event: JsValue| {
+            let payload = js_sys::Reflect::get(&event, &"payload".into()).unwrap_or(JsValue::UNDEFINED);
+            callback(payload);
+        }) as Box<dyn Fn(JsValue)>);
+        for event in &events {
+            let _ = listen_fn.call2(&JsValue::NULL, &JsValue::from_str(event), closure.as_ref().unchecked_ref());
+        }
+        closure.forget();
+    });
 }
 
 fn build_bbox_args(clip_bbox: Option<(f64, f64, f64, f64)>) -> JsValue {
@@ -49,8 +85,8 @@ fn build_railway_types_array(railway_types: &[String]) -> js_sys::Array {
 
 pub async fn fetch_overpass(query: &str) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "query", &query.into())?;
-    invoke("fetch_overpass", &args).await?
+    set(&args, "query", query);
+    invoke_obj("fetch_overpass", args).await?
         .as_string()
         .ok_or("unexpected response".into())
 }
@@ -61,18 +97,18 @@ pub async fn import_orm(
     tangent_mode: bool, type_speed_overrides: &std::collections::HashMap<String, u32>,
 ) -> Result<(Vec<u8>, usize), String> {
     let args = js_sys::Object::new();
-    js_set(&args, "json", &json.into())?;
-    js_set(&args, "name", &name.into())?;
-    js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
-    js_set(&args, "applySpeedLimits", &JsValue::from_bool(apply_speed_limits))?;
-    js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
-    js_set(&args, "tangentMode", &JsValue::from_bool(tangent_mode))?;
+    set(&args, "json", json);
+    set(&args, "name", name);
+    set(&args, "railwayTypes", build_railway_types_array(railway_types));
+    set(&args, "applySpeedLimits", apply_speed_limits);
+    set(&args, "clipBbox", build_bbox_args(clip_bbox));
+    set(&args, "tangentMode", tangent_mode);
     let overrides_obj = js_sys::Object::new();
     for (k, v) in type_speed_overrides {
-        js_set(&overrides_obj, k, &JsValue::from_f64(f64::from(*v)))?;
+        set(&overrides_obj, k, f64::from(*v));
     }
-    js_set(&args, "typeSpeedOverrides", &overrides_obj.into())?;
-    let result = invoke("import_orm", &args).await?;
+    set(&args, "typeSpeedOverrides", overrides_obj);
+    let result = invoke_obj("import_orm", args).await?;
     let tuple = js_sys::Array::from(&result);
     let bytes = js_sys::Uint8Array::new(&tuple.get(0)).to_vec();
     let node_count = tuple.get(1).as_f64().unwrap_or(0.0) as usize;
@@ -84,21 +120,21 @@ pub async fn count_track_nodes(
     tangent_mode: bool,
 ) -> Result<usize, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "json", &json.into())?;
-    js_set(&args, "railwayTypes", &build_railway_types_array(railway_types).into())?;
-    js_set(&args, "clipBbox", &build_bbox_args(clip_bbox))?;
-    js_set(&args, "tangentMode", &JsValue::from_bool(tangent_mode))?;
-    let result = invoke("count_track_nodes", &args).await?;
+    set(&args, "json", json);
+    set(&args, "railwayTypes", build_railway_types_array(railway_types));
+    set(&args, "clipBbox", build_bbox_args(clip_bbox));
+    set(&args, "tangentMode", tangent_mode);
+    let result = invoke_obj("count_track_nodes", args).await?;
     Ok(result.as_f64().unwrap_or(0.0) as usize)
 }
 
 pub async fn save_blueprint(name: &str, data: &[u8]) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "name", &name.into())?;
-    let js_data = js_sys::Uint8Array::from(data);
-    js_set(&args, "data", &js_data.into())?;
-    let result = invoke("save_blueprint", &args).await?;
-    result.as_string().ok_or("unexpected response".into())
+    set(&args, "name", name);
+    set(&args, "data", js_sys::Uint8Array::from(data));
+    invoke_obj("save_blueprint", args).await?
+        .as_string()
+        .ok_or("unexpected response".into())
 }
 
 pub async fn get_settings() -> Result<JsValue, String> {
@@ -107,8 +143,8 @@ pub async fn get_settings() -> Result<JsValue, String> {
 
 pub async fn set_settings(settings: &JsValue) -> Result<(), String> {
     let wrapper = js_sys::Object::new();
-    js_set(&wrapper, "settings", settings)?;
-    invoke("set_settings", &wrapper).await.map(|_| ())
+    set(&wrapper, "settings", settings.clone());
+    invoke_obj("set_settings", wrapper).await.map(|_| ())
 }
 
 pub async fn pick_folder() -> Option<String> {
@@ -118,73 +154,42 @@ pub async fn pick_folder() -> Option<String> {
 
 pub async fn blueprint_exists(name: &str) -> bool {
     let args = js_sys::Object::new();
-    let Ok(()) = js_set(&args, "name", &name.into()) else { return false };
-    invoke("blueprint_exists", &args).await
+    set(&args, "name", name);
+    invoke_obj("blueprint_exists", args).await
         .ok()
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
 
 pub async fn get_app_version() -> String {
-    let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into()) else { return String::new() };
-    let Ok(app) = js_sys::Reflect::get(&tauri, &"app".into()) else { return String::new() };
-    let Ok(get_version) = js_sys::Reflect::get(&app, &"getVersion".into()) else { return String::new() };
-    let Ok(get_version) = get_version.dyn_into::<js_sys::Function>() else { return String::new() };
+    let Some(get_version) = tauri_namespace_fn("app", "getVersion") else { return String::new() };
     let Ok(promise) = get_version.call0(&JsValue::NULL) else { return String::new() };
-    let Ok(result) = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise)).await else { return String::new() };
-    result.as_string().unwrap_or_default()
+    await_promise(promise).await.ok().and_then(|v| v.as_string()).unwrap_or_default()
 }
 
 pub async fn check_for_update() -> Result<Option<String>, String> {
-    let tauri = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
-        .map_err(|_| "Tauri not available")?;
-    let updater = js_sys::Reflect::get(&tauri, &"updater".into())
-        .map_err(|_| "Updater not available")?;
-    let check_fn = js_sys::Reflect::get(&updater, &"check".into())
-        .map_err(|_| "check not available")?
-        .dyn_into::<js_sys::Function>()
-        .map_err(|_| "check is not a function")?;
-    let promise = check_fn.call0(&JsValue::NULL)
-        .map_err(|e| format!("{e:?}"))?;
-    let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
+    let check_fn = tauri_namespace_fn("updater", "check").ok_or("Updater not available")?;
+    let promise = check_fn.call0(&JsValue::NULL).map_err(|e| format!("{e:?}"))?;
+    let result = await_promise(promise).await?;
     if result.is_null() || result.is_undefined() {
         return Ok(None);
     }
-    let version = js_sys::Reflect::get(&result, &"version".into())
-        .ok()
-        .and_then(|v| v.as_string());
-    Ok(version)
+    Ok(js_sys::Reflect::get(&result, &"version".into()).ok().and_then(|v| v.as_string()))
 }
 
 pub async fn download_and_install_update() -> Result<(), String> {
-    let tauri = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
-        .map_err(|_| "Tauri not available".to_string())?;
-    let updater = js_sys::Reflect::get(&tauri, &"updater".into())
-        .map_err(|_| "Updater not available".to_string())?;
-    let check_fn = js_sys::Reflect::get(&updater, &"check".into())
-        .map_err(|_| "check not available".to_string())?
-        .dyn_into::<js_sys::Function>()
-        .map_err(|_| "check is not a function".to_string())?;
-    let promise = check_fn.call0(&JsValue::NULL)
-        .map_err(|e| format!("{e:?}"))?;
-    let update = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
+    let check_fn = tauri_namespace_fn("updater", "check").ok_or("Updater not available")?;
+    let promise = check_fn.call0(&JsValue::NULL).map_err(|e| format!("{e:?}"))?;
+    let update = await_promise(promise).await?;
     if update.is_null() || update.is_undefined() {
         return Err("No update available".into());
     }
-    let install_fn = js_sys::Reflect::get(&update, &"downloadAndInstall".into())
+    let install_fn: js_sys::Function = js_sys::Reflect::get(&update, &"downloadAndInstall".into())
         .map_err(|_| "downloadAndInstall not available".to_string())?
-        .dyn_into::<js_sys::Function>()
+        .dyn_into()
         .map_err(|_| "downloadAndInstall is not a function".to_string())?;
-    let promise = install_fn.call0(&update)
-        .map_err(|e| format!("{e:?}"))?;
-    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    Ok(())
+    let promise = install_fn.call0(&update).map_err(|e| format!("{e:?}"))?;
+    await_promise(promise).await.map(|_| ())
 }
 
 pub async fn get_mods_dir() -> Option<String> {
@@ -192,166 +197,168 @@ pub async fn get_mods_dir() -> Option<String> {
     result.as_string()
 }
 
-#[derive(Clone, Debug, Default)]
+/// Resize the current webview window to `(width, height)` logical pixels via the
+/// Tauri window API. A no-op if any part of the API is unavailable.
+pub fn set_window_logical_size(width: f64, height: f64) {
+    let Some(get_current) = tauri_namespace_fn("window", "getCurrentWindow") else { return };
+    let Ok(win) = get_current.call0(&JsValue::NULL) else { return };
+    let Some(set_size) = js_sys::Reflect::get(&win, &"setSize".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+    else {
+        return;
+    };
+    let Some(logical_size) = tauri_namespace_fn("window", "LogicalSize") else { return };
+    let Ok(size) = js_sys::Reflect::construct(
+        &logical_size,
+        &js_sys::Array::of2(&JsValue::from_f64(width), &JsValue::from_f64(height)),
+    ) else {
+        return;
+    };
+    let _ = set_size.call1(&win, &size);
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BlueprintInfo {
     pub folder_name: String,
+    #[serde(default)]
     pub clip_index: usize,
+    #[serde(default)]
     pub clip_name: String,
     pub track_count: usize,
     pub file_size: u64,
     pub modified: u64,
+    #[serde(default)]
     pub center_lat: f64,
+    #[serde(default)]
     pub center_lon: f64,
+    #[serde(default)]
     pub has_thumbnail: bool,
-}
-
-impl BlueprintInfo {
-    fn from_js(val: &JsValue) -> Option<Self> {
-        let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
-        let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
-        let get_bool = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_bool();
-        Some(BlueprintInfo {
-            folder_name: get_str("folderName")?,
-            clip_index: get_f64("clipIndex").unwrap_or(0.0) as usize,
-            clip_name: get_str("clipName").unwrap_or_default(),
-            track_count: get_f64("trackCount")? as usize,
-            file_size: get_f64("fileSize")? as u64,
-            modified: get_f64("modified")? as u64,
-            center_lat: get_f64("centerLat").unwrap_or(0.0),
-            center_lon: get_f64("centerLon").unwrap_or(0.0),
-            has_thumbnail: get_bool("hasThumbnail").unwrap_or(false),
-        })
-    }
 }
 
 pub async fn list_blueprints() -> Result<Vec<BlueprintInfo>, String> {
     let result = invoke("list_blueprints", &JsValue::NULL).await?;
-    let arr = js_sys::Array::from(&result);
-    Ok(arr.iter().filter_map(|v| BlueprintInfo::from_js(&v)).collect())
+    from_js(result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn generate_thumbnail(folder_name: &str, clip_index: usize) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "folderName", &folder_name.into())?;
-    js_set(&args, "clipIndex", &JsValue::from_f64(clip_index as f64))?;
-    invoke("generate_thumbnail", &args).await?
+    set(&args, "folderName", folder_name);
+    set(&args, "clipIndex", clip_index as f64);
+    invoke_obj("generate_thumbnail", args).await?
         .as_string()
         .ok_or("unexpected response".into())
 }
 
 pub async fn delete_blueprint(folder_name: &str) -> Result<(), String> {
     let args = js_sys::Object::new();
-    js_set(&args, "folderName", &folder_name.into())?;
-    invoke("delete_blueprint", &args).await.map(|_| ())
+    set(&args, "folderName", folder_name);
+    invoke_obj("delete_blueprint", args).await.map(|_| ())
 }
 
 pub async fn rename_blueprint(old_name: &str, new_name: &str) -> Result<(), String> {
     let args = js_sys::Object::new();
-    js_set(&args, "oldName", &old_name.into())?;
-    js_set(&args, "newName", &new_name.into())?;
-    invoke("rename_blueprint", &args).await.map(|_| ())
+    set(&args, "oldName", old_name);
+    set(&args, "newName", new_name);
+    invoke_obj("rename_blueprint", args).await.map(|_| ())
 }
 
 pub async fn open_blueprint_folder(folder_name: &str) -> Result<(), String> {
     let args = js_sys::Object::new();
-    js_set(&args, "folderName", &folder_name.into())?;
-    invoke("open_blueprint_folder", &args).await.map(|_| ())
+    set(&args, "folderName", folder_name);
+    invoke_obj("open_blueprint_folder", args).await.map(|_| ())
 }
 
-#[derive(Clone, Debug)]
+fn default_true() -> bool {
+    true
+}
+
+fn default_opacity() -> f32 {
+    1.0
+}
+
+fn default_kind() -> String {
+    "kmz".to_string()
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LayerInfo {
     pub id: u32,
     pub name: String,
+    #[serde(default = "default_kind")]
     pub kind: String,
+    #[serde(default = "default_true")]
     pub visible: bool,
+    #[serde(default = "default_opacity")]
     pub opacity: f32,
     pub bbox: [f64; 4],
+    #[serde(default)]
     pub has_errors: bool,
+    #[serde(default)]
     pub source_url: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GroupInfo {
     pub id: u32,
     pub name: String,
     pub tile_url: String,
+    #[serde(default)]
     pub tilejson_url: String,
+    #[serde(default)]
     pub layers: Vec<LayerInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OverlayStatus {
+    #[serde(default)]
     pub groups: Vec<GroupInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WmsLayerInfo {
     pub name: String,
     pub title: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ArcGisServiceInfo {
     pub name: String,
+    #[serde(rename = "type")]
     pub service_type: String,
 }
 
-fn parse_bbox(val: &JsValue) -> Option<[f64; 4]> {
-    let arr = js_sys::Array::from(val);
-    Some([arr.get(0).as_f64()?, arr.get(1).as_f64()?, arr.get(2).as_f64()?, arr.get(3).as_f64()?])
+/// The empty overlay status returned when an infallible overlay command fails.
+fn overlay_failed() -> OverlayStatus {
+    web_sys::console::warn_1(&"overlay command failed".into());
+    OverlayStatus { groups: Vec::new() }
 }
 
-fn parse_layer(val: &JsValue) -> Option<LayerInfo> {
-    let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
-    let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
-    let bbox_val = js_sys::Reflect::get(val, &"bbox".into()).ok()?;
-    Some(LayerInfo {
-        id: get_f64("id")? as u32,
-        name: get_str("name")?,
-        kind: get_str("kind").unwrap_or_else(|| "kmz".into()),
-        visible: js_sys::Reflect::get(val, &"visible".into()).ok()?.as_bool().unwrap_or(true),
-        opacity: get_f64("opacity").unwrap_or(1.0) as f32,
-        bbox: parse_bbox(&bbox_val)?,
-        has_errors: js_sys::Reflect::get(val, &"hasErrors".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false),
-        source_url: get_str("sourceUrl"),
-    })
+/// Invoke an overlay command whose signature is infallible: parse the returned
+/// status, or warn and return an empty one.
+async fn overlay_command(cmd: &str, args: js_sys::Object) -> OverlayStatus {
+    invoke_obj(cmd, args).await.ok().and_then(from_js::<OverlayStatus>).unwrap_or_else(overlay_failed)
 }
 
-fn parse_group(val: &JsValue) -> Option<GroupInfo> {
-    let get_str = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_string();
-    let get_f64 = |k: &str| js_sys::Reflect::get(val, &k.into()).ok()?.as_f64();
-    let layers_val = js_sys::Reflect::get(val, &"layers".into()).ok()?;
-    let layers_arr = js_sys::Array::from(&layers_val);
-    Some(GroupInfo {
-        id: get_f64("id")? as u32,
-        name: get_str("name")?,
-        tile_url: get_str("tileUrl")?,
-        tilejson_url: get_str("tilejsonUrl").unwrap_or_default(),
-        layers: layers_arr.iter().filter_map(|v| parse_layer(&v)).collect(),
-    })
-}
-
-#[must_use]
-pub fn parse_overlay_status(val: &JsValue) -> Option<OverlayStatus> {
-    let groups_val = js_sys::Reflect::get(val, &"groups".into()).ok()?;
-    let groups_arr = js_sys::Array::from(&groups_val);
-    Some(OverlayStatus {
-        groups: groups_arr.iter().filter_map(|v| parse_group(&v)).collect(),
-    })
+/// Invoke an overlay command that propagates failure: parse the returned status,
+/// or surface a `Result` error.
+async fn overlay_command_result(cmd: &str, args: js_sys::Object) -> Result<OverlayStatus, String> {
+    let result = invoke_obj(cmd, args).await?;
+    from_js(result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn update_apple_urls(access_key: &str, map_version: Option<&str>, sat_version: Option<&str>) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "accessKey", &access_key.into());
-    if let Some(v) = map_version { let _ = js_set(&args, "mapVersion", &v.into()); }
-    if let Some(v) = sat_version { let _ = js_set(&args, "satVersion", &v.into()); }
-    invoke("update_apple_urls", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "accessKey", access_key);
+    if let Some(v) = map_version { set(&args, "mapVersion", v); }
+    if let Some(v) = sat_version { set(&args, "satVersion", v); }
+    overlay_command("update_apple_urls", args).await
 }
 
 pub async fn refresh_apple_token() -> Result<(), String> {
@@ -364,130 +371,86 @@ pub async fn pick_kmz_file() -> Option<String> {
 }
 
 pub async fn restore_overlays() -> OverlayStatus {
-    let result = invoke("restore_overlays", &JsValue::NULL).await.ok();
-    result
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    overlay_command("restore_overlays", js_sys::Object::new()).await
 }
 
 pub async fn get_overlay_status() -> OverlayStatus {
-    let result = invoke("get_overlay_status", &JsValue::NULL).await.ok();
-    result
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    overlay_command("get_overlay_status", js_sys::Object::new()).await
 }
 
 pub async fn create_group(name: &str) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "name", &name.into())?;
-    let result = invoke("create_group", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    set(&args, "name", name);
+    overlay_command_result("create_group", args).await
 }
 
 pub async fn remove_group(group_id: u32) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let result = invoke("remove_group", &args).await.ok();
-    result
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    overlay_command("remove_group", args).await
 }
 
 pub async fn reorder_group(group_id: u32, direction: &str) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "direction", &direction.into());
-    invoke("reorder_group", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "direction", direction);
+    overlay_command("reorder_group", args).await
 }
 
 pub async fn rename_group(group_id: u32, name: &str) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "name", &name.into());
-    invoke("rename_group", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "name", name);
+    overlay_command("rename_group", args).await
 }
 
 pub async fn add_overlay(path: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "path", &path.into())?;
+    set(&args, "path", path);
     if let Some(gid) = group_id {
-        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+        set(&args, "groupId", f64::from(gid));
     }
-    let result = invoke("add_overlay", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    overlay_command_result("add_overlay", args).await
 }
 
 pub async fn fetch_wms_layers(url: &str) -> Result<Vec<WmsLayerInfo>, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "url", &url.into())?;
-    let result = invoke("fetch_wms_layers", &args).await?;
-    let arr = js_sys::Array::from(&result);
-    Ok(arr.iter().filter_map(|v| {
-        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
-        Some(WmsLayerInfo { name: get_str("name")?, title: get_str("title")? })
-    }).collect())
+    set(&args, "url", url);
+    let result = invoke_obj("fetch_wms_layers", args).await?;
+    from_js(result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn add_wms_layer(url: &str, layer_name: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "url", &url.into())?;
-    js_set(&args, "layerName", &layer_name.into())?;
-    js_set(&args, "displayName", &display_name.into())?;
+    set(&args, "url", url);
+    set(&args, "layerName", layer_name);
+    set(&args, "displayName", display_name);
     if let Some(gid) = group_id {
-        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+        set(&args, "groupId", f64::from(gid));
     }
-    let result = invoke("add_wms_layer", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    overlay_command_result("add_wms_layer", args).await
 }
 
 pub async fn fetch_arcgis_services(url: &str) -> Result<Vec<ArcGisServiceInfo>, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "url", &url.into())?;
-    let result = invoke("fetch_arcgis_services", &args).await?;
-    let arr = js_sys::Array::from(&result);
-    Ok(arr.iter().filter_map(|v| {
-        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
-        Some(ArcGisServiceInfo { name: get_str("name")?, service_type: get_str("type")? })
-    }).collect())
+    set(&args, "url", url);
+    let result = invoke_obj("fetch_arcgis_services", args).await?;
+    from_js(result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn add_arcgis_layer(url: &str, service_name: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "url", &url.into())?;
-    js_set(&args, "serviceName", &service_name.into())?;
-    js_set(&args, "displayName", &display_name.into())?;
+    set(&args, "url", url);
+    set(&args, "serviceName", service_name);
+    set(&args, "displayName", display_name);
     if let Some(gid) = group_id {
-        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+        set(&args, "groupId", f64::from(gid));
     }
-    let result = invoke("add_arcgis_layer", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    overlay_command_result("add_arcgis_layer", args).await
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WmtsLayerInfo {
     pub identifier: String,
     pub title: String,
@@ -496,17 +459,9 @@ pub struct WmtsLayerInfo {
 
 pub async fn fetch_wmts_layers(url: &str) -> Result<Vec<WmtsLayerInfo>, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "url", &url.into())?;
-    let result = invoke("fetch_wmts_layers", &args).await?;
-    let arr = js_sys::Array::from(&result);
-    Ok(arr.iter().filter_map(|v| {
-        let get_str = |k: &str| js_sys::Reflect::get(&v, &k.into()).ok()?.as_string();
-        Some(WmtsLayerInfo {
-            identifier: get_str("identifier")?,
-            title: get_str("title")?,
-            tile_url: get_str("tileUrl")?,
-        })
-    }).collect())
+    set(&args, "url", url);
+    let result = invoke_obj("fetch_wmts_layers", args).await?;
+    from_js(result).ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn add_xyz_layer(url_template: &str, display_name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
@@ -515,120 +470,82 @@ pub async fn add_xyz_layer(url_template: &str, display_name: &str, group_id: Opt
 
 pub async fn add_xyz_layer_with_kind(url_template: &str, display_name: &str, group_id: Option<u32>, kind: Option<&str>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "urlTemplate", &url_template.into())?;
-    js_set(&args, "displayName", &display_name.into())?;
+    set(&args, "urlTemplate", url_template);
+    set(&args, "displayName", display_name);
     if let Some(gid) = group_id {
-        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+        set(&args, "groupId", f64::from(gid));
     }
     if let Some(k) = kind {
-        js_set(&args, "kind", &k.into())?;
+        set(&args, "kind", k);
     }
-    let result = invoke("add_xyz_layer", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    overlay_command_result("add_xyz_layer", args).await
 }
 
 pub async fn move_layer(layer_id: u32, from_group_id: u32, to_group_id: u32) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)))?;
-    js_set(&args, "fromGroupId", &JsValue::from_f64(f64::from(from_group_id)))?;
-    js_set(&args, "toGroupId", &JsValue::from_f64(f64::from(to_group_id)))?;
-    let result = invoke("move_layer", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    set(&args, "layerId", f64::from(layer_id));
+    set(&args, "fromGroupId", f64::from(from_group_id));
+    set(&args, "toGroupId", f64::from(to_group_id));
+    overlay_command_result("move_layer", args).await
 }
 
 pub async fn rename_layer(group_id: u32, layer_id: u32, name: &str) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
-    let _ = js_set(&args, "name", &name.into());
-    invoke("rename_layer", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "layerId", f64::from(layer_id));
+    set(&args, "name", name);
+    overlay_command("rename_layer", args).await
 }
 
 pub async fn set_group_visible(group_id: u32, visible: bool) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "visible", &JsValue::from_bool(visible));
-    invoke("set_group_visible", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "visible", visible);
+    overlay_command("set_group_visible", args).await
 }
 
 pub async fn reorder_layer(group_id: u32, layer_id: u32, direction: &str) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
-    let _ = js_set(&args, "direction", &direction.into());
-    invoke("reorder_layer", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "layerId", f64::from(layer_id));
+    set(&args, "direction", direction);
+    overlay_command("reorder_layer", args).await
 }
 
 pub async fn remove_overlay(group_id: u32, layer_id: u32) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
-    invoke("remove_overlay", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "layerId", f64::from(layer_id));
+    overlay_command("remove_overlay", args).await
 }
 
 pub async fn set_layer_visible(group_id: u32, layer_id: u32, visible: bool) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
-    let _ = js_set(&args, "visible", &JsValue::from_bool(visible));
-    invoke("set_layer_visible", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "layerId", f64::from(layer_id));
+    set(&args, "visible", visible);
+    overlay_command("set_layer_visible", args).await
 }
 
 pub async fn set_layer_opacity(group_id: u32, layer_id: u32, opacity: f32) -> OverlayStatus {
     let args = js_sys::Object::new();
-    let _ = js_set(&args, "groupId", &JsValue::from_f64(f64::from(group_id)));
-    let _ = js_set(&args, "layerId", &JsValue::from_f64(f64::from(layer_id)));
-    let _ = js_set(&args, "opacity", &JsValue::from_f64(f64::from(opacity)));
-    invoke("set_layer_opacity", &args).await.ok()
-        .as_ref()
-        .and_then(parse_overlay_status)
-        .unwrap_or_else(|| {
-            web_sys::console::warn_1(&"overlay command failed".into());
-            OverlayStatus { groups: Vec::new() }
-        })
+    set(&args, "groupId", f64::from(group_id));
+    set(&args, "layerId", f64::from(layer_id));
+    set(&args, "opacity", f64::from(opacity));
+    overlay_command("set_layer_opacity", args).await
 }
 
 // --- Tile Download ---
 
 pub async fn count_tiles(south: f64, west: f64, north: f64, east: f64, z_min: u8, z_max: u8) -> Result<u64, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "south", &JsValue::from_f64(south))?;
-    js_set(&args, "west", &JsValue::from_f64(west))?;
-    js_set(&args, "north", &JsValue::from_f64(north))?;
-    js_set(&args, "east", &JsValue::from_f64(east))?;
-    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
-    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
-    let result = invoke("count_tiles", &args).await?;
+    set(&args, "south", south);
+    set(&args, "west", west);
+    set(&args, "north", north);
+    set(&args, "east", east);
+    set(&args, "zMin", f64::from(z_min));
+    set(&args, "zMax", f64::from(z_max));
+    let result = invoke_obj("count_tiles", args).await?;
     result.as_f64().map(|v| v as u64).ok_or_else(|| "unexpected response".into())
 }
 
@@ -638,27 +555,26 @@ pub async fn start_tile_download(
     z_min: u8, z_max: u8,
 ) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "url", &url.into())?;
-    js_set(&args, "name", &name.into())?;
-    js_set(&args, "south", &JsValue::from_f64(south))?;
-    js_set(&args, "west", &JsValue::from_f64(west))?;
-    js_set(&args, "north", &JsValue::from_f64(north))?;
-    js_set(&args, "east", &JsValue::from_f64(east))?;
-    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
-    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
-    let result = invoke("start_tile_download", &args).await?;
+    set(&args, "url", url);
+    set(&args, "name", name);
+    set(&args, "south", south);
+    set(&args, "west", west);
+    set(&args, "north", north);
+    set(&args, "east", east);
+    set(&args, "zMin", f64::from(z_min));
+    set(&args, "zMax", f64::from(z_max));
+    let result = invoke_obj("start_tile_download", args).await?;
     result.as_string().ok_or_else(|| "unexpected response".into())
 }
 
 pub async fn add_mbtiles_layer(path: &str, name: &str, group_id: Option<u32>) -> Result<OverlayStatus, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "path", &path.into())?;
-    js_set(&args, "displayName", &name.into())?;
+    set(&args, "path", path);
+    set(&args, "displayName", name);
     if let Some(gid) = group_id {
-        js_set(&args, "groupId", &JsValue::from_f64(f64::from(gid)))?;
+        set(&args, "groupId", f64::from(gid));
     }
-    let result = invoke("add_mbtiles_layer", &args).await?;
-    parse_overlay_status(&result).ok_or_else(|| "unexpected response".into())
+    overlay_command_result("add_mbtiles_layer", args).await
 }
 
 pub async fn cancel_tile_download() -> Result<(), String> {
@@ -668,52 +584,37 @@ pub async fn cancel_tile_download() -> Result<(), String> {
 
 pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
     let args = js_sys::Object::new();
-    js_set(&args, "paused", &JsValue::from_bool(paused))?;
-    invoke("set_tile_download_paused", &args).await.map(|_| ())
+    set(&args, "paused", paused);
+    invoke_obj("set_tile_download_paused", args).await.map(|_| ())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VectorLayerLevel {
     pub level: i32,
     pub layer_name: String,
     pub description: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VectorLayersInfo {
     pub tilejson_url: String,
     pub tile_url: String,
     pub levels: Vec<VectorLayerLevel>,
 }
 
-fn parse_vector_layers_info(val: &JsValue) -> Option<VectorLayersInfo> {
-    let tilejson_url = js_sys::Reflect::get(val, &"tilejsonUrl".into()).ok()?.as_string()?;
-    let tile_url = js_sys::Reflect::get(val, &"tileUrl".into()).ok()?.as_string()?;
-    let levels_val = js_sys::Reflect::get(val, &"levels".into()).ok()?;
-    let levels = js_sys::Array::from(&levels_val)
-        .iter()
-        .filter_map(|v| {
-            Some(VectorLayerLevel {
-                level: js_sys::Reflect::get(&v, &"level".into()).ok()?.as_f64()? as i32,
-                layer_name: js_sys::Reflect::get(&v, &"layerName".into()).ok()?.as_string()?,
-                description: js_sys::Reflect::get(&v, &"description".into()).ok()?.as_string()?,
-            })
-        })
-        .collect();
-    Some(VectorLayersInfo { tilejson_url, tile_url, levels })
-}
-
 pub async fn start_orm_vector_layers(
     south: f64, west: f64, north: f64, east: f64, timeout_secs: u32,
 ) -> Result<VectorLayersInfo, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "south", &JsValue::from_f64(south))?;
-    js_set(&args, "west", &JsValue::from_f64(west))?;
-    js_set(&args, "north", &JsValue::from_f64(north))?;
-    js_set(&args, "east", &JsValue::from_f64(east))?;
-    js_set(&args, "timeoutSecs", &JsValue::from_f64(f64::from(timeout_secs)))?;
-    let result = invoke("start_orm_vector_layers", &args).await?;
-    parse_vector_layers_info(&result).ok_or_else(|| "Unexpected response from the tile server".to_string())
+    set(&args, "south", south);
+    set(&args, "west", west);
+    set(&args, "north", north);
+    set(&args, "east", east);
+    set(&args, "timeoutSecs", f64::from(timeout_secs));
+    let result = invoke_obj("start_orm_vector_layers", args).await?;
+    from_js(result).ok_or_else(|| "Unexpected response from the tile server".to_string())
 }
 
 pub async fn stop_orm_vector_layers() {
@@ -729,13 +630,13 @@ pub async fn download_orm_tiles(
     z_min: u8, z_max: u8,
 ) -> Result<String, String> {
     let args = js_sys::Object::new();
-    js_set(&args, "south", &JsValue::from_f64(south))?;
-    js_set(&args, "west", &JsValue::from_f64(west))?;
-    js_set(&args, "north", &JsValue::from_f64(north))?;
-    js_set(&args, "east", &JsValue::from_f64(east))?;
-    js_set(&args, "zMin", &JsValue::from_f64(f64::from(z_min)))?;
-    js_set(&args, "zMax", &JsValue::from_f64(f64::from(z_max)))?;
-    let result = invoke("download_orm_tiles", &args).await?;
+    set(&args, "south", south);
+    set(&args, "west", west);
+    set(&args, "north", north);
+    set(&args, "east", east);
+    set(&args, "zMin", f64::from(z_min));
+    set(&args, "zMax", f64::from(z_max));
+    let result = invoke_obj("download_orm_tiles", args).await?;
     result.as_string().ok_or_else(|| "unexpected response".into())
 }
 
@@ -747,10 +648,10 @@ pub async fn get_orm_port() -> Result<u16, String> {
 pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
     let args = js_sys::Object::new();
     match dir {
-        Some(d) => js_set(&args, "dir", &d.into())?,
-        None => js_set(&args, "dir", &JsValue::NULL)?,
+        Some(d) => set(&args, "dir", d),
+        None => set(&args, "dir", JsValue::NULL),
     }
-    invoke("set_orm_offline", &args).await.map(|_| ())
+    invoke_obj("set_orm_offline", args).await.map(|_| ())
 }
 
 #[derive(Clone, serde::Deserialize)]

@@ -18,7 +18,7 @@ use maplibre_native::file_source::{
 };
 use tokio::sync::{OnceCell, Semaphore};
 
-use crate::tile_server::UnpoisonExt;
+use crate::server_core::{USER_AGENT, UnpoisonExt};
 
 /// Upper bound on concurrent upstream fetches across all render workers.
 const MAX_CONCURRENT_FETCHES: usize = 32;
@@ -30,7 +30,6 @@ const DEFAULT_EXPIRES_SECS: u64 = 3600;
 /// Backoff schedule for transient fetch failures (connection, 429, 5xx). One
 /// entry per retry; coalesced waiters share the retries with the fetch.
 const RETRY_BACKOFF_MS: &[u64] = &[200, 500, 1500];
-const USER_AGENT: &str = concat!("turnout/", env!("CARGO_PKG_VERSION"));
 
 struct OrmNetworkSource {
     client: reqwest::Client,

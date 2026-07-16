@@ -11,6 +11,7 @@ mod orm_offline;
 mod orm_tiles;
 mod overlay;
 mod overpass;
+mod server_core;
 mod settings;
 mod tile_server;
 mod vector_tiles;
@@ -144,6 +145,14 @@ fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn main() {
+    // Leveled logging to stderr; RUST_LOG overrides the default (info and above).
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     // Work around WebKitGTK EGL crashes on some Linux GPU drivers.
     // SAFETY: Called at the very start of main, before any threads are spawned.
     #[cfg(target_os = "linux")]
@@ -180,7 +189,7 @@ fn main() {
                     }
                     app.manage(h);
                 }
-                Err(e) => eprintln!("ORM tiles failed: {e}"),
+                Err(e) => tracing::error!("ORM tiles failed: {e}"),
             }
             app.manage(apple_token::AppleRefresh::new());
             apple_token::spawn_auto_refresh(app.handle().clone());

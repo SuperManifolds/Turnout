@@ -148,8 +148,8 @@ pub async fn fetch_credentials() -> Result<AppleCredentials, String> {
         .ok_or("bootstrap missing satellite tile version")?;
 
     let expires_in_seconds = bootstrap.expires_in_seconds.unwrap_or_else(|| {
-        eprintln!(
-            "[apple] bootstrap omitted expiresInSeconds; assuming {DEFAULT_TOKEN_LIFETIME_SECS}s \
+        tracing::warn!(
+            "bootstrap omitted expiresInSeconds; assuming {DEFAULT_TOKEN_LIFETIME_SECS}s \
              — tiles may 403 if the real lifetime is shorter"
         );
         DEFAULT_TOKEN_LIFETIME_SECS
@@ -254,7 +254,7 @@ pub fn spawn_auto_refresh(app: tauri::AppHandle) {
                     }
                     Err(e) => {
                         consecutive_failures += 1;
-                        eprintln!("[apple-token] refresh failed (attempt {consecutive_failures}): {e}");
+                        tracing::warn!("token refresh failed (attempt {consecutive_failures}): {e}");
                         if consecutive_failures >= FAILURE_NOTIFY_THRESHOLD {
                             let _ = app.emit(FAILED_EVENT, e);
                         }

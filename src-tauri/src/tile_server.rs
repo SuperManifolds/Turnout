@@ -1,20 +1,8 @@
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-pub trait UnpoisonExt<T> {
-    fn unpoison(self) -> T;
-}
-impl<'a, T> UnpoisonExt<MutexGuard<'a, T>> for Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>> {
-    fn unpoison(self) -> MutexGuard<'a, T> { self.unwrap_or_else(PoisonError::into_inner) }
-}
-impl<'a, T> UnpoisonExt<RwLockReadGuard<'a, T>> for Result<RwLockReadGuard<'a, T>, PoisonError<RwLockReadGuard<'a, T>>> {
-    fn unpoison(self) -> RwLockReadGuard<'a, T> { self.unwrap_or_else(PoisonError::into_inner) }
-}
-impl<'a, T> UnpoisonExt<RwLockWriteGuard<'a, T>> for Result<RwLockWriteGuard<'a, T>, PoisonError<RwLockWriteGuard<'a, T>>> {
-    fn unpoison(self) -> RwLockWriteGuard<'a, T> { self.unwrap_or_else(PoisonError::into_inner) }
-}
+use crate::server_core::{self, UnpoisonExt};
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -359,23 +347,18 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
 
     let state = Arc::new(TileState {
         layers: RwLock::new(Vec::new()),
-        render_cache: Mutex::new(LruCache::new(
-            NonZeroUsize::new(RENDER_CACHE_CAPACITY).expect("nonzero"),
-        )),
-        remote_cache: Mutex::new(LruCache::new(
-            NonZeroUsize::new(REMOTE_CACHE_CAPACITY).expect("nonzero"),
-        )),
+        render_cache: server_core::lru_cache(RENDER_CACHE_CAPACITY),
+        remote_cache: server_core::lru_cache(REMOTE_CACHE_CAPACITY),
         error_layers: Mutex::new(std::collections::HashSet::new()),
         next_id: Mutex::new(0),
         port,
         http: reqwest::Client::builder()
+            .user_agent(server_core::USER_AGENT)
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_default(),
-        mbtiles_conns: Mutex::new(LruCache::new(
-            NonZeroUsize::new(MBTILES_CONN_CACHE).expect("nonzero"),
-        )),
+        mbtiles_conns: server_core::lru_cache(MBTILES_CONN_CACHE),
     });
 
     let app = Router::new()
@@ -384,16 +367,7 @@ pub async fn start(port_hint: u16) -> Result<ServerHandle, Box<dyn std::error::E
         .layer(CorsLayer::permissive())
         .with_state(Arc::clone(&state));
 
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-
-    tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.changed().await;
-            })
-            .await
-            .ok();
-    });
+    let shutdown_tx = server_core::spawn_with_shutdown(listener, app);
 
     Ok(ServerHandle { port, state, shutdown_tx })
 }
@@ -541,11 +515,11 @@ async fn fetch_wms_tile(
     let resp = req
         .send()
         .await
-        .map_err(|e| eprintln!("WMS fetch error: {e}"))
+        .map_err(|e| tracing::warn!("WMS fetch error: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {
-        eprintln!("WMS returned HTTP {}", resp.status());
+        tracing::warn!("WMS returned HTTP {}", resp.status());
         return None;
     }
 
@@ -557,7 +531,7 @@ async fn fetch_wms_tile(
 
     if content_type.contains("xml") || content_type.contains("text") {
         let body = resp.text().await.ok().unwrap_or_default();
-        eprintln!("WMS error for layer={layer_name}: {}", &body[..body.len().min(500)]);
+        tracing::warn!("WMS error for layer={layer_name}: {}", &body[..body.len().min(500)]);
         return None;
     }
 
@@ -592,11 +566,11 @@ async fn fetch_xyz_tile(
         .header("User-Agent", "Mozilla/5.0")
         .send()
         .await
-        .map_err(|e| eprintln!("XYZ fetch error for {url}: {e}"))
+        .map_err(|e| tracing::warn!("XYZ fetch error for {url}: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {
-        eprintln!("XYZ returned HTTP {} for {url}", resp.status());
+        tracing::warn!("XYZ returned HTTP {} for {url}", resp.status());
         return None;
     }
 
@@ -615,7 +589,7 @@ async fn fetch_arcgis_tile(
         .get(&url)
         .send()
         .await
-        .map_err(|e| eprintln!("ArcGIS fetch error: {e}"))
+        .map_err(|e| tracing::warn!("ArcGIS fetch error: {e}"))
         .ok()?;
 
     if !resp.status().is_success() {

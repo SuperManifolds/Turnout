@@ -1,28 +1,11 @@
-use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalGetUntracked, spawn_local, ReadSignal, Callback, Callable, CollectView};
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use leptos::{component, view, IntoView, create_signal, create_effect, SignalGet, SignalSet, SignalGetUntracked, spawn_local, ReadSignal, Callback, Callable, CollectView};
+
+use crate::tiles::{download_summary, progress_pct, progress_summary};
 
 const DEFAULT_Z_MIN: u8 = 0;
 const DEFAULT_Z_MAX: u8 = 19;
 const MAX_TILE_COUNT: u64 = 5_000_000;
-/// Thresholds for the "M tiles" / "K tiles" count summary.
-const MILLION: u64 = 1_000_000;
-const THOUSAND: u64 = 1_000;
 const ORM_STANDARD: &str = "https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png";
-
-fn format_duration(secs: f64) -> String {
-    if secs > 3600.0 {
-        let h = secs / 3600.0;
-        format!("{h:.1}h")
-    } else if secs > 60.0 {
-        let m = secs / 60.0;
-        format!("{m:.0}m")
-    } else {
-        format!("{secs:.0}s")
-    }
-}
-const AVG_TILE_KB: f64 = 5.0;
-const TILES_PER_SEC: f64 = 120.0;
 /// Vector download streams 64 concurrent HTTP/1.1 fetches with no pacing floor, and
 /// each MVT tile carries all in-range ORM layers, so both size and rate differ from
 /// raster.
@@ -30,16 +13,6 @@ const ORM_VECTOR_URL: &str = "orm-vector";
 /// `OpenRailwayMap`'s sub-z7 line endpoints hang server-side, so vector offline
 /// downloads start at z7 (kept in sync with `ORM_MIN_ZOOM` in the backend).
 const ORM_VECTOR_MIN_ZOOM: u8 = 7;
-const VECTOR_AVG_TILE_KB: f64 = 14.0;
-/// One composite request per tile over an HTTP/1.1 pool, streamed 64 concurrent.
-/// Throughput is latency-bound and scales with concurrency; measured 250-550
-/// tiles/s on a low-latency link, held conservative here for higher-latency ones.
-const VECTOR_TILES_PER_SEC: f64 = 150.0;
-/// Sprites (8) + glyph ranges (4 fonts × 256) fetched once per download.
-const VECTOR_RESOURCE_REQUESTS: f64 = 1032.0;
-/// Approximate on-disk payload of the glyph + sprite resources (~3.4 MB × 4 fonts
-/// of full-coverage glyph PBFs, plus sprite sheets).
-const VECTOR_RESOURCE_MB: f64 = 14.0;
 
 #[derive(Clone)]
 struct TileSource {
@@ -123,31 +96,15 @@ pub fn TileDownload(
         });
     });
 
-    let progress_closure = Closure::wrap(Box::new(move |event: JsValue| {
-        if let Ok(payload) = js_sys::Reflect::get(&event, &"payload".into()) {
-            let completed = js_sys::Reflect::get(&payload, &"completed".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let total = js_sys::Reflect::get(&payload, &"total".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let failed = js_sys::Reflect::get(&payload, &"failed".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let bytes = js_sys::Reflect::get(&payload, &"bytes".into())
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            set_progress_completed.set(completed);
-            set_progress_total.set(total);
-            set_progress_failed.set(failed);
-            set_progress_bytes.set(bytes);
-        }
-    }) as Box<dyn Fn(JsValue)>);
-
-    if let Ok(tauri) = js_sys::Reflect::get(&js_sys::global(), &"__TAURI__".into())
-        && let Ok(event) = js_sys::Reflect::get(&tauri, &"event".into())
-        && let Ok(listen) = js_sys::Reflect::get(&event, &"listen".into())
-        && let Ok(listen_fn) = listen.dyn_into::<js_sys::Function>()
-    {
-        let _ = listen_fn.call2(&JsValue::NULL, &"tile-download-progress".into(), progress_closure.as_ref().unchecked_ref());
-    }
-    progress_closure.forget();
+    crate::tauri::listen_to_events(&["tile-download-progress"], move |payload| {
+        let field = |k: &str| {
+            js_sys::Reflect::get(&payload, &k.into()).ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64
+        };
+        set_progress_completed.set(field("completed"));
+        set_progress_total.set(field("total"));
+        set_progress_failed.set(field("failed"));
+        set_progress_bytes.set(field("bytes"));
+    });
 
     let on_start = move |_| {
         let url_val = resolved_url();
@@ -241,63 +198,23 @@ pub fn TileDownload(
     };
 
     let format_summary = move || {
-        let count = tile_count.get();
-        let is_vector = resolved_url() == ORM_VECTOR_URL;
-        let tiles = if count > MILLION {
-            format!("{:.1}M tiles", count as f64 / MILLION as f64)
-        } else if count > THOUSAND {
-            format!("{:.1}K tiles", count as f64 / THOUSAND as f64)
-        } else {
-            format!("{count} tiles")
-        };
-
-        let (avg_kb, per_sec, extra_mb, extra_reqs) = if is_vector {
-            (VECTOR_AVG_TILE_KB, VECTOR_TILES_PER_SEC, VECTOR_RESOURCE_MB, VECTOR_RESOURCE_REQUESTS)
-        } else {
-            (AVG_TILE_KB, TILES_PER_SEC, 0.0, 0.0)
-        };
-
-        let size_mb = count as f64 * avg_kb / 1024.0 + extra_mb;
-        let size = if size_mb > 1024.0 {
-            format!("{:.1} GB", size_mb / 1024.0)
-        } else {
-            format!("{size_mb:.0} MB")
-        };
-        let time = format_duration((count as f64 + extra_reqs) / per_sec);
-        format!("{tiles} · ~{size} · ~{time}")
+        download_summary(tile_count.get(), resolved_url() == ORM_VECTOR_URL)
     };
 
     let progress_pct = move || {
-        let total = progress_total.get();
-        let done = progress_completed.get() + progress_failed.get();
-        let pct = if total > 0 { done as f64 / total as f64 * 100.0 } else { 0.0 };
+        let pct = progress_pct(progress_completed.get(), progress_failed.get(), progress_total.get());
         format!("width: {pct:.1}%")
     };
 
     let progress_text = move || {
-        let total = progress_total.get();
-        let completed = progress_completed.get();
-        let failed = progress_failed.get();
-        let bytes = progress_bytes.get();
-        let done = completed + failed;
         let elapsed_s = (js_sys::Date::now() - download_start_ms.get()) / 1000.0;
-        let speed = if elapsed_s > 1.0 { done as f64 / elapsed_s } else { 0.0 };
-        let remaining = total.saturating_sub(done);
-        let eta = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };
-
-        let size_str = if completed > 0 {
-            let avg_bytes = bytes as f64 / completed as f64;
-            let est_total_mb = avg_bytes * total as f64 / (1024.0 * 1024.0);
-            if est_total_mb > 1024.0 {
-                format!(" · ~{:.1} GB", est_total_mb / 1024.0)
-            } else {
-                format!(" · ~{est_total_mb:.0} MB")
-            }
-        } else {
-            String::new()
-        };
-        let fail_str = if failed > 0 { format!(", {failed} failed") } else { String::new() };
-        format!("{done}/{total} · {speed:.0} tiles/s · {} remaining{size_str}{fail_str}", format_duration(eta))
+        progress_summary(
+            progress_completed.get(),
+            progress_failed.get(),
+            progress_total.get(),
+            progress_bytes.get(),
+            elapsed_s,
+        )
     };
 
     view! {

@@ -30,6 +30,8 @@ tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "aa183dd", features = ["json", "tokio"] }
 mvt = "0.13.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
