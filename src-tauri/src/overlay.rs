@@ -7,11 +7,15 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::arcgis;
 use crate::server_core::UnpoisonExt;
+use crate::settings;
 use crate::tile_server::{self, LayerKind, LayerSource};
 use crate::wms;
 use crate::wmts;
 
 const STORE_KEY: &str = "overlay_groups";
+/// Substring unique to Apple's satellite tile host, used to tell a satellite Apple
+/// layer from a standard-map one (they take different `v=` versions).
+const APPLE_SAT_MARKER: &str = "sat-cdn";
 
 pub struct OverlayState {
     groups: Mutex<Vec<TileGroup>>,
@@ -56,7 +60,17 @@ enum SavedSource {
     ArcGis { arcgis_url: String, arcgis_service: String },
     Xyz { xyz_url: String },
     Wmts { xyz_url: String },
-    Apple { xyz_url: String },
+    Apple {
+        /// Satellite (vs standard map) imagery. The short-lived Apple access token
+        /// is deliberately NOT persisted — the URL is rebuilt from the stored Apple
+        /// credentials on restore, so the store never holds a stale/secret token.
+        #[serde(default)]
+        sat: bool,
+        /// Back-compat: older stores persisted the full tokenized URL. Read to
+        /// recover `sat` and used as a fallback; never written by current saves.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        xyz_url: Option<String>,
+    },
     Bing { xyz_url: String },
     MbTiles { path: String },
 }
@@ -499,7 +513,7 @@ pub(crate) fn apply_apple_credentials(
         let apple_layers: Vec<(u32, bool)> = layers.iter().filter_map(|l| {
             if l.kind != LayerKind::Apple { return None; }
             if let tile_server::LayerSource::Xyz { url_template } = &l.source {
-                let is_sat = url_template.contains("sat-cdn");
+                let is_sat = url_template.contains(APPLE_SAT_MARKER);
                 Some((l.id, is_sat))
             } else { None }
         }).collect();
@@ -543,12 +557,28 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
     }
 
     let ids = allocate_group_ids(&saved.iter().map(|g| g.id).collect::<Vec<_>>());
+
+    // Reserve ids above every restored one BEFORE binding any server, so a
+    // concurrent `add_overlay`/`create_group` during the awaits below cannot hand
+    // out a colliding id — and therefore a colliding port — for a new group.
+    if let Some(max_id) = ids.iter().max() {
+        let mut next = state.next_group_id.lock().unpoison();
+        *next = (*next).max(max_id + 1);
+    }
+
+    let settings = settings::load(&app);
+    let apple = AppleCreds {
+        access_key: settings.apple_access_key,
+        map_version: settings.apple_map_version,
+        sat_version: settings.apple_sat_version,
+    };
+
     for (saved_group, &group_id) in saved.iter().zip(&ids) {
         let port = port_for_id(group_id);
         let Ok(handle) = tile_server::start(port).await else { continue };
 
         for layer in &saved_group.layers {
-            restore_layer(&handle, layer);
+            restore_layer(&handle, layer, &apple);
         }
         let mut groups = state.groups.lock().unpoison();
         groups.push(TileGroup {
@@ -556,12 +586,6 @@ pub async fn restore_overlays(app: tauri::AppHandle) -> OverlayStatus {
             name: saved_group.name.clone(),
             handle,
         });
-    }
-
-    // Hand out ids above every restored one so new groups never reuse a port.
-    if let Some(max_id) = ids.iter().max() {
-        let mut next = state.next_group_id.lock().unpoison();
-        *next = (*next).max(max_id + 1);
     }
 
     let groups = state.groups.lock().unpoison();
@@ -643,7 +667,25 @@ fn kind_for_saved_source(source: &SavedSource) -> LayerKind {
     }
 }
 
-fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
+/// The stored Apple credentials used to rebuild restored Apple layer URLs, since
+/// the short-lived token is intentionally not persisted with the layer.
+struct AppleCreds {
+    access_key: Option<String>,
+    map_version: Option<String>,
+    sat_version: Option<String>,
+}
+
+impl AppleCreds {
+    /// A tile URL for the given imagery, or `None` when the key or the relevant
+    /// version is missing.
+    fn url(&self, sat: bool) -> Option<String> {
+        let key = self.access_key.as_deref()?;
+        let ver = if sat { self.sat_version.as_deref() } else { self.map_version.as_deref() }?;
+        Some(turnout_core::geo::apple_tile_url(key, ver, sat))
+    }
+}
+
+fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer, apple: &AppleCreds) {
     // Capture the id the add actually assigned so the follow-up name/visibility/
     // opacity apply to THIS layer. A `.last()` guess would silently target the
     // previous layer whenever an add no-ops (e.g. a file whose geometry vanished
@@ -671,13 +713,21 @@ fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer) {
         SavedSource::ArcGis { arcgis_url, arcgis_service } => {
             handle.add_arcgis_layer(arcgis_url.clone(), arcgis_service.clone(), layer.name.clone())
         }
-        SavedSource::Xyz { xyz_url }
-        | SavedSource::Wmts { xyz_url }
-        | SavedSource::Apple { xyz_url }
-        | SavedSource::Bing { xyz_url } => {
-            // Preserve the specific kind — a restored Apple layer must come back
-            // as LayerKind::Apple, otherwise the token refresher (which only
-            // rewrites Apple layers) never renews it and its tiles die on expiry.
+        SavedSource::Apple { sat, xyz_url } => {
+            let is_sat = *sat || xyz_url.as_deref().is_some_and(|u| u.contains(APPLE_SAT_MARKER));
+            // Rebuild the URL from the stored credentials (the freshest known key);
+            // the token refresher rewrites it again once it fetches a live token.
+            // Fall back to a legacy saved URL, then to a token-less marker URL that
+            // is still correctly classified — so the layer is kept (and filled in by
+            // the next refresh) rather than dropped when credentials are absent.
+            let url = apple
+                .url(is_sat)
+                .or_else(|| xyz_url.clone())
+                .unwrap_or_else(|| turnout_core::geo::apple_tile_url("", "", is_sat));
+            handle.add_xyz_layer_with_kind(url, layer.name.clone(), LayerKind::Apple)
+        }
+        SavedSource::Xyz { xyz_url } | SavedSource::Wmts { xyz_url } | SavedSource::Bing { xyz_url } => {
+            // Preserve the specific kind so kind-specific behaviour still applies.
             handle.add_xyz_layer_with_kind(xyz_url.clone(), layer.name.clone(), kind_for_saved_source(&layer.source))
         }
         SavedSource::MbTiles { path } => {
@@ -766,7 +816,11 @@ fn save_groups(app: &tauri::AppHandle) {
                         let url = url_template.clone();
                         match kind {
                             LayerKind::Wmts => SavedSource::Wmts { xyz_url: url },
-                            LayerKind::Apple => SavedSource::Apple { xyz_url: url },
+                            // Persist only which imagery it is, not the tokenized URL.
+                            LayerKind::Apple => SavedSource::Apple {
+                                sat: url.contains(APPLE_SAT_MARKER),
+                                xyz_url: None,
+                            },
                             LayerKind::Bing => SavedSource::Bing { xyz_url: url },
                             _ => SavedSource::Xyz { xyz_url: url },
                         }
@@ -843,9 +897,38 @@ mod tests {
     #[test]
     fn restored_xyz_family_keeps_its_kind() {
         let url = || "https://example.test/{z}/{x}/{y}".to_string();
-        assert_eq!(kind_for_saved_source(&SavedSource::Apple { xyz_url: url() }), LayerKind::Apple);
+        assert_eq!(kind_for_saved_source(&SavedSource::Apple { sat: false, xyz_url: None }), LayerKind::Apple);
         assert_eq!(kind_for_saved_source(&SavedSource::Bing { xyz_url: url() }), LayerKind::Bing);
         assert_eq!(kind_for_saved_source(&SavedSource::Wmts { xyz_url: url() }), LayerKind::Wmts);
         assert_eq!(kind_for_saved_source(&SavedSource::Xyz { xyz_url: url() }), LayerKind::Xyz);
+    }
+
+    #[test]
+    fn legacy_apple_store_deserializes_with_url_and_sat_default() {
+        // Old stores persisted the full tokenized URL under `xyz_url` (enum
+        // rename_all renames variants, not their fields); it must still load
+        // (sat defaults false, url retained for fallback / sat recovery).
+        let legacy = r#"{"kind":"apple","xyz_url":"https://sat-cdn.apple-mapkit.com/tile?accessKey=abc"}"#;
+        let src: SavedSource = serde_json::from_str(legacy).expect("legacy apple loads");
+        match src {
+            SavedSource::Apple { sat, xyz_url } => {
+                assert!(!sat);
+                assert!(xyz_url.as_deref().is_some_and(|u| u.contains(APPLE_SAT_MARKER)));
+            }
+            _ => panic!("expected Apple"),
+        }
+    }
+
+    #[test]
+    fn apple_creds_build_url_only_with_key_and_version() {
+        let creds = AppleCreds {
+            access_key: Some("k".into()),
+            map_version: Some("9".into()),
+            sat_version: None,
+        };
+        assert!(creds.url(false).is_some_and(|u| u.contains("access")));
+        assert!(creds.url(true).is_none(), "no sat version -> no sat url");
+        let none = AppleCreds { access_key: None, map_version: Some("9".into()), sat_version: None };
+        assert!(none.url(false).is_none(), "no key -> no url");
     }
 }
