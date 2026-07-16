@@ -10,11 +10,18 @@ env:
   CARGO_TERM_COLOR: always
   # maplibre-native's C++ core (the dominant build cost, ~50 min from scratch on
   # Windows) is a git dependency compiled from source via cmake into the crate's
-  # OUT_DIR. Swatinem/rust-cache persists `target/` and the cargo registry keyed
-  # on Cargo.lock, so on a cache hit cargo's build-script fingerprint stays valid
-  # and cmake is never re-invoked. This replaces sccache, whose MSVC compilation
-  # hashing produced a 0% hit rate on Windows (absolute paths / generated headers
-  # in the cmake build defeat its caching), leaving the core rebuilt every run.
+  # OUT_DIR under `target/`. We cache `target/` + the cargo registry so cargo's
+  # build-script fingerprint stays valid and cmake is never re-invoked.
+  #
+  # The cache key is scoped to the pinned maplibre rev, NOT the full Cargo.lock:
+  # the exact key includes the lock hash (fast path when deps are unchanged), but
+  # `restore-keys` falls back to the maplibre-rev prefix, so an unrelated
+  # dependency change still restores a `target/` with the C++ core already built
+  # (cargo then rebuilds only the changed crates, ~1 min). maplibre_native's own
+  # build-dir hash depends only on its own deps, so it stays valid across our
+  # edits. Only bumping the maplibre rev forces a true cold rebuild. This replaces
+  # Swatinem/rust-cache, which is exact-match only: any Cargo.lock or toolchain
+  # change missed and rebuilt the core from scratch (~50 min).
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -37,13 +44,21 @@ jobs:
             cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev \
             glslang-dev glslang-tools
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Resolve maplibre rev
+        shell: bash
+        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
         with:
-          # Share one Linux cache across check, clippy, and the Linux test job:
-          # they build the same maplibre-native core, and 5 separate ~2.6 GB
-          # caches would blow the 10 GB repo cache budget and evict each other.
-          shared-key: ubuntu-22.04
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
 
       - run: cargo check --all-targets
 
@@ -67,10 +82,23 @@ jobs:
             cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev \
             glslang-dev glslang-tools
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Resolve maplibre rev
+        shell: bash
+        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
+
+      # Shares the Linux cache with the check and Linux test jobs (same key): they
+      # build the same maplibre-native core.
+      - name: Cache cargo + target
+        uses: actions/cache@v4
         with:
-          shared-key: ubuntu-22.04
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
 
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -117,12 +145,21 @@ jobs:
           git config --system core.longpaths true
           if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Resolve maplibre rev
+        shell: bash
+        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
         with:
-          # Per-OS shared key; the ubuntu-22.04 variant reuses the same cache as
-          # the check and clippy jobs above.
-          shared-key: ${{ matrix.os }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
 
       # turnout-web is a wasm-only frontend crate (no host tests); it is
       # exercised by `trunk build` in the release workflow.
