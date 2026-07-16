@@ -156,10 +156,7 @@ impl ServerData {
 
     async fn fetch_source(&self, city: &City, cz: usize, x: u32, y: u32) -> Option<Arc<RgbaImage>> {
         let url = src_tile_url(city, cz, x, y);
-        let resp = self.client.get(&url).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
+        let resp = server_core::send_with_retry(|| self.client.get(&url)).await.ok()?;
         let bytes = resp.bytes().await.ok()?;
         let img = image::load_from_memory(&bytes).ok()?;
         Some(Arc::new(img.to_rgba8()))
