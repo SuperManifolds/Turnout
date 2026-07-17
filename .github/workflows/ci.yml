@@ -61,9 +61,11 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          # `-check-` lane, shared with clippy: both are metadata-only. Separate
+          # from the test job's key so its built rlibs aren't clobbered.
+          key: ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
+            ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-
 
       - run: cargo check --all-targets
 
@@ -91,8 +93,9 @@ jobs:
         shell: bash
         run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
 
-      # Shares the Linux cache with the check and Linux test jobs (same key): they
-      # build the same maplibre-native core.
+      # Shares the `-check-` lane with the check job (same key): both are
+      # metadata-only (`cargo check`/`clippy`), kept separate from the test job's
+      # key so its built rlibs aren't clobbered by this metadata-only target/.
       - name: Cache cargo + target
         uses: actions/cache@v4
         with:
@@ -101,9 +104,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
+            ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-
 
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -154,6 +157,11 @@ jobs:
         shell: bash
         run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
 
+      # The test job owns the base `-cargo-mln` key (check/clippy use a separate
+      # `-check-` lane). On Linux this matters: check/clippy emit dependency
+      # metadata (.rmeta), not codegen (.rlib), so a shared cache would force the
+      # test job to codegen the whole dependency graph (~20 min). macOS/Windows are
+      # unaffected — the test job is the only one on those runners.
       - name: Cache cargo + target
         uses: actions/cache@v4
         with:
