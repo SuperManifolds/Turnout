@@ -118,9 +118,13 @@ jobs:
           # `-release-`: this builds the release profile (target/release), a
           # separate maplibre build dir from ci.yml's debug `cargo test`, so it
           # must not share ci's key or a cross-profile restore would rebuild the core.
-          key: ${{ runner.os }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          # Keyed on matrix.platform (not runner.os) so it shares the cache with
+          # release.yml's host-native platforms (windows, linux-x86), which build
+          # the same target/release. release.yml's --target arches (macos, arm64)
+          # build into target/<triple>/ and keep their own lanes.
+          key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-mln${{ env.MLN_REV }}-
+            ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
 
       - name: Install Trunk
         run: which trunk || cargo install trunk --locked
