@@ -9,6 +9,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::error::{CommandError, CommandResult};
 use crate::settings;
 
 const THUMBNAIL_WIDTH: u32 = 200;
@@ -272,21 +273,22 @@ pub fn get_mods_dir(app: tauri::AppHandle) -> Option<String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn save_blueprint(app: tauri::AppHandle, name: String, data: Vec<u8>) -> Result<String, String> {
-    let mods_dir = resolve_mods_dir(&app)
-        .ok_or_else(|| "Could not find Nimby Rails mods folder. Set it in Settings.".to_string())?;
+pub fn save_blueprint(app: tauri::AppHandle, name: String, data: Vec<u8>) -> CommandResult<String> {
+    let mods_dir = resolve_mods_dir(&app).ok_or_else(|| {
+        CommandError::NotFound("Could not find Nimby Rails mods folder. Set it in Settings.".into())
+    })?;
 
     let folder = sanitize_folder_name(&name);
     if folder.is_empty() {
-        return Err("Invalid blueprint name".to_string());
+        return Err(CommandError::Invalid("Invalid blueprint name".into()));
     }
     let blueprint_dir = mods_dir.join(&folder);
     fs::create_dir_all(&blueprint_dir)
-        .map_err(|e| format!("Failed to create directory: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to create directory: {e}")))?;
 
     let path = blueprint_dir.join("blueprints.nrclip");
     fs::write(&path, &data)
-        .map_err(|e| format!("Failed to write file: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to write file: {e}")))?;
 
     Ok(path.to_string_lossy().to_string())
 }
@@ -310,12 +312,13 @@ pub fn blueprint_exists(app: tauri::AppHandle, name: String) -> bool {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn list_blueprints(app: tauri::AppHandle) -> Result<Vec<BlueprintInfo>, String> {
-    let mods_dir = resolve_mods_dir(&app)
-        .ok_or_else(|| "Could not find Nimby Rails mods folder. Set it in Settings.".to_string())?;
+pub fn list_blueprints(app: tauri::AppHandle) -> CommandResult<Vec<BlueprintInfo>> {
+    let mods_dir = resolve_mods_dir(&app).ok_or_else(|| {
+        CommandError::NotFound("Could not find Nimby Rails mods folder. Set it in Settings.".into())
+    })?;
 
     let entries = fs::read_dir(&mods_dir)
-        .map_err(|e| format!("Failed to read mods directory: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to read mods directory: {e}")))?;
 
     let mut blueprints: Vec<BlueprintInfo> = entries
         .flatten()
@@ -332,21 +335,21 @@ pub fn list_blueprints(app: tauri::AppHandle) -> Result<Vec<BlueprintInfo>, Stri
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn generate_thumbnail(app: tauri::AppHandle, folder_name: String, clip_index: usize) -> Result<String, String> {
+pub fn generate_thumbnail(app: tauri::AppHandle, folder_name: String, clip_index: usize) -> CommandResult<String> {
     let mods_dir = resolve_mods_dir(&app)
-        .ok_or("Mods folder not found")?;
+        .ok_or_else(|| CommandError::NotFound("Mods folder not found".into()))?;
 
     let nrclip_path = mods_dir.join(&folder_name).join("blueprints.nrclip");
     let data = fs::read(&nrclip_path)
-        .map_err(|e| format!("Failed to read blueprint: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to read blueprint: {e}")))?;
     let file = turnout_core::nrc1::NrclipFile::from_bytes(&data)
-        .map_err(|e| format!("Failed to parse blueprint: {e}"))?;
+        .map_err(|e| CommandError::Parse(format!("Failed to parse blueprint: {e}")))?;
 
     // Find the clip at the given index across all collections
     let clip = file.collections.iter()
         .flat_map(|c| &c.clips)
         .nth(clip_index)
-        .ok_or_else(|| format!("Clip index {clip_index} out of range"))?;
+        .ok_or_else(|| CommandError::Invalid(format!("Clip index {clip_index} out of range")))?;
 
     let img = render_thumbnail(&clip.tracks);
 
@@ -354,7 +357,7 @@ pub fn generate_thumbnail(app: tauri::AppHandle, folder_name: String, clip_index
     let mut png_bytes = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
     img.write_with_encoder(encoder)
-        .map_err(|e| format!("Failed to encode thumbnail: {e}"))?;
+        .map_err(|e| CommandError::Other(format!("Failed to encode thumbnail: {e}")))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
     let data_url = format!("data:image/png;base64,{b64}");
@@ -372,17 +375,17 @@ pub fn generate_thumbnail(app: tauri::AppHandle, folder_name: String, clip_index
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn delete_blueprint(app: tauri::AppHandle, folder_name: String) -> Result<(), String> {
+pub fn delete_blueprint(app: tauri::AppHandle, folder_name: String) -> CommandResult<()> {
     let mods_dir = resolve_mods_dir(&app)
-        .ok_or("Mods folder not found")?;
+        .ok_or_else(|| CommandError::NotFound("Mods folder not found".into()))?;
 
     let blueprint_dir = mods_dir.join(&folder_name);
     if !blueprint_dir.exists() {
-        return Err(format!("Blueprint '{folder_name}' not found"));
+        return Err(CommandError::NotFound(format!("Blueprint '{folder_name}' not found")));
     }
 
     fs::remove_dir_all(&blueprint_dir)
-        .map_err(|e| format!("Failed to delete: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to delete: {e}")))?;
 
     // Remove cached thumbnails (all clip indices)
     remove_thumbnails_for(&app, &folder_name);
@@ -410,39 +413,39 @@ fn remove_thumbnails_for(app: &tauri::AppHandle, folder_name: &str) {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn rename_blueprint(app: tauri::AppHandle, old_name: String, new_name: String) -> Result<(), String> {
+pub fn rename_blueprint(app: tauri::AppHandle, old_name: String, new_name: String) -> CommandResult<()> {
     let mods_dir = resolve_mods_dir(&app)
-        .ok_or("Mods folder not found")?;
+        .ok_or_else(|| CommandError::NotFound("Mods folder not found".into()))?;
 
     let old_dir = mods_dir.join(&old_name);
     let new_dir = mods_dir.join(&new_name);
 
     if !old_dir.exists() {
-        return Err(format!("Blueprint '{old_name}' not found"));
+        return Err(CommandError::NotFound(format!("Blueprint '{old_name}' not found")));
     }
     if new_dir.exists() {
-        return Err(format!("Blueprint '{new_name}' already exists"));
+        return Err(CommandError::Invalid(format!("Blueprint '{new_name}' already exists")));
     }
 
     // Update collection name inside the .nrclip file
     let nrclip_path = old_dir.join("blueprints.nrclip");
     if nrclip_path.exists() {
         let data = fs::read(&nrclip_path)
-            .map_err(|e| format!("Failed to read blueprint: {e}"))?;
+            .map_err(|e| CommandError::Io(format!("Failed to read blueprint: {e}")))?;
         let mut file = turnout_core::nrc1::NrclipFile::from_bytes(&data)
-            .map_err(|e| format!("Failed to parse blueprint: {e}"))?;
+            .map_err(|e| CommandError::Parse(format!("Failed to parse blueprint: {e}")))?;
         for coll in &mut file.collections {
             coll.name.clone_from(&new_name);
         }
         let new_data = file.to_bytes()
-            .map_err(|e| format!("Failed to serialize blueprint: {e}"))?;
+            .map_err(|e| CommandError::Other(format!("Failed to serialize blueprint: {e}")))?;
         fs::write(&nrclip_path, new_data)
-            .map_err(|e| format!("Failed to write blueprint: {e}"))?;
+            .map_err(|e| CommandError::Io(format!("Failed to write blueprint: {e}")))?;
     }
 
     // Rename folder
     fs::rename(&old_dir, &new_dir)
-        .map_err(|e| format!("Failed to rename: {e}"))?;
+        .map_err(|e| CommandError::Io(format!("Failed to rename: {e}")))?;
 
     // Remove old thumbnails
     remove_thumbnails_for(&app, &old_name);
@@ -452,17 +455,17 @@ pub fn rename_blueprint(app: tauri::AppHandle, old_name: String, new_name: Strin
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn open_blueprint_folder(app: tauri::AppHandle, folder_name: String) -> Result<(), String> {
+pub fn open_blueprint_folder(app: tauri::AppHandle, folder_name: String) -> CommandResult<()> {
     let mods_dir = resolve_mods_dir(&app)
-        .ok_or("Mods folder not found")?;
+        .ok_or_else(|| CommandError::NotFound("Mods folder not found".into()))?;
 
     let path = mods_dir.join(&folder_name);
     if !path.exists() {
-        return Err(format!("Blueprint folder '{folder_name}' not found"));
+        return Err(CommandError::NotFound(format!("Blueprint folder '{folder_name}' not found")));
     }
 
     tauri_plugin_opener::reveal_item_in_dir(&path)
-        .map_err(|e| format!("Failed to open folder: {e}"))
+        .map_err(|e| CommandError::Other(format!("Failed to open folder: {e}")))
 }
 
 // ══════════════════════════════════════════════════════════════════════

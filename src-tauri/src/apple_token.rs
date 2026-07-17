@@ -20,6 +20,7 @@ use serde::Deserialize;
 use tauri::{Emitter, Manager};
 use tauri_plugin_store::StoreExt;
 
+use crate::error::{CommandError, CommandResult};
 use crate::overlay::apply_apple_credentials;
 use crate::settings;
 
@@ -104,27 +105,27 @@ struct TileSource {
 }
 
 /// Runs the token → bootstrap flow and returns the parsed credentials.
-pub async fn fetch_credentials() -> Result<AppleCredentials, String> {
+pub async fn fetch_credentials() -> CommandResult<AppleCredentials> {
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(HTTP_TIMEOUT)
         .build()
-        .map_err(|e| format!("http client: {e}"))?;
+        .map_err(|e| CommandError::Network(format!("http client: {e}")))?;
 
     let token = client
         .get(TOKEN_URL)
         .header(reqwest::header::REFERER, REFERER)
         .send()
         .await
-        .map_err(|e| format!("token request: {e}"))?
+        .map_err(|e| CommandError::Network(format!("token request: {e}")))?
         .error_for_status()
-        .map_err(|e| format!("token status: {e}"))?
+        .map_err(|e| CommandError::Network(format!("token status: {e}")))?
         .text()
         .await
-        .map_err(|e| format!("token body: {e}"))?;
+        .map_err(|e| CommandError::Network(format!("token body: {e}")))?;
     let token = token.trim();
     if token.is_empty() {
-        return Err("token endpoint returned an empty token".into());
+        return Err(CommandError::Parse("token endpoint returned an empty token".into()));
     }
 
     let body = client
@@ -133,19 +134,19 @@ pub async fn fetch_credentials() -> Result<AppleCredentials, String> {
         .header(reqwest::header::ORIGIN, ORIGIN)
         .send()
         .await
-        .map_err(|e| format!("bootstrap request: {e}"))?
+        .map_err(|e| CommandError::Network(format!("bootstrap request: {e}")))?
         .error_for_status()
-        .map_err(|e| format!("bootstrap status: {e}"))?
+        .map_err(|e| CommandError::Network(format!("bootstrap status: {e}")))?
         .text()
         .await
-        .map_err(|e| format!("bootstrap body: {e}"))?;
+        .map_err(|e| CommandError::Network(format!("bootstrap body: {e}")))?;
     let bootstrap: Bootstrap =
-        serde_json::from_str(&body).map_err(|e| format!("bootstrap parse: {e}"))?;
+        serde_json::from_str(&body).map_err(|e| CommandError::Parse(format!("bootstrap parse: {e}")))?;
 
     let map_version = version_for(&bootstrap.tile_sources, "standard")
-        .ok_or("bootstrap missing standard tile version")?;
+        .ok_or_else(|| CommandError::Parse("bootstrap missing standard tile version".into()))?;
     let sat_version = version_for(&bootstrap.tile_sources, "satellite")
-        .ok_or("bootstrap missing satellite tile version")?;
+        .ok_or_else(|| CommandError::Parse("bootstrap missing satellite tile version".into()))?;
 
     let expires_in_seconds = bootstrap.expires_in_seconds.unwrap_or_else(|| {
         tracing::warn!(
@@ -199,7 +200,7 @@ fn parse_query_value(url: &str, key: &str) -> Option<String> {
 /// frontend to reload. The store is the single source of truth for auto-managed
 /// credentials (`set_settings` leaves the `apple_*` keys alone while auto-refresh
 /// is on), so this is the only writer and manual saves cannot clobber it.
-fn apply_and_persist(app: &tauri::AppHandle, creds: &AppleCredentials) -> Result<(), String> {
+fn apply_and_persist(app: &tauri::AppHandle, creds: &AppleCredentials) -> CommandResult<()> {
     apply_apple_credentials(
         app,
         &creds.access_key,
@@ -207,11 +208,11 @@ fn apply_and_persist(app: &tauri::AppHandle, creds: &AppleCredentials) -> Result
         Some(&creds.sat_version),
     );
 
-    let store = app.store(SETTINGS_STORE).map_err(|e| format!("open settings store: {e}"))?;
+    let store = app.store(SETTINGS_STORE).map_err(|e| CommandError::Io(format!("open settings store: {e}")))?;
     store.set("apple_access_key", serde_json::json!(creds.access_key));
     store.set("apple_map_version", serde_json::json!(creds.map_version));
     store.set("apple_sat_version", serde_json::json!(creds.sat_version));
-    store.save().map_err(|e| format!("save settings store: {e}"))?;
+    store.save().map_err(|e| CommandError::Io(format!("save settings store: {e}")))?;
 
     // Signal only — the payload carries no access key (the frontend re-reads it
     // from the store), so the credential never crosses the IPC boundary.
@@ -222,7 +223,7 @@ fn apply_and_persist(app: &tauri::AppHandle, creds: &AppleCredentials) -> Result
 /// Fetches fresh credentials and applies them, serialized against any other
 /// in-flight refresh so the timer and a manual "Refresh now" never write at once.
 /// Returns the token lifetime for scheduling the next run.
-async fn refresh_once(app: &tauri::AppHandle) -> Result<Duration, String> {
+async fn refresh_once(app: &tauri::AppHandle) -> CommandResult<Duration> {
     let state = app.state::<AppleRefresh>();
     let _guard = state.lock.lock().await;
     let creds = fetch_credentials().await?;
@@ -233,7 +234,7 @@ async fn refresh_once(app: &tauri::AppHandle) -> Result<Duration, String> {
 
 /// Fetches fresh credentials on demand (the "Refresh now" button).
 #[tauri::command]
-pub async fn refresh_apple_token(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn refresh_apple_token(app: tauri::AppHandle) -> CommandResult<()> {
     refresh_once(&app).await.map(|_| ())
 }
 
@@ -256,7 +257,7 @@ pub fn spawn_auto_refresh(app: tauri::AppHandle) {
                         consecutive_failures += 1;
                         tracing::warn!("token refresh failed (attempt {consecutive_failures}): {e}");
                         if consecutive_failures >= FAILURE_NOTIFY_THRESHOLD {
-                            let _ = app.emit(FAILED_EVENT, e);
+                            let _ = app.emit(FAILED_EVENT, e.to_string());
                         }
                         backoff(consecutive_failures)
                     }
