@@ -19,10 +19,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # See ci.yml for the caching rationale: the build cache is keyed on the pinned
+  # maplibre rev (with a prefix restore-key), and `~/.cargo/git` is cached whole so
+  # the Windows vcpkg libs built into the checkout persist. sccache was 0% hit on
+  # Windows and rebuilt maplibre's C++ core (~50 min) every nightly.
   CARGO_INCREMENTAL: "0"
-  RUSTC_WRAPPER: sccache
-  MLN_CMAKE_CXX_LAUNCHER: sccache
-  SCCACHE_DIR: ${{ github.workspace }}/.sccache
 
 jobs:
   create-prerelease:
@@ -73,9 +74,6 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
-
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -100,21 +98,24 @@ jobs:
           git config --system core.longpaths true
           if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
-      - name: Cache Cargo registry
+      - name: Resolve maplibre rev
+        shell: bash
+        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
+
+      - name: Cache cargo + target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Cache sccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: ${{ runner.os }}-sccache-prerelease-${{ github.run_id }}
-          restore-keys: ${{ runner.os }}-sccache-prerelease-
+            target
+          # `-release-`: this builds the release profile (target/release), a
+          # separate maplibre build dir from ci.yml's debug `cargo test`, so it
+          # must not share ci's key or a cross-profile restore would rebuild the core.
+          key: ${{ runner.os }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-mln${{ env.MLN_REV }}-
 
       - name: Install Trunk
         run: which trunk || cargo install trunk --locked
