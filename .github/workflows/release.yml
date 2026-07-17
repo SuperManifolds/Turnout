@@ -67,16 +67,25 @@ jobs:
         with:
           targets: wasm32-unknown-unknown${{ matrix.rust_target && format(',{0}', matrix.rust_target) }}
 
-      - name: Cache Cargo
+      - name: Resolve maplibre rev
+        shell: bash
+        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
+
+      # Rev-scoped release-profile cache, matching prerelease.yml's key and paths.
+      # The host-native platforms (windows, linux-x86) build target/release and so
+      # share their cache with the same-named prerelease lanes; the --target arches
+      # (macos-*, linux-arm64) build target/<triple>/ and keep their own lanes.
+      - name: Cache cargo + target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
             ~/.cargo/git
-            ~/.cargo/bin
             target
-          key: ${{ matrix.platform }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.platform }}-cargo-release-
+          key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
 
       - name: Install system dependencies (Linux)
         if: startsWith(matrix.platform, 'linux')
