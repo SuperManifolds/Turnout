@@ -1,0 +1,5 @@
+# Force LF for the lockfile so its hash is identical on Windows and Unix CI
+# runners. GitHub's Windows runner otherwise checks it out as CRLF (autocrlf),
+# so hashFiles('**/Cargo.lock') — and thus the build cache key — differs from
+# the Unix runners, splitting the cache and causing needless cold Windows builds.
+Cargo.lock text eol=lf
