@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+# A newer commit on a ref supersedes an in-flight run: back-to-back merges to
+# main no longer race to reserve the same cache keys (one run wins, the other
+# fails to save), and a PR force-push cancels its stale run instead of piling up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # maplibre-native's C++ core (the dominant build cost, ~50 min from scratch on
