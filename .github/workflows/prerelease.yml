@@ -33,24 +33,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Recreate rolling nightly release
+      - name: Ensure rolling nightly release exists
         id: create
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Drop the previous rolling nightly release + tag, then recreate it as a
-          # draft pre-release pointing at the current commit. It is published once
-          # all platform builds have uploaded their assets.
-          gh release delete nightly --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
-          id=$(gh api "repos/${{ github.repository }}/releases" \
-            --method POST \
-            -f tag_name="nightly" \
-            -f target_commitish="${{ github.sha }}" \
-            -f name="Nightly (main)" \
-            -f body="Automated, unsigned pre-release test build from the latest commit on main (\`${{ github.sha }}\`). macOS: \`xattr -dr com.apple.quarantine\` the app after downloading; Windows: SmartScreen may warn on the unsigned installer." \
-            -F draft=true \
-            -F prerelease=true \
-            --jq '.id')
+          # Reuse the existing published nightly if present, otherwise create it. It
+          # is never deleted, so it stays visible and downloadable while a new build
+          # runs; each platform's assets are replaced as its build finishes, and the
+          # tag is moved to this commit at the end (publish-prerelease). This avoids
+          # the previous delete-then-draft flow, which took the nightly offline for
+          # the whole ~50 min build and stranded a draft if a run was cancelled.
+          id=$(gh api "repos/${{ github.repository }}/releases/tags/nightly" --jq '.id' 2>/dev/null || true)
+          if [ -z "$id" ]; then
+            id=$(gh api "repos/${{ github.repository }}/releases" \
+              --method POST \
+              -f tag_name="nightly" \
+              -f target_commitish="${{ github.sha }}" \
+              -f name="Nightly (main)" \
+              -f body="Automated, unsigned pre-release test build from the latest commit on main. macOS: \`xattr -dr com.apple.quarantine\` the app after downloading; Windows: SmartScreen may warn on the unsigned installer." \
+              -F draft=false \
+              -F prerelease=true \
+              --jq '.id')
+          fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
   build:
@@ -176,9 +181,17 @@ jobs:
     needs: [create-prerelease, build]
     runs-on: ubuntu-22.04
     steps:
-      - name: Publish the nightly release
+      - name: Point the nightly at this commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # All platform assets are uploaded. Move the rolling nightly tag to this
+          # commit and refresh the notes. The release was already published, so this
+          # never toggles visibility — a cancelled run just leaves the tag on the
+          # prior commit with the release still live.
+          gh api "repos/${{ github.repository }}/git/refs/tags/nightly" \
+            --method PATCH -f sha="${{ github.sha }}" -F force=true >/dev/null
           gh api "repos/${{ github.repository }}/releases/${{ needs.create-prerelease.outputs.release_id }}" \
-            --method PATCH -F draft=false >/dev/null
+            --method PATCH \
+            -f body="Automated, unsigned pre-release test build from main (\`${{ github.sha }}\`). macOS: \`xattr -dr com.apple.quarantine\` the app after downloading; Windows: SmartScreen may warn on the unsigned installer." \
+            -F draft=false >/dev/null
