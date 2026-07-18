@@ -20,8 +20,13 @@ use tokio::sync::{OnceCell, Semaphore};
 
 use crate::server_core::{UnpoisonExt, CONNECT_TIMEOUT, USER_AGENT};
 
-/// Upper bound on concurrent upstream fetches across all render workers.
-const MAX_CONCURRENT_FETCHES: usize = 32;
+/// Upper bound on concurrent upstream fetches across all render workers. On a
+/// cold pan into a new area the renderers request many tiles at once (several
+/// vector sources per tile, plus glyphs/sprites); over HTTP/1.1 each in-flight
+/// fetch needs its own pooled connection, so this bounds how many rounds a fresh
+/// viewport takes. Matches the offline vector download, which streams 64
+/// concurrent HTTP/1.1 fetches to the same host without trouble.
+const MAX_CONCURRENT_FETCHES: usize = 64;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Fallback freshness when the upstream response carries no cache metadata, so
 /// mbgl does not re-fetch unconditionally on every ambient-cache revalidation.
