@@ -9,6 +9,7 @@
 //! need the same vector tile trigger a single upstream request.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -35,8 +36,28 @@ const DEFAULT_EXPIRES_SECS: u64 = 3600;
 /// entry per retry; coalesced waiters share the retries with the fetch.
 const RETRY_BACKOFF_MS: &[u64] = &[200, 500, 1500];
 
+/// Per-request ceiling on the HTTP/2 client. Normal ORM fetches are well under a
+/// second, so a request that runs this long is treated as an HTTP/2 stall — the
+/// failure mode that made HTTP/2 unusable for dense ORM tiles. Kept well below
+/// the HTTP/1.1 client's `REQUEST_TIMEOUT_SECS` so a hang surfaces quickly.
+const H2_STALL_TIMEOUT_SECS: u64 = 10;
+/// Consecutive HTTP/2 stalls before the source downgrades to HTTP/1.1 for the
+/// rest of the session (one-way — no flapping back to HTTP/2).
+const H2_STALL_DOWNGRADE: u32 = 3;
+
 struct OrmNetworkSource {
-    client: reqwest::Client,
+    /// Preferred client: negotiates HTTP/2 over ALPN where the host offers it
+    /// (the Cloudflare-fronted default does), multiplexing a cold viewport's
+    /// fetches over one connection. Used until [`downgraded`](Self::downgraded).
+    h2_client: reqwest::Client,
+    /// Forced HTTP/1.1 client, used once HTTP/2 has stalled too many times —
+    /// HTTP/2 caused permanent render hangs on dense ORM tiles on some setups.
+    h1_client: reqwest::Client,
+    /// One-way latch: set when HTTP/2 stalls repeatedly, after which every fetch
+    /// uses `h1_client` for the rest of the session.
+    downgraded: AtomicBool,
+    /// Consecutive HTTP/2 stalls; any fast success resets it to zero.
+    consecutive_stalls: AtomicU32,
     limiter: Arc<Semaphore>,
     /// In-flight coalescing map: URL → shared response cell. Only requests
     /// without cache validators join a cell; conditional re-validations are
@@ -69,18 +90,42 @@ impl TokioFileSource for OrmNetworkSource {
 
 impl OrmNetworkSource {
     fn new() -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
+        let base = || {
+            reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .pool_max_idle_per_host(MAX_CONCURRENT_FETCHES)
+        };
+        // Default builder negotiates HTTP/2 via ALPN (and transparently uses
+        // HTTP/1.1 against a host that doesn't offer h2), so a cold viewport
+        // multiplexes over one connection. The shorter timeout surfaces a stall.
+        let h2_client = base().timeout(Duration::from_secs(H2_STALL_TIMEOUT_SECS)).build()?;
+        let h1_client = base()
             .http1_only()
-            .user_agent(USER_AGENT)
-            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-            .pool_max_idle_per_host(MAX_CONCURRENT_FETCHES)
             .build()?;
         Ok(Self {
-            client,
+            h2_client,
+            h1_client,
+            downgraded: AtomicBool::new(false),
+            consecutive_stalls: AtomicU32::new(0),
             limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES)),
             inflight: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Records an HTTP/2 fetch outcome; after [`H2_STALL_DOWNGRADE`] consecutive
+    /// stalls it latches [`downgraded`](Self::downgraded), so the rest of the
+    /// session runs on HTTP/1.1. Any fast success resets the streak.
+    fn note_h2_health(&self, stalled: bool) {
+        if !stalled {
+            self.consecutive_stalls.store(0, Ordering::Relaxed);
+            return;
+        }
+        let streak = self.consecutive_stalls.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak >= H2_STALL_DOWNGRADE && !self.downgraded.swap(true, Ordering::Relaxed) {
+            tracing::warn!("ORM HTTP/2 stalled {streak}x; downgrading this session to HTTP/1.1");
+        }
     }
 
     /// Fetches with retries on transient failures. mbgl's built-in
@@ -104,12 +149,22 @@ impl OrmNetworkSource {
         let Ok(permit) = Arc::clone(&self.limiter).acquire_owned().await else {
             return MlnResponse::error(ErrorReason::Other, "fetch limiter closed");
         };
-        let mut builder = self.client.get(&request.url);
+        let on_h2 = !self.downgraded.load(Ordering::Relaxed);
+        let client = if on_h2 { &self.h2_client } else { &self.h1_client };
+        let mut builder = client.get(&request.url);
         if let Some(etag) = &request.prior_etag {
             builder = builder.header(reqwest::header::IF_NONE_MATCH, etag);
         }
         let result = builder.send().await;
         drop(permit);
+
+        // While still on HTTP/2, watch for the stall failure mode (a transport
+        // timeout or connection error — the h2 client's short timeout turns a hang
+        // into one) and downgrade the source after enough consecutive stalls.
+        if on_h2 {
+            let stalled = result.as_ref().err().is_some_and(|e| e.is_timeout() || e.is_connect());
+            self.note_h2_health(stalled);
+        }
 
         let response = match result {
             Ok(response) => response,
@@ -234,4 +289,31 @@ pub(crate) fn register(handle: tokio::runtime::Handle) -> Result<(), reqwest::Er
         OrmNetworkSource::new()?,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h2_downgrades_after_consecutive_stalls_and_resets_on_success() {
+        let src = OrmNetworkSource::new().expect("client build");
+        assert!(!src.downgraded.load(Ordering::Relaxed));
+
+        // Stalls interrupted by a fast success never reach the threshold.
+        src.note_h2_health(true);
+        src.note_h2_health(true);
+        src.note_h2_health(false);
+        assert!(!src.downgraded.load(Ordering::Relaxed), "success should reset the streak");
+
+        // A run of consecutive stalls latches the one-way downgrade.
+        for _ in 0..H2_STALL_DOWNGRADE {
+            src.note_h2_health(true);
+        }
+        assert!(src.downgraded.load(Ordering::Relaxed));
+
+        // A later success does not flap back to HTTP/2.
+        src.note_h2_health(false);
+        assert!(src.downgraded.load(Ordering::Relaxed), "downgrade is permanent for the session");
+    }
 }
