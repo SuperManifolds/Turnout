@@ -14,6 +14,7 @@
 //! and a background task re-runs the flow shortly before each token expires so tiles
 //! never fail on a stale key.
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -59,17 +60,34 @@ const FAILED_EVENT: &str = "apple-token-refresh-failed";
 /// re-enabling auto-refresh triggers an immediate fetch).
 pub struct AppleRefresh {
     lock: tokio::sync::Mutex<()>,
-    wake: tokio::sync::Notify,
+    wake: Arc<tokio::sync::Notify>,
 }
+
+/// Process-global handle to the refresher's wake, so code without access to the
+/// managed `AppleRefresh` state (the tile server's fetch path) can trigger an
+/// immediate refresh — e.g. when Apple returns 403 on an expired access key.
+static REFRESH_WAKE: OnceLock<Arc<tokio::sync::Notify>> = OnceLock::new();
 
 impl AppleRefresh {
     pub fn new() -> Self {
-        Self { lock: tokio::sync::Mutex::new(()), wake: tokio::sync::Notify::new() }
+        let wake = Arc::new(tokio::sync::Notify::new());
+        // Publish the wake globally; first construction wins (there is only one).
+        let _ = REFRESH_WAKE.set(Arc::clone(&wake));
+        Self { lock: tokio::sync::Mutex::new(()), wake }
     }
 
     /// Wakes the refresh loop out of its sleep so it re-evaluates immediately.
     pub fn wake(&self) {
         self.wake.notify_one();
+    }
+}
+
+/// Ask the background refresher to fetch a fresh token now, from anywhere in the
+/// process. Coalesced (the loop wakes once) and a no-op before the refresher is
+/// constructed. Used by the tile server when Apple rejects a stale access key.
+pub fn request_refresh() {
+    if let Some(wake) = REFRESH_WAKE.get() {
+        wake.notify_one();
     }
 }
 

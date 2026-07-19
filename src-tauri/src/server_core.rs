@@ -151,10 +151,13 @@ pub fn http_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
 /// Why a [`send_with_retry`] call gave up. Callers map these to their own
 /// domain: `NotFound` typically means "no such tile" (skip, don't retry),
 /// `Throttled` means the server kept returning `429` past the retry budget,
-/// and `Failed` covers exhausted transient errors and non-retryable responses.
+/// `Forbidden` is a `403` (an expired/rejected credential — retrying won't help,
+/// so it short-circuits and the caller may re-auth), and `Failed` covers
+/// exhausted transient errors and other non-retryable responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchError {
     NotFound,
+    Forbidden,
     Throttled,
     Failed,
 }
@@ -188,6 +191,11 @@ where
             Ok(resp) if resp.status().is_success() => return Ok(resp),
             Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
                 return Err(FetchError::NotFound);
+            }
+            // A 403 won't succeed on retry (expired/rejected credential); short-
+            // circuit so the caller can re-authenticate instead of hammering.
+            Ok(resp) if resp.status() == reqwest::StatusCode::FORBIDDEN => {
+                return Err(FetchError::Forbidden);
             }
             Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
                 if attempt == MAX_RETRIES {

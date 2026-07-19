@@ -78,7 +78,7 @@ async fn fetch_with_retry(client: &reqwest::Client, url: &str) -> FetchResult {
             .map_or(FetchResult::Failed, |b| FetchResult::Ok(b.to_vec())),
         Err(FetchError::NotFound) => FetchResult::NotFound,
         Err(FetchError::Throttled) => FetchResult::Throttled,
-        Err(FetchError::Failed) => FetchResult::Failed,
+        Err(FetchError::Forbidden | FetchError::Failed) => FetchResult::Failed,
     }
 }
 
