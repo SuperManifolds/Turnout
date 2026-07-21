@@ -93,11 +93,33 @@ PR / release / run you name.
 | 8 · Improve the skill | ~10 min |
 
 The one hard number is the **tag-triggered build: ~30 min** (the from-source
-maplibre-native C++ core dominates). Everything else is fast.
+maplibre-native C++ core dominates) — longer, ~50 min, when the CI/release build
+caches are cold. Everything else is fast.
 
 ### Phase 0: Preflight & version
 
 - **Claude** confirms the ground is solid, reporting only what needs a decision:
+  - **The local git state is clean before touching anything.** Assess up front,
+    because a messy tree derails the version-bump PR (a stale local branch, a
+    detached/behind `main`, or leftover staged changes will collide when you cut
+    `release/vX.Y.Z`). Verify and reset to a known-good base:
+
+    ```sh
+    git fetch origin main --tags
+    git status --porcelain          # want empty
+    git rev-parse HEAD origin/main  # local main should match origin
+    git branch --list 'release*'    # delete any stale release branches first
+    ```
+
+    If dirty: stash/discard, `git checkout main && git reset --hard origin/main`,
+    and delete stale `release*` branches — *then* start. Don't build the bump on
+    top of a divergent tree.
+  - **Apple Developer agreements are current.** A lapsed Apple Developer Program
+    License Agreement fails the macOS build at *notarization* with `HTTP 403: A
+    required agreement is missing or has expired` — after ~30 min of build, not at
+    tag time. It needs no code change, only the account holder accepting the
+    agreement at <https://developer.apple.com/account> (and App Store Connect →
+    Agreements). Flag it to the releaser to confirm before tagging.
   - `main` is current locally and nothing release-blocking is unmerged. If a PR
     *should* ship (an open fix the release is waiting on), flag it — it must be
     merged before tagging.
@@ -122,6 +144,12 @@ maplibre-native C++ core dominates). Everything else is fast.
 
   Any `feat`/breaking change → minor. Refactor/chore/ci/perf-only with fixes →
   patch. Propose `$VERSION` with the one or two changes that drove the call.
+
+  **Present the version as a structured choice (the options UI / `AskUserQuestion`),
+  not a prose question** — one option per candidate bump (e.g. `v0.3.0` minor vs
+  `v0.2.1` patch), each labelled with what drove it, so the releaser picks rather
+  than free-types. Same for any other either/or gate in this loop (dry-run vs
+  direct tag, etc.).
 
 ### Phase 1: Version bump PR
 
@@ -294,7 +322,25 @@ edits; the releaser approves; land them in a separate post-release PR.
 
 ## Fixing a broken release
 
-If a release ships broken or a platform failed to build:
+First decide whether the failure was **the code/config** or **something external
+and transient** — the recovery differs.
+
+**Transient / external failure (no code change needed)** — e.g. notarization
+`403` from a lapsed Apple agreement, a flaky network step, a cache miss. Fix the
+external cause (accept the agreement, etc.), then **re-run only the failed jobs on
+the same run — do NOT re-tag:**
+
+```sh
+gh run rerun <run-id> --failed --repo SuperManifolds/Turnout
+```
+
+This re-runs just the failed matrix jobs *and* the downstream jobs that were
+skipped because of them (e.g. `harden-linux-appimage`), reusing the successful
+builds and the same draft release. It's faster and cleaner than a re-tag, and
+avoids rebuilding the platforms that already passed. Re-verify (Phase 5), publish
+(Phase 6).
+
+**Code/config failure (needs a source change)** — re-tag after landing the fix:
 
 1. Land the fix in `main`; confirm CI green on the fix commit.
 2. Re-tag the fix commit by explicit SHA and force-push to re-run the build:
@@ -307,5 +353,5 @@ If a release ships broken or a platform failed to build:
    The re-run recreates the draft and rebuilds/re-signs. Re-verify (Phase 5) and
    publish (Phase 6).
 
-Prefer re-tagging only before the release is published. Once users may have
+Prefer either recovery only before the release is published. Once users may have
 auto-updated, ship a new patch version (`v0.3.1`) instead of moving a published tag.
