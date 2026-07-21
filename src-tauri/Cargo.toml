@@ -24,11 +24,15 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 tiny-skia = "0.11"
 futures = "0.3"
+# Used only to enumerate the machine's GPUs for the settings picker (list_gpus).
+# NOT the maplibre `wgpu` backend feature (that upstream backend does not build);
+# the wgpu crate on its own reads adapter names fine.
+wgpu = "29.0.0"
 lru = "0.12"
 quick-xml = "0.37"
 tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
-maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "aa183dd", features = ["json", "tokio"] }
+maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "58fa28a", features = ["json", "tokio"] }
 mvt = "0.13.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

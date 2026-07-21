@@ -5,6 +5,7 @@ mod arcgis;
 mod blueprint;
 mod cartometro;
 mod error;
+mod gpu;
 mod orm_import;
 mod mbtiles;
 mod orm_net;
@@ -176,6 +177,19 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Pin the ORM renderer to the user's chosen GPU, read by the fork's
+            // Vulkan device-selection patch (MLN_VULKAN_DEVICE_NAME). A no-op on
+            // Metal (macOS exposes one device). Done first, before this closure
+            // spawns any of the app's threads.
+            // SAFETY: edition-2024 makes `set_var` unsound only against a
+            // concurrent `getenv` on another thread. This runs once, at the very
+            // start of setup() on the main thread, before the app spawns the
+            // threads that read the environment — the filesystem watcher below,
+            // the ORM render workers (`start_blocking`), and the token refresher —
+            // so no `getenv` can race this one-time set.
+            if let Some(name) = settings::load(app.handle()).gpu_adapter.filter(|s| !s.is_empty()) {
+                unsafe { std::env::set_var("MLN_VULKAN_DEVICE_NAME", name); }
+            }
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
@@ -215,6 +229,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            gpu::list_gpu_adapters,
             overpass::fetch_overpass,
             orm_import::import_orm,
             orm_import::count_track_nodes,
