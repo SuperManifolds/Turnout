@@ -47,12 +47,7 @@ const MAIN_QUEUE_CAP: usize = 64;
 const PREFETCH_QUEUE_CAP: usize = 128;
 /// mbgl ambient cache size for fetched MVT tiles (online revisits avoid re-fetch).
 const MBGL_CACHE_BYTES: u64 = 512 * 1024 * 1024;
-/// Render/serve tiles at the standard 256 px. The tilejson advertises no
-/// `tileSize` field, so the game treats tiles as 256; rendering at 512 only bought
-/// retina sharpness at 4× the pixels — 4× the PNG encode, the `RawImage` copy, and
-/// (on machines where mbgl falls back to software rendering) 4× the fill cost,
-/// which is the dominant term when the render backend is CPU-bound.
-const TILE_SIZE: u32 = 256;
+const TILE_SIZE: u32 = 512;
 const MAX_NATIVE_ZOOM: u8 = 19;
 /// Rendered z19 parents kept for overzoom reuse. All children of one parent (4 at
 /// z20, 16 at z21, 64 at z22) crop from a single render instead of each triggering
