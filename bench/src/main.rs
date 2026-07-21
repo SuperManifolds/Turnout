@@ -54,7 +54,8 @@ fn style_with_layers(n: usize) -> (String, usize) {
 }
 
 fn bench_style(style: &str, tiles: &[(u8, u32, u32)]) -> (f64, f64, f64) {
-    let size = NonZeroU32::new(TILE_SIZE).expect("nonzero tile size");
+    let ts = std::env::var("BENCH_TILE_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(TILE_SIZE);
+    let size = NonZeroU32::new(ts).expect("nonzero tile size");
     let cache = std::env::temp_dir().join("orm-bench-cache.db");
     let opts = ResourceOptions::default()
         .with_cache_path(cache)
@@ -105,7 +106,8 @@ fn main() {
     if let Ok(n) = std::env::var("BENCH_LAYERS").map(|s| s.parse::<usize>().unwrap_or(1)) {
         let secs: u64 = std::env::var("BENCH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
         let (style, actual) = style_with_layers(n);
-        let size = NonZeroU32::new(TILE_SIZE).expect("nonzero tile size");
+        let ts = std::env::var("BENCH_TILE_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(TILE_SIZE);
+    let size = NonZeroU32::new(ts).expect("nonzero tile size");
         let opts = ResourceOptions::default()
             .with_cache_path(std::env::temp_dir().join("orm-bench-cache.db"))
             .with_maximum_cache_size(CACHE_BYTES);
