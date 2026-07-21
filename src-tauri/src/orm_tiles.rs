@@ -25,8 +25,16 @@ const PREFERRED_PORT: u16 = 17854;
 const BIND_ATTEMPTS: u32 = 10;
 const BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
 const TILE_CACHE_CAPACITY: usize = 4096;
-const WORKER_COUNT: usize = 6;
-const ENCODER_COUNT: usize = 2;
+/// Render worker threads, sized from the CPU at startup (half the logical cores,
+/// clamped). The floor is the historical default so typical 8-core machines never
+/// regress; the ceiling bounds per-worker GPU renderer memory on many-core hosts.
+const WORKER_COUNT_MIN: usize = 6;
+const WORKER_COUNT_MAX: usize = 12;
+/// PNG encoder threads, sized from the CPU at startup. Encoding a tile is cheap
+/// (~1-2ms) next to a render, so a small pool keeps encode off the render path's
+/// critical path without oversubscribing.
+const ENCODER_COUNT_MIN: usize = 2;
+const ENCODER_COUNT_MAX: usize = 4;
 /// HTTP request-handling threads. Kept modest — handlers are lightweight (lock,
 /// enqueue, await); rendering happens on the dedicated worker threads.
 const HTTP_WORKER_THREADS: usize = 4;
@@ -46,6 +54,10 @@ const MBGL_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 /// which is the dominant term when the render backend is CPU-bound.
 const TILE_SIZE: u32 = 256;
 const MAX_NATIVE_ZOOM: u8 = 19;
+/// Rendered z19 parents kept for overzoom reuse. All children of one parent (4 at
+/// z20, 16 at z21, 64 at z22) crop from a single render instead of each triggering
+/// their own. A handful of parents cover a deep-zoom viewport plus panning slack.
+const PARENT_CACHE_CAPACITY: usize = 32;
 const RENDER_TIMEOUT_SECS: u64 = 30;
 const STATS_INTERVAL: u64 = 50;
 const WORKER_RESTART_DELAY_SECS: u64 = 1;
@@ -82,6 +94,12 @@ pub(crate) const STYLES: &[(&str, &str)] = &[
 type Key = (Arc<str>, u8, u32, u32);
 type RawImage = ImageBuffer<Rgba<u8>, Vec<u8>>;
 type Waiters = HashMap<Key, Vec<oneshot::Sender<TileResult>>>;
+/// Shared cache of rendered z19 parent images for overzoom reuse, keyed by
+/// `(style, parent_x, parent_y)`. Each entry carries the render generation so a
+/// parent left over from before an offline/base-URL change is treated as a miss
+/// rather than cropped into a stale child (the same guard the encoder applies).
+type ParentKey = (Arc<str>, u32, u32);
+type ParentCache = Mutex<LruCache<ParentKey, (u64, Arc<RawImage>)>>;
 
 /// Outcome delivered to a tile request's waiters. `Evicted` is distinct from
 /// `Failed` so the HTTP layer can answer 204 (revisit re-requests) rather than
@@ -179,6 +197,9 @@ struct OrmTileState {
     cache: Arc<TileCache>,
     dispatch: Arc<Dispatch>,
     shared: Arc<OrmShared>,
+    /// Number of render workers; the prefetch/wake heuristics in `serve_tile`
+    /// scale their thresholds off it.
+    worker_count: usize,
 }
 
 pub struct OrmHandle {
@@ -256,10 +277,21 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 
     let cache: Arc<TileCache> = Arc::new(TileCache::new(TILE_CACHE_CAPACITY, CACHE_STRIPES));
 
+    // Shared across all workers so a sibling rendered by any worker reuses the
+    // parent instead of re-rendering it. Generation-tagged entries make clearing
+    // on an offline/base-URL change unnecessary — stale parents miss and re-render.
+    let parent_cache: Arc<ParentCache> = Arc::new(Mutex::new(LruCache::new(
+        NonZeroUsize::new(PARENT_CACHE_CAPACITY).expect("nonzero"),
+    )));
+
+    let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    let worker_count = (cores / 2).clamp(WORKER_COUNT_MIN, WORKER_COUNT_MAX);
+    let encoder_count = (cores / 4).clamp(ENCODER_COUNT_MIN, ENCODER_COUNT_MAX);
+
     let (encode_tx, encode_rx) = std::sync::mpsc::channel::<(Key, RawImage, u64)>();
     let encode_rx = Arc::new(Mutex::new(encode_rx));
 
-    for _ in 0..ENCODER_COUNT {
+    for _ in 0..encoder_count {
         let rx = Arc::clone(&encode_rx);
         let cache = Arc::clone(&cache);
         let dispatch = Arc::clone(&dispatch);
@@ -309,19 +341,22 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
             })?;
     }
 
-    for i in 0..WORKER_COUNT {
+    for i in 0..worker_count {
         let dispatch = Arc::clone(&dispatch);
         let cache_path = shared_cache_path.clone();
         let encode_tx = encode_tx.clone();
         let shared = Arc::clone(&shared);
         let cache = Arc::clone(&cache);
+        let parent_cache = Arc::clone(&parent_cache);
         std::thread::Builder::new()
             .name(format!("orm-render-{i}"))
             .spawn(move || {
                 let mut restarts = 0u32;
                 loop {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        render_worker_inner(i, &dispatch, &cache, &cache_path, &encode_tx, &shared);
+                        render_worker_inner(
+                            i, &dispatch, &cache, &cache_path, &encode_tx, &shared, &parent_cache,
+                        );
                     }));
                     match result {
                         // Clean exit: the dispatch queue was closed (shutdown).
@@ -350,6 +385,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         cache: Arc::clone(&cache),
         dispatch,
         shared: Arc::clone(&shared),
+        worker_count,
     });
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -570,6 +606,7 @@ fn render_worker_inner(
     cache_path: &std::path::Path,
     encode_tx: &std::sync::mpsc::Sender<(Key, RawImage, u64)>,
     shared: &OrmShared,
+    parent_cache: &ParentCache,
 ) {
     tracing::debug!("worker {id} starting");
 
@@ -633,21 +670,48 @@ fn render_worker_inner(
         }
 
         let (render_z, render_x, render_y) = parent_coords(z, x, y);
+        let is_overzoom = z > MAX_NATIVE_ZOOM;
+
+        // Overzoom siblings share one z19 parent render. Reuse a cached parent from
+        // the current generation instead of re-rendering it for every child; a
+        // stale-generation entry is ignored so it can't crop into a stale tile.
+        let cached_parent = if is_overzoom {
+            let key = (Arc::clone(&style), render_x, render_y);
+            parent_cache
+                .lock()
+                .unpoison()
+                .get(&key)
+                .and_then(|(entry_gen, img)| (*entry_gen == current_gen).then(|| Arc::clone(img)))
+        } else {
+            None
+        };
+
         let start = Instant::now();
-        let result = renderers
-            .get_mut(style.as_ref())
-            .expect("just inserted")
-            .render_tile(render_z, render_x, render_y);
+        let raw_result = if let Some(parent) = cached_parent {
+            Ok(crop_and_upscale(&parent, z, x, y))
+        } else {
+            renderers
+                .get_mut(style.as_ref())
+                .expect("just inserted")
+                .render_tile(render_z, render_x, render_y)
+                .map(|image| {
+                    if is_overzoom {
+                        let parent = Arc::new(image.into_inner());
+                        parent_cache.lock().unpoison().put(
+                            (Arc::clone(&style), render_x, render_y),
+                            (current_gen, Arc::clone(&parent)),
+                        );
+                        crop_and_upscale(&parent, z, x, y)
+                    } else {
+                        image.into_inner()
+                    }
+                })
+        };
         let render_ms = start.elapsed().as_millis();
         render_count += 1;
 
-        match result {
-            Ok(image) => {
-                let raw = if z > MAX_NATIVE_ZOOM {
-                    crop_and_upscale(image.as_image(), z, x, y)
-                } else {
-                    image.into_inner()
-                };
+        match raw_result {
+            Ok(raw) => {
                 if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > 2000 {
                     tracing::debug!(
                         "worker {id} rendered {render_count} tiles (last: {render_ms}ms)"
@@ -747,7 +811,7 @@ async fn serve_tile(
             }
             // Only prefetch once the workers have caught up, so it never competes
             // with real requests during an active pan.
-            let prefetched = if q.main.len() <= WORKER_COUNT {
+            let prefetched = if q.main.len() <= state.worker_count {
                 enqueue_prefetch_ring(&mut q, &waiters, &state.cache, &key)
             } else {
                 0
@@ -755,7 +819,7 @@ async fn serve_tile(
             drop(q);
             // Wake one worker per newly enqueued key (main + prefetch), capped at the
             // worker count, instead of stampeding all workers on every request.
-            let wake = (1 + prefetched).min(WORKER_COUNT);
+            let wake = (1 + prefetched).min(state.worker_count);
             for _ in 0..wake {
                 state.dispatch.cv.notify_one();
             }
@@ -817,4 +881,34 @@ pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> CommandResult<
         tokio::time::sleep(std::time::Duration::from_millis(PORT_WAIT_INTERVAL_MS)).await;
     }
     Err(CommandError::Server("ORM tile server not bound".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_zoom_tiles_are_their_own_parent() {
+        assert_eq!(parent_coords(MAX_NATIVE_ZOOM, 100, 200), (MAX_NATIVE_ZOOM, 100, 200));
+        assert_eq!(parent_coords(0, 0, 0), (0, 0, 0));
+    }
+
+    #[test]
+    fn overzoom_siblings_share_one_parent() {
+        // The four z20 children of z19 parent (10, 20) must all resolve to it, so
+        // the parent cache renders it once and crops four times.
+        let parent = (MAX_NATIVE_ZOOM, 10, 20);
+        for (cx, cy) in [(20, 40), (21, 40), (20, 41), (21, 41)] {
+            assert_eq!(parent_coords(MAX_NATIVE_ZOOM + 1, cx, cy), parent);
+        }
+        // A z22 tile resolves three levels up to the same parent.
+        assert_eq!(parent_coords(MAX_NATIVE_ZOOM + 3, 10 << 3, 20 << 3), parent);
+    }
+
+    #[test]
+    fn crop_and_upscale_returns_full_tile_size() {
+        let parent = RawImage::from_pixel(TILE_SIZE, TILE_SIZE, Rgba([1, 2, 3, 4]));
+        let child = crop_and_upscale(&parent, MAX_NATIVE_ZOOM + 1, 21, 41);
+        assert_eq!(child.dimensions(), (TILE_SIZE, TILE_SIZE));
+    }
 }
