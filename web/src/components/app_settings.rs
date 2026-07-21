@@ -378,7 +378,12 @@ pub fn AppSettings() -> impl IntoView {
                             set_gpu_adapter.set(if v.is_empty() { None } else { Some(v) });
                         }
                     >
-                        <option value="">"Auto (best available GPU)"</option>
+                        <option value="">
+                            {move || match gpus.get().iter().find(|g| !g.is_software) {
+                                Some(g) => format!("Auto — {}", g.name),
+                                None => "Auto (best available GPU)".to_string(),
+                            }}
+                        </option>
                         {move || gpus.get().into_iter().map(|g| {
                             let label = if g.is_software {
                                 format!("{} ({} · software)", g.name, g.kind)
