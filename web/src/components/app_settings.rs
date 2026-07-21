@@ -384,6 +384,18 @@ pub fn AppSettings() -> impl IntoView {
                                 None => "Auto (best available GPU)".to_string(),
                             }}
                         </option>
+                        // A saved GPU that is no longer present (driver change, eGPU
+                        // unplugged) gets its own option so the select shows it —
+                        // labelled "not found" — instead of a blank selection, while
+                        // keeping the preference. The backend falls back to Auto.
+                        {move || {
+                            let list = gpus.get();
+                            gpu_adapter.get()
+                                .filter(|name| !list.is_empty() && !list.iter().any(|g| &g.name == name))
+                                .map(|name| view! {
+                                    <option value={name.clone()}>{format!("{name} (not found)")}</option>
+                                })
+                        }}
                         {move || gpus.get().into_iter().map(|g| {
                             let label = if g.is_software {
                                 format!("{} ({} · software)", g.name, g.kind)

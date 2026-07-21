@@ -177,6 +177,19 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Pin the ORM renderer to the user's chosen GPU, read by the fork's
+            // Vulkan device-selection patch (MLN_VULKAN_DEVICE_NAME). A no-op on
+            // Metal (macOS exposes one device). Done first, before this closure
+            // spawns any of the app's threads.
+            // SAFETY: edition-2024 makes `set_var` unsound only against a
+            // concurrent `getenv` on another thread. This runs once, at the very
+            // start of setup() on the main thread, before the app spawns the
+            // threads that read the environment — the filesystem watcher below,
+            // the ORM render workers (`start_blocking`), and the token refresher —
+            // so no `getenv` can race this one-time set.
+            if let Some(name) = settings::load(app.handle()).gpu_adapter.filter(|s| !s.is_empty()) {
+                unsafe { std::env::set_var("MLN_VULKAN_DEVICE_NAME", name); }
+            }
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
@@ -188,15 +201,6 @@ fn main() {
             app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
-            // Pin the ORM renderer to the user's chosen GPU. Read by the fork's
-            // Vulkan device-selection patch (MLN_VULKAN_DEVICE_NAME); a no-op on
-            // Metal (macOS has one device). Set before start_blocking spawns the
-            // render workers that init the Vulkan device.
-            // SAFETY: no other thread reads MLN_VULKAN_DEVICE_NAME — mbgl reads it
-            // once at device init on a worker spawned just below.
-            if let Some(name) = settings::load(app.handle()).gpu_adapter.filter(|s| !s.is_empty()) {
-                unsafe { std::env::set_var("MLN_VULKAN_DEVICE_NAME", name); }
-            }
             match orm_tiles::start_blocking() {
                 Ok(h) => {
                     let base = settings::resolve_orm_base(settings::load(app.handle()).orm_base_url.as_deref());

@@ -18,8 +18,18 @@ pub struct GpuInfo {
     pub backend: String,
     /// `discrete` / `integrated` / `virtual` / `cpu` / `other`.
     pub kind: String,
-    /// True for a `Cpu` (software) adapter — the case we want to avoid.
+    /// True for adapter types that are (or may be) a software rasterizer rather
+    /// than a real GPU — see [`is_software_type`].
     pub is_software: bool,
+}
+
+/// Whether an adapter type is a software rasterizer rather than real hardware.
+/// `Cpu` covers Mesa lavapipe / D3D WARP / `SwiftShader`, and the catch-all `Other`
+/// is where non-classified software implementations land. `VirtualGpu` is treated
+/// as hardware — it is a virtualized/passed-through GPU (SR-IOV, virtio-gpu), not
+/// a CPU renderer.
+fn is_software_type(t: wgpu::DeviceType) -> bool {
+    matches!(t, wgpu::DeviceType::Cpu | wgpu::DeviceType::Other)
 }
 
 fn instance() -> wgpu::Instance {
@@ -58,6 +68,11 @@ fn rank(t: wgpu::DeviceType) -> u8 {
 /// Every adapter the primary backends expose, best-hardware-first.
 pub fn list_gpus() -> Vec<GpuInfo> {
     let adapters = block_on(instance().enumerate_adapters(wgpu::Backends::PRIMARY));
+    if adapters.is_empty() {
+        tracing::warn!(
+            "no GPU adapters enumerated (Vulkan/Metal/DX12); ORM rendering may fall back to software"
+        );
+    }
     let mut gpus: Vec<(u8, GpuInfo)> = adapters
         .iter()
         .map(|a| {
@@ -67,7 +82,7 @@ pub fn list_gpus() -> Vec<GpuInfo> {
                 name: info.name,
                 backend: format!("{:?}", info.backend),
                 kind: kind_str(info.device_type).to_string(),
-                is_software: info.device_type == wgpu::DeviceType::Cpu,
+                is_software: is_software_type(info.device_type),
             })
         })
         .collect();
@@ -83,13 +98,45 @@ pub fn list_gpu_adapters() -> Vec<GpuInfo> {
 
 #[cfg(test)]
 mod tests {
+    use super::{is_software_type, list_gpus, rank};
+    use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu, Other, VirtualGpu};
+
+    // The selection logic is pure and GPU-independent — tested directly so this
+    // runs on headless CI (no adapter present) without a hardware assertion.
+
     #[test]
-    fn enumerates_at_least_one_hardware_gpu() {
-        let gpus = super::list_gpus();
-        for g in &gpus {
-            eprintln!("gpu: {} [{}] {} software={}", g.name, g.backend, g.kind, g.is_software);
-        }
-        assert!(!gpus.is_empty(), "no GPU adapters enumerated");
-        assert!(gpus.iter().any(|g| !g.is_software), "no hardware (non-software) GPU found");
+    fn rank_orders_hardware_before_software() {
+        assert!(rank(DiscreteGpu) < rank(IntegratedGpu));
+        assert!(rank(IntegratedGpu) < rank(VirtualGpu));
+        assert!(rank(VirtualGpu) < rank(Other));
+        assert!(rank(Other) < rank(Cpu));
+    }
+
+    #[test]
+    fn software_types_are_cpu_and_other() {
+        assert!(is_software_type(Cpu));
+        assert!(is_software_type(Other));
+        assert!(!is_software_type(DiscreteGpu));
+        assert!(!is_software_type(IntegratedGpu));
+        // A virtualized/passed-through GPU is hardware, not a CPU renderer.
+        assert!(!is_software_type(VirtualGpu));
+    }
+
+    #[test]
+    fn list_gpus_is_sorted_best_first_and_never_panics() {
+        // Whatever this machine has (or nothing, on headless CI), the result must
+        // be non-decreasing by rank — best hardware first.
+        let gpus = list_gpus();
+        let ranks: Vec<u8> = gpus
+            .iter()
+            .map(|g| match g.kind.as_str() {
+                "discrete" => rank(DiscreteGpu),
+                "integrated" => rank(IntegratedGpu),
+                "virtual" => rank(VirtualGpu),
+                "cpu" => rank(Cpu),
+                _ => rank(Other),
+            })
+            .collect();
+        assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "adapters not sorted best-first");
     }
 }
