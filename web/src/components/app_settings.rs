@@ -391,7 +391,8 @@ pub fn AppSettings() -> impl IntoView {
                         {move || {
                             let list = gpus.get();
                             gpu_adapter.get()
-                                .filter(|name| !list.is_empty() && !list.iter().any(|g| &g.name == name))
+                                // Skip empty (its value="" would collide with the Auto option).
+                                .filter(|name| !name.is_empty() && !list.is_empty() && !list.iter().any(|g| &g.name == name))
                                 .map(|name| view! {
                                     <option value={name.clone()}>{format!("{name} (not found)")}</option>
                                 })

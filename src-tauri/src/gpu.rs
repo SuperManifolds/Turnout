@@ -73,12 +73,11 @@ pub fn list_gpus() -> Vec<GpuInfo> {
             "no GPU adapters enumerated (Vulkan/Metal/DX12); ORM rendering may fall back to software"
         );
     }
-    let mut gpus: Vec<(u8, GpuInfo)> = adapters
+    let ranked: Vec<(u8, GpuInfo)> = adapters
         .iter()
         .map(|a| {
             let info = a.get_info();
-            let rank = rank(info.device_type);
-            (rank, GpuInfo {
+            (rank(info.device_type), GpuInfo {
                 name: info.name,
                 backend: format!("{:?}", info.backend),
                 kind: kind_str(info.device_type).to_string(),
@@ -86,8 +85,14 @@ pub fn list_gpus() -> Vec<GpuInfo> {
             })
         })
         .collect();
-    gpus.sort_by_key(|(rank, _)| *rank);
-    gpus.into_iter().map(|(_, g)| g).collect()
+    sort_best_first(ranked)
+}
+
+/// Orders `(rank, adapter)` pairs best-hardware-first (lowest rank), dropping the
+/// rank. Split out so the ordering is unit-testable without a real GPU.
+fn sort_best_first(mut ranked: Vec<(u8, GpuInfo)>) -> Vec<GpuInfo> {
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.into_iter().map(|(_, g)| g).collect()
 }
 
 /// Lists the available GPUs for the settings picker, best-hardware-first.
@@ -123,20 +128,25 @@ mod tests {
     }
 
     #[test]
-    fn list_gpus_is_sorted_best_first_and_never_panics() {
-        // Whatever this machine has (or nothing, on headless CI), the result must
-        // be non-decreasing by rank — best hardware first.
-        let gpus = list_gpus();
-        let ranks: Vec<u8> = gpus
-            .iter()
-            .map(|g| match g.kind.as_str() {
-                "discrete" => rank(DiscreteGpu),
-                "integrated" => rank(IntegratedGpu),
-                "virtual" => rank(VirtualGpu),
-                "cpu" => rank(Cpu),
-                _ => rank(Other),
-            })
-            .collect();
-        assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "adapters not sorted best-first");
+    fn sort_best_first_orders_by_rank() {
+        let g = |name: &str| super::GpuInfo {
+            name: name.into(), backend: "Vulkan".into(), kind: "x".into(), is_software: false,
+        };
+        // Deliberately unsorted input; sort_best_first must order lowest-rank first.
+        let ranked = vec![
+            (rank(Cpu), g("sw")),
+            (rank(DiscreteGpu), g("discrete")),
+            (rank(IntegratedGpu), g("integrated")),
+            (rank(Other), g("other")),
+        ];
+        let names: Vec<String> = super::sort_best_first(ranked).into_iter().map(|g| g.name).collect();
+        assert_eq!(names, ["discrete", "integrated", "other", "sw"]);
+    }
+
+    #[test]
+    fn list_gpus_never_panics() {
+        // Whatever this machine has (or nothing, on headless CI), enumeration and
+        // ranking must not panic.
+        let _ = list_gpus();
     }
 }
