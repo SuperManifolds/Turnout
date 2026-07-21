@@ -21,6 +21,8 @@ pub struct Settings {
     pub apple_auto_refresh: bool,
     #[serde(default)]
     pub orm_base_url: Option<String>,
+    #[serde(default)]
+    pub gpu_adapter: Option<String>,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
@@ -39,8 +41,18 @@ impl Default for Settings {
             apple_sat_version: None,
             apple_auto_refresh: true,
             orm_base_url: None,
+            gpu_adapter: None,
         }
     }
+}
+
+/// One GPU the app can render on, from `list_gpu_adapters`.
+#[derive(Clone, serde::Deserialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub kind: String,
+    #[serde(rename = "isSoftware")]
+    pub is_software: bool,
 }
 
 const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
@@ -132,6 +144,8 @@ pub fn AppSettings() -> impl IntoView {
     let (apple_sat_ver, set_apple_sat_ver) = create_signal::<Option<String>>(None);
     let (apple_auto, set_apple_auto) = create_signal(true);
     let (orm_base, set_orm_base) = create_signal::<Option<String>>(None);
+    let (gpu_adapter, set_gpu_adapter) = create_signal::<Option<String>>(None);
+    let (gpus, set_gpus) = create_signal::<Vec<GpuInfo>>(Vec::new());
     let (apple_refresh_status, set_apple_refresh_status) = create_signal(String::new());
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
@@ -152,6 +166,12 @@ pub fn AppSettings() -> impl IntoView {
             set_apple_sat_ver.set(settings.apple_sat_version);
             set_apple_auto.set(settings.apple_auto_refresh);
             set_orm_base.set(settings.orm_base_url);
+            set_gpu_adapter.set(settings.gpu_adapter);
+            if let Ok(js) = crate::tauri::list_gpu_adapters().await
+                && let Ok(list) = serde_wasm_bindgen::from_value::<Vec<GpuInfo>>(js)
+            {
+                set_gpus.set(list);
+            }
             set_loaded.set(true);
             fit_window_to_content();
 
@@ -176,6 +196,7 @@ pub fn AppSettings() -> impl IntoView {
         let asv = apple_sat_ver.get();
         let auto = apple_auto.get();
         let orm = orm_base.get();
+        let gpu = gpu_adapter.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -193,6 +214,7 @@ pub fn AppSettings() -> impl IntoView {
                 apple_sat_version: asv,
                 apple_auto_refresh: auto,
                 orm_base_url: orm,
+                gpu_adapter: gpu,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -342,6 +364,33 @@ pub fn AppSettings() -> impl IntoView {
                     "Where OpenRailwayMap tiles, glyphs and sprites are fetched from. Leave blank to use "
                     {DEFAULT_ORM_BASE}
                     ". Set this to your own server if you self-host the OpenRailwayMap stack."
+                </p>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Rendering GPU"</legend>
+                <label>
+                    "GPU"
+                    <select
+                        prop:value=move || gpu_adapter.get().unwrap_or_default()
+                        on:change=move |ev| {
+                            let v = leptos::event_target_value(&ev);
+                            set_gpu_adapter.set(if v.is_empty() { None } else { Some(v) });
+                        }
+                    >
+                        <option value="">"Auto (best available GPU)"</option>
+                        {move || gpus.get().into_iter().map(|g| {
+                            let label = if g.is_software {
+                                format!("{} ({} · software)", g.name, g.kind)
+                            } else {
+                                format!("{} ({})", g.name, g.kind)
+                            };
+                            view! { <option value={g.name.clone()}>{label}</option> }
+                        }).collect_view()}
+                    </select>
+                </label>
+                <p class="hint">
+                    "Which GPU renders the OpenRailwayMap layers. \"Auto\" avoids software renderers (which peg the CPU and leave the GPU idle). Takes effect after restarting the app."
                 </p>
             </fieldset>
 

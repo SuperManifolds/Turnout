@@ -35,6 +35,11 @@ pub struct Settings {
     pub apple_auto_refresh: bool,
     #[serde(default)]
     pub orm_base_url: Option<String>,
+    /// Preferred GPU for ORM rendering, by adapter name (from the settings
+    /// picker). `None` = auto-select the best hardware device. Applied via the
+    /// `MLN_VULKAN_DEVICE_NAME` env var at startup, so a change needs a restart.
+    #[serde(default)]
+    pub gpu_adapter: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -63,6 +68,7 @@ impl Default for Settings {
             apple_sat_version: None,
             apple_auto_refresh: true,
             orm_base_url: None,
+            gpu_adapter: None,
         }
     }
 }
@@ -98,6 +104,8 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .unwrap_or(true),
         orm_base_url: store.get("orm_base_url")
             .and_then(|v| v.as_str().map(String::from)),
+        gpu_adapter: store.get("gpu_adapter")
+            .and_then(|v| v.as_str().map(String::from)),
     }
 }
 
@@ -118,6 +126,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     store.set("type_speed_overrides", serde_json::json!(settings.type_speed_overrides));
     store.set("apple_auto_refresh", serde_json::json!(settings.apple_auto_refresh));
     store.set("orm_base_url", serde_json::json!(settings.orm_base_url));
+    store.set("gpu_adapter", serde_json::json!(settings.gpu_adapter));
     // While auto-refresh owns the Apple credentials, leave them untouched so a
     // manual save from the settings window (which may hold stale, auto-populated
     // values) can't overwrite the fresher key the refresher just stored.

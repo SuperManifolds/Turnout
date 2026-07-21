@@ -141,6 +141,10 @@ pub async fn get_settings() -> Result<JsValue, String> {
     invoke("get_settings", &JsValue::NULL).await
 }
 
+pub async fn list_gpu_adapters() -> Result<JsValue, String> {
+    invoke("list_gpu_adapters", &JsValue::NULL).await
+}
+
 pub async fn set_settings(settings: &JsValue) -> Result<(), String> {
     let wrapper = js_sys::Object::new();
     set(&wrapper, "settings", settings.clone());

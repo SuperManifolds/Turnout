@@ -5,6 +5,7 @@ mod arcgis;
 mod blueprint;
 mod cartometro;
 mod error;
+mod gpu;
 mod orm_import;
 mod mbtiles;
 mod orm_net;
@@ -187,6 +188,15 @@ fn main() {
             app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
+            // Pin the ORM renderer to the user's chosen GPU. Read by the fork's
+            // Vulkan device-selection patch (MLN_VULKAN_DEVICE_NAME); a no-op on
+            // Metal (macOS has one device). Set before start_blocking spawns the
+            // render workers that init the Vulkan device.
+            // SAFETY: no other thread reads MLN_VULKAN_DEVICE_NAME — mbgl reads it
+            // once at device init on a worker spawned just below.
+            if let Some(name) = settings::load(app.handle()).gpu_adapter.filter(|s| !s.is_empty()) {
+                unsafe { std::env::set_var("MLN_VULKAN_DEVICE_NAME", name); }
+            }
             match orm_tiles::start_blocking() {
                 Ok(h) => {
                     let base = settings::resolve_orm_base(settings::load(app.handle()).orm_base_url.as_deref());
@@ -215,6 +225,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            gpu::list_gpu_adapters,
             overpass::fetch_overpass,
             orm_import::import_orm,
             orm_import::count_track_nodes,
