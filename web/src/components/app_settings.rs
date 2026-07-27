@@ -23,6 +23,8 @@ pub struct Settings {
     pub orm_base_url: Option<String>,
     #[serde(default)]
     pub gpu_adapter: Option<String>,
+    #[serde(default)]
+    pub tutorial_completed: bool,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
@@ -42,6 +44,7 @@ impl Default for Settings {
             apple_auto_refresh: true,
             orm_base_url: None,
             gpu_adapter: None,
+            tutorial_completed: false,
         }
     }
 }
@@ -103,6 +106,14 @@ pub async fn load_settings() -> Settings {
 async fn save_settings(settings: &Settings) -> Result<(), String> {
     let args = serde_wasm_bindgen::to_value(settings).map_err(|e| e.to_string())?;
     crate::tauri::set_settings(&args).await
+}
+
+/// Persist that the first-launch tutorial has been finished, preserving every
+/// other stored setting.
+pub async fn mark_tutorial_completed() {
+    let mut settings = load_settings().await;
+    settings.tutorial_completed = true;
+    let _ = save_settings(&settings).await;
 }
 
 /// Returns true if this webview is the settings window.
@@ -215,6 +226,9 @@ pub fn AppSettings() -> impl IntoView {
                 apple_auto_refresh: auto,
                 orm_base_url: orm,
                 gpu_adapter: gpu,
+                // The settings window never completes the tutorial; the backend
+                // preserves a stored `true`, so this can't un-complete it.
+                tutorial_completed: false,
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -520,6 +534,21 @@ pub fn AppSettings() -> impl IntoView {
                         />
                     </label>
                 })}
+            </fieldset>
+
+            <fieldset>
+                <legend>"Help"</legend>
+                <nav>
+                    <button type="button" on:click=move |_| {
+                        spawn_local(async move {
+                            let _ = crate::tauri::replay_tutorial().await;
+                        });
+                    }>
+                        <i class="fa-solid fa-graduation-cap"></i>
+                        " Replay tutorial"
+                    </button>
+                </nav>
+                <p class="path-display">"Reopens the guided tour in the main window."</p>
             </fieldset>
 
             <fieldset>
