@@ -7097,7 +7097,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "turnout-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "dirs-next",
@@ -7108,7 +7108,7 @@ dependencies = [
 
 [[package]]
 name = "turnout-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "quick-xml 0.37.5",
  "serde",
@@ -7121,7 +7121,7 @@ dependencies = [
 
 [[package]]
 name = "turnout-tauri"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -7154,7 +7154,7 @@ dependencies = [
 
 [[package]]
 name = "turnout-web"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
