@@ -94,10 +94,28 @@ fn App() -> impl IntoView {
 
     let (drawer_open, set_drawer_open) = create_signal(false);
     let (overlay_open, set_overlay_open) = create_signal(false);
+    // Lifted out of Map so the guided tour can open the Rail Layers panel.
+    let (show_vector_layers, set_show_vector_layers) = create_signal(false);
     // Shared ORM overlay state: the switcher owns the active mode, the overlay
     // drawer owns visibility, and each reads the other's signal.
     let (orm_style, set_orm_style) = create_signal("standard".to_string());
     let (orm_visible, set_orm_visible) = create_signal(true);
+
+    // First-launch guided tour: auto-opens until completed, and re-openable from
+    // the settings window via the `start-tutorial` event.
+    let (tour_active, set_tour_active) = create_signal(false);
+    let (tour_replay, set_tour_replay) = create_signal(false);
+    if !is_settings {
+        spawn_local(async move {
+            if !components::app_settings::load_settings().await.tutorial_completed {
+                set_tour_active.set(true);
+            }
+        });
+        tauri::listen_to_events(&["start-tutorial"], move |_| {
+            set_tour_replay.set(true);
+            set_tour_active.set(true);
+        });
+    }
 
     view! {
         <Show when=move || is_settings>
@@ -114,6 +132,8 @@ fn App() -> impl IntoView {
                         clip_to_selection=clip_to_selection
                         tangent_mode=tangent_mode
                         set_drawer_open=set_drawer_open
+                        show_vector_layers=show_vector_layers
+                        set_show_vector_layers=set_show_vector_layers
                     />
                     <components::Search />
                     <components::LayerSwitcher
@@ -151,6 +171,15 @@ fn App() -> impl IntoView {
                         open=drawer_open
                         set_open=set_drawer_open
                     />
+                    <Show when=move || tour_active.get()>
+                        <components::Tutorial
+                            set_active=set_tour_active
+                            replay=tour_replay
+                            set_drawer_open=set_drawer_open
+                            set_overlay_open=set_overlay_open
+                            set_show_vector_layers=set_show_vector_layers
+                        />
+                    </Show>
                 </section>
             </main>
         </Show>

@@ -40,6 +40,10 @@ pub struct Settings {
     /// `MLN_VULKAN_DEVICE_NAME` env var at startup, so a change needs a restart.
     #[serde(default)]
     pub gpu_adapter: Option<String>,
+    /// Whether the user has finished the first-launch tutorial. Gates whether the
+    /// guided tour auto-opens on startup; the tour can still be replayed manually.
+    #[serde(default)]
+    pub tutorial_completed: bool,
 }
 
 fn default_true() -> bool {
@@ -69,6 +73,7 @@ impl Default for Settings {
             apple_auto_refresh: true,
             orm_base_url: None,
             gpu_adapter: None,
+            tutorial_completed: false,
         }
     }
 }
@@ -106,6 +111,9 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .and_then(|v| v.as_str().map(String::from)),
         gpu_adapter: store.get("gpu_adapter")
             .and_then(|v| v.as_str().map(String::from)),
+        tutorial_completed: store.get("tutorial_completed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     }
 }
 
@@ -127,6 +135,12 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     store.set("apple_auto_refresh", serde_json::json!(settings.apple_auto_refresh));
     store.set("orm_base_url", serde_json::json!(settings.orm_base_url));
     store.set("gpu_adapter", serde_json::json!(settings.gpu_adapter));
+    // Completion only ever goes false→true (the tour finishing). OR against the
+    // stored value so a save from a settings window that loaded a stale `false`
+    // can't un-complete the tutorial.
+    let tutorial_done = settings.tutorial_completed
+        || store.get("tutorial_completed").and_then(|v| v.as_bool()).unwrap_or(false);
+    store.set("tutorial_completed", serde_json::json!(tutorial_done));
     // While auto-refresh owns the Apple credentials, leave them untouched so a
     // manual save from the settings window (which may hold stale, auto-populated
     // values) can't overwrite the fresher key the refresher just stored.
@@ -147,6 +161,22 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     if let Some(refresh) = app.try_state::<crate::apple_token::AppleRefresh>() {
         refresh.wake();
     }
+    Ok(())
+}
+
+/// Open an external URL (issue tracker, mailto, etc.) in the OS default handler.
+#[tauri::command]
+pub fn open_external_url(url: String) -> CommandResult<()> {
+    tauri_plugin_opener::open_url(url, None::<&str>)
+        .map_err(|e| CommandError::Other(format!("Failed to open URL: {e}")))
+}
+
+/// Ask the main window to (re)start the first-launch tutorial. Emitted from the
+/// separate settings window's "Replay tutorial" button.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn replay_tutorial(app: tauri::AppHandle) -> CommandResult<()> {
+    app.emit("start-tutorial", ()).map_err(|e| CommandError::Other(e.to_string()))?;
     Ok(())
 }
 

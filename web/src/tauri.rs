@@ -156,6 +156,16 @@ pub async fn pick_folder() -> Option<String> {
     result.as_string()
 }
 
+pub async fn open_external_url(url: &str) -> Result<(), String> {
+    let wrapper = js_sys::Object::new();
+    set(&wrapper, "url", url);
+    invoke_obj("open_external_url", wrapper).await.map(|_| ())
+}
+
+pub async fn replay_tutorial() -> Result<(), String> {
+    invoke("replay_tutorial", &JsValue::NULL).await.map(|_| ())
+}
+
 pub async fn blueprint_exists(name: &str) -> bool {
     let args = js_sys::Object::new();
     set(&args, "name", name);

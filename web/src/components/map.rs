@@ -63,6 +63,8 @@ pub fn Map(
     clip_to_selection: ReadSignal<bool>,
     tangent_mode: ReadSignal<bool>,
     set_drawer_open: WriteSignal<bool>,
+    show_vector_layers: ReadSignal<bool>,
+    set_show_vector_layers: WriteSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -348,7 +350,6 @@ pub fn Map(
     };
 
     let (show_tile_download, set_show_tile_download) = create_signal(false);
-    let (show_vector_layers, set_show_vector_layers) = create_signal(false);
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
     let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 

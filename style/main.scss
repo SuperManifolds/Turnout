@@ -1312,3 +1312,124 @@ button {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// First-launch guided tour
+// ══════════════════════════════════════════════════════════════════════
+
+$tour-z-blocker: 2000;
+$tour-z-spotlight: 2001;
+$tour-z-callout: 2002;
+$tour-dim: rgba(0, 0, 0, 0.55);
+
+.tour-blocker {
+    position: fixed;
+    inset: 0;
+    z-index: $tour-z-blocker;
+
+    // A spotlighted step dims the screen via the spotlight's ring shadow, so the
+    // blocker stays transparent there; centered steps dim the blocker itself.
+    &.dim { background: $tour-dim; }
+}
+
+.tour-spotlight {
+    position: fixed;
+    z-index: $tour-z-spotlight;
+    border-radius: var(--radius-md);
+    box-shadow: 0 0 0 9999px $tour-dim, 0 0 0 2px var(--color-accent);
+    pointer-events: none;
+    transition: top var(--transition-fast), left var(--transition-fast),
+        width var(--transition-fast), height var(--transition-fast);
+}
+
+.tour-callout {
+    position: fixed;
+    z-index: $tour-z-callout;
+    width: 340px;
+    max-width: calc(100vw - 2 * var(--spacing-lg));
+    box-sizing: border-box;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    padding: var(--spacing-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    pointer-events: auto;
+
+    &.center {
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+    }
+
+    header {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+
+        i { color: var(--color-accent); font-size: var(--font-size-lg); }
+        h2 { margin: 0; font-size: var(--font-size-lg); color: var(--color-text-primary); }
+    }
+
+    p {
+        margin: 0;
+        font-size: var(--font-size-base);
+        color: var(--color-text-secondary);
+        line-height: 1.5;
+    }
+
+    footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--spacing-md);
+
+        nav { display: flex; gap: var(--spacing-sm); }
+    }
+}
+
+.tour-close {
+    position: absolute;
+    top: var(--spacing-sm);
+    right: var(--spacing-sm);
+    border: none;
+    background: none;
+    padding: var(--spacing-xs);
+    color: var(--color-text-muted);
+
+    &:hover { background: none; color: var(--color-text-primary); }
+}
+
+.tour-report {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+}
+
+.tour-accept {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.4;
+    cursor: pointer;
+
+    input { margin-top: 2px; flex-shrink: 0; }
+}
+
+.tour-progress {
+    display: flex;
+    gap: 6px;
+}
+
+.tour-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-border);
+
+    &.active { background: var(--color-accent); }
+}
+

@@ -244,6 +244,8 @@ fn main() {
             settings::get_settings,
             settings::set_settings,
             settings::pick_folder,
+            settings::open_external_url,
+            settings::replay_tutorial,
             overlay::restore_overlays,
             overlay::pick_kmz_file,
             overlay::create_group,
