@@ -4,6 +4,7 @@ mod apple_token;
 mod arcgis;
 mod blueprint;
 mod cartometro;
+mod crash_reporting;
 mod error;
 mod gpu;
 mod orm_import;
@@ -26,7 +27,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 async fn check_for_updates_on_startup(app: tauri::AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
 
-    if !settings::load(&app).check_for_updates {
+    if !settings::load(&app).network.check_for_updates {
         return;
     }
     let Ok(updater) = app.updater() else { return };
@@ -148,11 +149,17 @@ fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 fn main() {
     // Leveled logging to stderr; RUST_LOG overrides the default (info and above).
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // The Sentry layer turns these events into breadcrumbs (the trail before a
+    // crash) and forwards `error!` as issues + structured logs. It no-ops until a
+    // Sentry client is bound below, and stays inert entirely when reporting is off.
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with(tracing_subscriber::fmt::layer())
+        .with(sentry::integrations::tracing::layer())
         .init();
 
     // Work around WebKitGTK EGL crashes on some Linux GPU drivers.
@@ -171,25 +178,38 @@ fn main() {
         unsafe { std::env::set_var("MLN_BACKGROUND_THREADS", threads.to_string()) };
     }
 
-    tauri::Builder::default()
+    // Pin the ORM renderer to the user's chosen GPU, read by the fork's Vulkan
+    // device-selection patch (MLN_VULKAN_DEVICE_NAME). A no-op on Metal (macOS
+    // exposes one device). Read straight off disk, since the Tauri store plugin
+    // isn't up yet.
+    // SAFETY: edition-2024 makes `set_var` unsound only against a concurrent
+    // `getenv` on another thread. This runs on the main thread before any thread
+    // is spawned — in particular before `crash_reporting::init` starts Sentry's
+    // transport thread, and before the app's own threads — so nothing can race it.
+    if let Some(name) = settings::stored_gpu_adapter() {
+        unsafe { std::env::set_var("MLN_VULKAN_DEVICE_NAME", name); }
+    }
+
+    // Crash reporting must init before the Tauri builder: the minidump handler
+    // re-execs this binary as a separate crash-reporter process, and everything
+    // up to `minidump::init` runs in both the app and reporter processes. Both
+    // guards must live until the app exits — dropping them stops the reporter and
+    // flushes Sentry. `None` when reporting is disabled (see `crash_reporting`).
+    let sentry_guard = crash_reporting::init();
+    let _minidump_guard = sentry_guard.as_ref().map(|client| tauri_plugin_sentry::minidump::init(client));
+
+    let mut builder = tauri::Builder::default();
+    if let Some(client) = &sentry_guard {
+        // Enriches webview errors with Rust/OS context and merges breadcrumbs
+        // across the Rust and browser SDKs.
+        builder = builder.plugin(tauri_plugin_sentry::init(client));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
-            // Pin the ORM renderer to the user's chosen GPU, read by the fork's
-            // Vulkan device-selection patch (MLN_VULKAN_DEVICE_NAME). A no-op on
-            // Metal (macOS exposes one device). Done first, before this closure
-            // spawns any of the app's threads.
-            // SAFETY: edition-2024 makes `set_var` unsound only against a
-            // concurrent `getenv` on another thread. This runs once, at the very
-            // start of setup() on the main thread, before the app spawns the
-            // threads that read the environment — the filesystem watcher below,
-            // the ORM render workers (`start_blocking`), and the token refresher —
-            // so no `getenv` can race this one-time set.
-            if let Some(name) = settings::load(app.handle()).gpu_adapter.filter(|s| !s.is_empty()) {
-                unsafe { std::env::set_var("MLN_VULKAN_DEVICE_NAME", name); }
-            }
             setup_menu(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());

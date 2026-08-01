@@ -36,6 +36,11 @@ maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs"
 mvt = "0.13.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Crash reporting. rustls transport only — no native-tls/openssl, matching the
+# app's rustls-only reqwest. tauri-plugin-sentry re-exports sentry-rust-minidump
+# (native crash capture) and injects @sentry/browser into the webview.
+sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "reqwest", "rustls", "release-health", "tracing", "logs"] }
+tauri-plugin-sentry = "0.5"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

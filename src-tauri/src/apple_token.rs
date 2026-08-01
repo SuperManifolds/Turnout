@@ -265,7 +265,7 @@ pub fn spawn_auto_refresh(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut consecutive_failures: u32 = 0;
         loop {
-            let wait = if settings::load(&app).apple_auto_refresh {
+            let wait = if settings::load(&app).network.apple_auto_refresh {
                 match refresh_once(&app).await {
                     Ok(lifetime) => {
                         consecutive_failures = 0;

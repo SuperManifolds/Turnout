@@ -133,6 +133,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Crash reporting: baked into the binary at build time via option_env!,
+          # so nightly testers' crashes report too. Unset secret → empty → crash
+          # reporting compiles out.
+          TURNOUT_SENTRY_DSN: ${{ secrets.TURNOUT_SENTRY_DSN }}
+          TURNOUT_SENTRY_ENVIRONMENT: nightly
         with:
           releaseId: ${{ needs.create-prerelease.outputs.release_id }}
           assetNamePattern: "[name]_[arch][_setup][ext]"
@@ -141,6 +146,27 @@ jobs:
           # workflow has it), and the auto-updater tracks tagged releases, not
           # this rolling pre-release.
           args: '--config {"bundle":{"createUpdaterArtifacts":false}}'
+
+      # Upload native debug symbols so nightly crash minidumps symbolicate too
+      # (matched by debug-id, independent of the tagged release). All three lanes
+      # build host-native, so the debug files live in target/release. No-ops when
+      # SENTRY_AUTH_TOKEN is unset. Best-effort: continue-on-error so a flaky
+      # upload never fails the nightly build.
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping debug symbol upload"
+            exit 0
+          fi
+          npm install -g @sentry/cli
+          sentry-cli debug-files upload --include-sources target/release
 
       # The AppImage upstream excludelist requires the X11/Wayland client
       # libraries to come from the host, never the bundle. maplibre dlopens the
