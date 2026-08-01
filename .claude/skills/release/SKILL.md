@@ -61,12 +61,15 @@ Read these once — they are the sharp edges.
   branch) skip CI entirely, so a green checkmark on a feature branch can mean
   "nothing ran". Always gate the *actual commit being released* on `main`.
 
-Repo: `SuperManifolds/Turnout`. Assets each release should carry: `Turnout_aarch64.dmg`,
-`Turnout_x86_64.dmg`, `Turnout_x64_setup.exe`, `Turnout_x64.msi`,
-`Turnout_amd64.AppImage`, `Turnout_aarch64.AppImage`, `Turnout_amd64.deb`,
-`Turnout_aarch64.deb`, their `.sig` files, and `latest.json`. (Confirm exact
-names against the previous release rather than trusting this list verbatim — the
-`.sig` set follows `tauri-action`'s `assetNamePattern`.)
+Repo: `SuperManifolds/Turnout`. A real release carries ~23 assets (v0.3.1):
+`latest.json`; macOS `Turnout_aarch64.dmg` / `Turnout_x64.dmg` plus updater
+bundles `Turnout_{aarch64,x64}.app.tar.gz(.sig)`; Windows `Turnout_x64_setup.exe(.sig)`
+and `Turnout_x64.msi(.sig)`; Linux `Turnout_{amd64,aarch64}.AppImage(.sig)`,
+`Turnout_{amd64,arm64}.deb(.sig)`, and `Turnout_{x86_64,aarch64}.rpm(.sig)`.
+Note the **`.dmg`s carry no `.sig`** — the macOS updater signs the `.app.tar.gz`,
+not the disk image. (Confirm exact names against the previous release rather than
+trusting this list verbatim — the `.sig` set follows `tauri-action`'s
+`assetNamePattern`.)
 
 ## The loop
 
@@ -252,6 +255,20 @@ about features, fixes, and "it's faster now", not refactors or internals.
     --jq '.[] | select(.headBranch=="v0.3.0") | "\(.databaseId) \(.status)/\(.conclusion)"'
   gh run watch <run-id> --repo SuperManifolds/Turnout --exit-status
   ```
+
+  **`gh run watch` can exit 0 on a transient `HTTP 502` without the run actually
+  finishing** (seen twice during the v0.3.1 release). Don't trust the watcher's
+  exit code — after it returns, re-confirm the real terminal state before acting:
+
+  ```sh
+  gh run view <run-id> --repo SuperManifolds/Turnout --json status,conclusion \
+    --jq '"\(.status)/\(.conclusion)"'   # want completed/success
+  ```
+
+  If it's still `in_progress`, re-run `gh run watch`. **Benign annotations** you'll
+  see and can ignore: `Node.js 20 is deprecated…` and `Cache reservation failed:
+  You have reached your configured budget, your cache is now read only` — neither
+  fails the build.
 
   If a platform fails to build, the tag can be re-pushed after a fix (see *Fixing
   a broken release*). A partial matrix means missing assets — don't publish.
