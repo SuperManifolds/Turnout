@@ -2,10 +2,28 @@ use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effe
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+/// Mirror of the backend `NetworkSettings` — features that automatically contact
+/// external servers. Nested under `network` on the wire (not flattened, so
+/// `serde_wasm_bindgen` serializes it as a plain object, not an ES `Map`).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct NetworkSettings {
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
+    #[serde(default = "default_true")]
+    pub apple_auto_refresh: bool,
+    #[serde(default = "default_true")]
+    pub crash_reporting: bool,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self { check_for_updates: true, apple_auto_refresh: true, crash_reporting: true }
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
-    pub check_for_updates: bool,
     pub map_theme: String,
     #[serde(default = "default_overpass_timeout")]
     pub overpass_timeout: u32,
@@ -17,14 +35,14 @@ pub struct Settings {
     pub apple_map_version: Option<String>,
     #[serde(default)]
     pub apple_sat_version: Option<String>,
-    #[serde(default = "default_true")]
-    pub apple_auto_refresh: bool,
     #[serde(default)]
     pub orm_base_url: Option<String>,
     #[serde(default)]
     pub gpu_adapter: Option<String>,
     #[serde(default)]
     pub tutorial_completed: bool,
+    #[serde(default)]
+    pub network: NetworkSettings,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
@@ -34,17 +52,16 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mods_dir_override: None,
-            check_for_updates: true,
             map_theme: "system".to_string(),
             overpass_timeout: 60,
             type_speed_overrides: std::collections::HashMap::new(),
             apple_access_key: None,
             apple_map_version: None,
             apple_sat_version: None,
-            apple_auto_refresh: true,
             orm_base_url: None,
             gpu_adapter: None,
             tutorial_completed: false,
+            network: NetworkSettings::default(),
         }
     }
 }
@@ -156,6 +173,7 @@ pub fn AppSettings() -> impl IntoView {
     let (apple_auto, set_apple_auto) = create_signal(true);
     let (orm_base, set_orm_base) = create_signal::<Option<String>>(None);
     let (gpu_adapter, set_gpu_adapter) = create_signal::<Option<String>>(None);
+    let (crash_reports, set_crash_reports) = create_signal(true);
     let (gpus, set_gpus) = create_signal::<Vec<GpuInfo>>(Vec::new());
     let (apple_refresh_status, set_apple_refresh_status) = create_signal(String::new());
     let (status, set_status) = create_signal(String::new());
@@ -168,16 +186,17 @@ pub fn AppSettings() -> impl IntoView {
         spawn_local(async move {
             let settings = load_settings().await;
             set_mods_dir.set(settings.mods_dir_override);
-            set_check_updates.set(settings.check_for_updates);
+            set_check_updates.set(settings.network.check_for_updates);
             set_theme.set(settings.map_theme);
             set_timeout.set(settings.overpass_timeout);
             set_speed_overrides.set(settings.type_speed_overrides);
             set_apple_key.set(settings.apple_access_key);
             set_apple_map_ver.set(settings.apple_map_version);
             set_apple_sat_ver.set(settings.apple_sat_version);
-            set_apple_auto.set(settings.apple_auto_refresh);
+            set_apple_auto.set(settings.network.apple_auto_refresh);
             set_orm_base.set(settings.orm_base_url);
             set_gpu_adapter.set(settings.gpu_adapter);
+            set_crash_reports.set(settings.network.crash_reporting);
             if let Ok(js) = crate::tauri::list_gpu_adapters().await
                 && let Ok(list) = serde_wasm_bindgen::from_value::<Vec<GpuInfo>>(js)
             {
@@ -208,6 +227,7 @@ pub fn AppSettings() -> impl IntoView {
         let auto = apple_auto.get();
         let orm = orm_base.get();
         let gpu = gpu_adapter.get();
+        let crash = crash_reports.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -216,19 +236,22 @@ pub fn AppSettings() -> impl IntoView {
         let cb = Closure::once(move || {
             let settings = Settings {
                 mods_dir_override: mods,
-                check_for_updates: updates,
                 map_theme: t,
                 overpass_timeout: tout,
                 type_speed_overrides: speeds,
                 apple_access_key: ak,
                 apple_map_version: amv,
                 apple_sat_version: asv,
-                apple_auto_refresh: auto,
                 orm_base_url: orm,
                 gpu_adapter: gpu,
                 // The settings window never completes the tutorial; the backend
                 // preserves a stored `true`, so this can't un-complete it.
                 tutorial_completed: false,
+                network: NetworkSettings {
+                    check_for_updates: updates,
+                    apple_auto_refresh: auto,
+                    crash_reporting: crash,
+                },
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -549,6 +572,15 @@ pub fn AppSettings() -> impl IntoView {
                     </button>
                 </nav>
                 <p class="path-display">"Reopens the guided tour in the main window."</p>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Privacy"</legend>
+                <label on:click=move |_| set_crash_reports.update(|v| *v = !*v)>
+                    <i class=move || if crash_reports.get() { "fa-solid fa-square-check" } else { "fa-regular fa-square" }></i>
+                    " Send automatic crash reports"
+                </label>
+                <p class="hint">"Sends anonymous crash and error diagnostics (no personal data) so startup crashes and bugs can be found and fixed. Nothing else is collected."</p>
             </fieldset>
 
             <fieldset>

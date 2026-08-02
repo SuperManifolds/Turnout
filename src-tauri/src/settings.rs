@@ -3,7 +3,37 @@ use tauri_plugin_store::StoreExt;
 
 use crate::error::{CommandError, CommandResult};
 
-const SETTINGS_STORE: &str = "settings.json";
+pub(crate) const SETTINGS_STORE: &str = "settings.json";
+
+/// Bundle identifier (from `tauri.conf.json`). Locates the on-disk settings store
+/// before the Tauri store plugin is initialised.
+const APP_IDENTIFIER: &str = "io.sorlie.turnout";
+
+/// Read the raw settings store JSON straight off disk, for startup code that runs
+/// before the Tauri store plugin exists (crash reporting, GPU selection). `None`
+/// when the store is absent (fresh install); logs a warning and returns `None`
+/// when it is present but unreadable/corrupt, so callers fall back to defaults.
+pub(crate) fn read_store_from_disk() -> Option<serde_json::Value> {
+    let path = dirs_next::config_dir()?.join(APP_IDENTIFIER).join(SETTINGS_STORE);
+    if !path.exists() {
+        return None;
+    }
+    let parsed = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    if parsed.is_none() {
+        tracing::warn!("settings store at {} is unreadable; using defaults", path.display());
+    }
+    parsed
+}
+
+/// The persisted GPU-adapter preference, read directly off disk. Applied to
+/// `MLN_VULKAN_DEVICE_NAME` at the very start of `main`, before any threads spawn.
+pub(crate) fn stored_gpu_adapter() -> Option<String> {
+    read_store_from_disk()?
+        .get("gpu_adapter")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
 
 /// Host serving `OpenRailwayMap` vector tiles, glyphs and sprites. Overridable via
 /// [`Settings::orm_base_url`] for users running a self-hosted `OpenRailwayMap` stack.
@@ -16,10 +46,33 @@ pub fn resolve_orm_base(base: Option<&str>) -> String {
     raw.trim_end_matches('/').to_string()
 }
 
+/// Features that automatically contact external servers, each an independent
+/// opt-in/out flag. Grouped into their own struct to keep [`Settings`] legible.
+/// Persisted as flat top-level keys in the store (see [`load`]/[`set_settings`]);
+/// crosses the IPC boundary nested under `network`, mirrored on the frontend.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct NetworkSettings {
+    /// Check for app updates on launch.
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
+    /// Fetch a fresh Apple Maps access key and tile versions before they expire.
+    #[serde(default = "default_true")]
+    pub apple_auto_refresh: bool,
+    /// Send automatic crash reports (native crashes, panics, frontend errors) to
+    /// Sentry. Opt-out; read from disk at startup by [`crate::crash_reporting`].
+    #[serde(default = "default_true")]
+    pub crash_reporting: bool,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self { check_for_updates: true, apple_auto_refresh: true, crash_reporting: true }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
-    pub check_for_updates: bool,
     pub map_theme: String,
     #[serde(default = "default_overpass_timeout")]
     pub overpass_timeout: u32,
@@ -31,8 +84,6 @@ pub struct Settings {
     pub apple_map_version: Option<String>,
     #[serde(default)]
     pub apple_sat_version: Option<String>,
-    #[serde(default = "default_true")]
-    pub apple_auto_refresh: bool,
     #[serde(default)]
     pub orm_base_url: Option<String>,
     /// Preferred GPU for ORM rendering, by adapter name (from the settings
@@ -44,6 +95,8 @@ pub struct Settings {
     /// guided tour auto-opens on startup; the tour can still be replayed manually.
     #[serde(default)]
     pub tutorial_completed: bool,
+    #[serde(default)]
+    pub network: NetworkSettings,
 }
 
 fn default_true() -> bool {
@@ -63,17 +116,16 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mods_dir_override: None,
-            check_for_updates: true,
             map_theme: "system".to_string(),
             overpass_timeout: 60,
             type_speed_overrides: std::collections::HashMap::new(),
             apple_access_key: None,
             apple_map_version: None,
             apple_sat_version: None,
-            apple_auto_refresh: true,
             orm_base_url: None,
             gpu_adapter: None,
             tutorial_completed: false,
+            network: NetworkSettings::default(),
         }
     }
 }
@@ -85,9 +137,6 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
     Settings {
         mods_dir_override: store.get("mods_dir_override")
             .and_then(|v| v.as_str().map(String::from)),
-        check_for_updates: store.get("check_for_updates")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true),
         map_theme: store.get("map_theme")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| "system".to_string()),
@@ -104,9 +153,6 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .and_then(|v| v.as_str().map(String::from)),
         apple_sat_version: store.get("apple_sat_version")
             .and_then(|v| v.as_str().map(String::from)),
-        apple_auto_refresh: store.get("apple_auto_refresh")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true),
         orm_base_url: store.get("orm_base_url")
             .and_then(|v| v.as_str().map(String::from)),
         gpu_adapter: store.get("gpu_adapter")
@@ -114,6 +160,17 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
         tutorial_completed: store.get("tutorial_completed")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        network: NetworkSettings {
+            check_for_updates: store.get("check_for_updates")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            apple_auto_refresh: store.get("apple_auto_refresh")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            crash_reporting: store.get("crash_reporting")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+        },
     }
 }
 
@@ -128,13 +185,14 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
 pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<()> {
     let store = app.store(SETTINGS_STORE).map_err(|e| CommandError::Io(e.to_string()))?;
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
-    store.set("check_for_updates", serde_json::json!(settings.check_for_updates));
+    store.set("check_for_updates", serde_json::json!(settings.network.check_for_updates));
     store.set("map_theme", serde_json::json!(settings.map_theme));
     store.set("overpass_timeout", serde_json::json!(settings.overpass_timeout));
     store.set("type_speed_overrides", serde_json::json!(settings.type_speed_overrides));
-    store.set("apple_auto_refresh", serde_json::json!(settings.apple_auto_refresh));
+    store.set("apple_auto_refresh", serde_json::json!(settings.network.apple_auto_refresh));
     store.set("orm_base_url", serde_json::json!(settings.orm_base_url));
     store.set("gpu_adapter", serde_json::json!(settings.gpu_adapter));
+    store.set("crash_reporting", serde_json::json!(settings.network.crash_reporting));
     // Completion only ever goes false→true (the tour finishing). OR against the
     // stored value so a save from a settings window that loaded a stale `false`
     // can't un-complete the tutorial.
@@ -144,7 +202,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     // While auto-refresh owns the Apple credentials, leave them untouched so a
     // manual save from the settings window (which may hold stale, auto-populated
     // values) can't overwrite the fresher key the refresher just stored.
-    if !settings.apple_auto_refresh {
+    if !settings.network.apple_auto_refresh {
         store.set("apple_access_key", serde_json::json!(settings.apple_access_key));
         store.set("apple_map_version", serde_json::json!(settings.apple_map_version));
         store.set("apple_sat_version", serde_json::json!(settings.apple_sat_version));

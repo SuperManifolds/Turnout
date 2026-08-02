@@ -134,10 +134,41 @@ jobs:
           # Tauri updater signing
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Crash reporting: baked into the binary at build time via option_env!.
+          # Unset secret → empty → crash reporting compiles out.
+          TURNOUT_SENTRY_DSN: ${{ secrets.TURNOUT_SENTRY_DSN }}
+          TURNOUT_SENTRY_ENVIRONMENT: production
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
           assetNamePattern: "[name]_[arch][_setup][ext]"
+
+      # Upload native debug symbols so Sentry can symbolicate crash minidumps
+      # (function + file:line) instead of showing raw addresses. Runs per matrix
+      # lane — each builds a different arch with its own debug-id. No-ops when
+      # SENTRY_AUTH_TOKEN is unset. Best-effort: continue-on-error so a flaky
+      # upload never fails the build job (which would skip the harden/latest.json
+      # step and ship broken Linux auto-update).
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping debug symbol upload"
+            exit 0
+          fi
+          npm install -g @sentry/cli
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            DIR="target/${{ matrix.rust_target }}/release"
+          else
+            DIR="target/release"
+          fi
+          sentry-cli debug-files upload --include-sources "$DIR"
 
   # The bundled AppImage carries Ubuntu-22.04 libxcb*/libwayland*, which shadow
   # the host's newer copies at runtime and break the host Vulkan driver (Arch
@@ -181,3 +212,39 @@ jobs:
 
           gh release upload "$TAG" --repo "$REPO" --clobber latest.json
           echo "hardened, re-signed, and repointed both Linux AppImages"
+
+  # Create the Sentry release matching the SDK's `turnout-tauri@<version>` name and
+  # associate it with the commits since the last release, so Sentry can attribute a
+  # crash to a suspect commit. Symbolication itself doesn't need this (debug files
+  # match by debug-id); this adds the commit/blame layer. No-ops without the token.
+  sentry-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # set-commits --auto walks history for the commit range
+
+      - name: Create Sentry release + set commits
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping Sentry release"
+            exit 0
+          fi
+          npm install -g @sentry/cli
+          # Derive the release name from the crate version — the same source
+          # `sentry::release_name!()` uses (turnout-tauri@$CARGO_PKG_VERSION) — so
+          # it always matches what the SDK reports, even if the tag drifts.
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          REL="turnout-tauri@${VERSION}"
+          sentry-cli releases new "$REL"
+          sentry-cli releases set-commits "$REL" --auto
+          sentry-cli releases finalize "$REL"
+          sentry-cli releases deploys "$REL" new -e production

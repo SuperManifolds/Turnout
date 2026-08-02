@@ -8,6 +8,13 @@ resolver = "3"
 [profile.dev.package."*"]
 opt-level = 2
 
+# Retain line-number debug info in release builds so Sentry can symbolicate native
+# crash minidumps (function + file:line) after `sentry-cli debug-files upload` in
+# CI. Function names come from the symbol table; this adds the line tables at a
+# modest size cost. Does not affect the C++ maplibre core (built via its own cmake).
+[profile.release]
+debug = "line-tables-only"
+
 [workspace.lints.clippy]
 complexity = "warn"
 perf = "warn"
