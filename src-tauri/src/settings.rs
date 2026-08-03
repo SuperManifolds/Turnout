@@ -5,6 +5,12 @@ use crate::error::{CommandError, CommandResult};
 
 pub(crate) const SETTINGS_STORE: &str = "settings.json";
 
+/// Store key marking the first-launch tour as finished. Version-suffixed so
+/// adding steps to the tour re-runs it for everyone: bump the suffix and every
+/// existing user's stale key is ignored, re-showing the tour once. `_v2` added
+/// the "auto-launch with NIMBY Rails" step.
+const TUTORIAL_COMPLETED_KEY: &str = "tutorial_completed_v2";
+
 /// Bundle identifier (from `tauri.conf.json`). Locates the on-disk settings store
 /// before the Tauri store plugin is initialised.
 const APP_IDENTIFIER: &str = "io.sorlie.turnout";
@@ -157,7 +163,7 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .and_then(|v| v.as_str().map(String::from)),
         gpu_adapter: store.get("gpu_adapter")
             .and_then(|v| v.as_str().map(String::from)),
-        tutorial_completed: store.get("tutorial_completed")
+        tutorial_completed: store.get(TUTORIAL_COMPLETED_KEY)
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         network: NetworkSettings {
@@ -197,8 +203,8 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     // stored value so a save from a settings window that loaded a stale `false`
     // can't un-complete the tutorial.
     let tutorial_done = settings.tutorial_completed
-        || store.get("tutorial_completed").and_then(|v| v.as_bool()).unwrap_or(false);
-    store.set("tutorial_completed", serde_json::json!(tutorial_done));
+        || store.get(TUTORIAL_COMPLETED_KEY).and_then(|v| v.as_bool()).unwrap_or(false);
+    store.set(TUTORIAL_COMPLETED_KEY, serde_json::json!(tutorial_done));
     // While auto-refresh owns the Apple credentials, leave them untouched so a
     // manual save from the settings window (which may hold stale, auto-populated
     // values) can't overwrite the fresher key the refresher just stored.

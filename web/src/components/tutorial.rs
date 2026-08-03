@@ -131,6 +131,17 @@ const STEPS: &[Step] = &[
         target: None,
         panel: Panel::None,
         placement: Placement::Center,
+        icon: "fa-brands fa-steam",
+        title: "Auto-launch with NIMBY Rails",
+        body: &[
+            "The live overlays are served from a local server that only runs while Turnout is open, so Turnout has to be running before NIMBY loads them. Closing Turnout's window now keeps it in the tray / menu bar, so the server stays up.",
+            "To make Steam start Turnout automatically whenever you launch NIMBY Rails, add this to the game's Launch Options — Steam \u{2192} NIMBY Rails \u{2192} Properties \u{2192} Launch Options:",
+        ],
+    },
+    Step {
+        target: None,
+        panel: Panel::None,
+        placement: Placement::Center,
         icon: "fa-solid fa-circle-exclamation",
         title: "Reporting problems",
         body: &[
@@ -158,6 +169,12 @@ fn measure(selector: &str) -> Option<Rect> {
         return None;
     }
     Some(Rect { x: r.x(), y: r.y(), w: r.width(), h: r.height() })
+}
+
+fn copy_to_clipboard(text: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().clipboard().write_text(text);
+    }
 }
 
 fn spotlight_style(rect: Option<Rect>) -> String {
@@ -212,8 +229,17 @@ pub fn Tutorial(
     let (step, set_step) = create_signal(0usize);
     let (rect, set_rect) = create_signal::<Option<Rect>>(None);
     let (accepted, set_accepted) = create_signal(false);
+    let (launch_setup, set_launch_setup) =
+        create_signal::<Option<crate::tauri::NimbyLaunchSetup>>(None);
+
+    // Fetch the Steam launch-options string once; the auto-launch step shows it.
+    spawn_local(async move {
+        set_launch_setup.set(crate::tauri::nimby_launch_setup().await);
+    });
 
     let last = STEPS.len() - 1;
+    // The auto-launch step sits just before the final "Reporting problems" step.
+    let autolaunch = last - 1;
 
     // Keep exactly the panel the current step needs open.
     let apply_panel = move |panel: Panel| {
@@ -299,6 +325,39 @@ pub fn Tutorial(
                 <h2>{move || STEPS[step.get()].title}</h2>
             </header>
             {move || STEPS[step.get()].body.iter().map(|p| view! { <p>{*p}</p> }).collect_view()}
+
+            <Show when=move || step.get() == autolaunch>
+                {move || match launch_setup.get() {
+                    Some(setup) => match setup.launch_options {
+                        Some(opts) => {
+                            let to_copy = opts.clone();
+                            let detected = setup.nimby_detected;
+                            view! {
+                                <div class="tour-autolaunch">
+                                    <pre class="tour-code">{opts}</pre>
+                                    <div class="tour-report">
+                                        <button on:click=move |_| copy_to_clipboard(&to_copy)>
+                                            <i class="fa-regular fa-copy"></i>
+                                            " Copy launch options"
+                                        </button>
+                                    </div>
+                                    <p class="tour-hint">{
+                                        if detected {
+                                            "NIMBY Rails found in your Steam library."
+                                        } else {
+                                            "Couldn't find NIMBY Rails in your Steam libraries — it still works once the game is installed."
+                                        }
+                                    }</p>
+                                </div>
+                            }.into_any()
+                        }
+                        None => view! {
+                            <p class="tour-hint">"NIMBY Rails runs on Windows and Linux, so this Steam setup applies there. On macOS, just keep Turnout running — closing its window leaves it in the menu bar."</p>
+                        }.into_any(),
+                    },
+                    None => view! { <p class="tour-hint">"Preparing\u{2026}"</p> }.into_any(),
+                }}
+            </Show>
 
             <Show when=move || step.get() == last>
                 <div class="tour-report">

@@ -9,6 +9,7 @@ mod error;
 mod gpu;
 mod orm_import;
 mod mbtiles;
+mod nimby_launch;
 mod orm_net;
 mod orm_offline;
 mod orm_tiles;
@@ -22,7 +23,50 @@ mod wms;
 mod wmts;
 
 use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+/// Show, unminimise, and focus the main window (from the tray icon or a macOS
+/// dock reopen).
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// System-tray icon so closing the window keeps Turnout — and its tile servers —
+/// running in the background. NIMBY Rails can then reach the overlay sources
+/// regardless of launch order. Quit fully exits, stopping the servers.
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let show = MenuItemBuilder::new("Show Turnout").id("tray_show").build(app)?;
+    let quit = MenuItemBuilder::new("Quit Turnout").id("tray_quit").build(app)?;
+    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+    TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().cloned().expect("bundled window icon"))
+        .tooltip("Turnout — tile server running")
+        .menu(&menu)
+        // Left-click shows the window (handled below); right-click opens the menu.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray_show" => show_main_window(app),
+            "tray_quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
 
 async fn check_for_updates_on_startup(app: tauri::AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
@@ -211,6 +255,7 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             setup_menu(app.handle())?;
+            setup_tray(app.handle())?;
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
             // Restore persisted overlays synchronously here, before the Apple-token
@@ -248,6 +293,17 @@ fn main() {
                 });
             }
         })
+        .on_window_event(|window, event| {
+            // Closing the main window hides it to the tray, keeping the tile
+            // servers alive for NIMBY Rails; the tray's Quit item exits for real.
+            // The settings window closes normally.
+            if window.label() == "main"
+                && let tauri::WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             gpu::list_gpu_adapters,
             overpass::fetch_overpass,
@@ -266,6 +322,7 @@ fn main() {
             settings::pick_folder,
             settings::open_external_url,
             settings::replay_tutorial,
+            nimby_launch::nimby_launch_setup,
             overlay::restore_overlays,
             overlay::pick_kmz_file,
             overlay::create_group,
@@ -303,6 +360,12 @@ fn main() {
             cartometro::start_cartometro,
             cartometro::stop_cartometro,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // macOS: clicking the dock icon while hidden reopens the window.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+            }
+        });
 }
