@@ -64,13 +64,11 @@ fn nimby_installed() -> bool {
         if steamapps.join(&manifest).exists() {
             return true;
         }
-        std::fs::read_to_string(steamapps.join("libraryfolders.vdf"))
-            .map(|vdf| {
-                library_paths(&vdf)
-                    .into_iter()
-                    .any(|lib| lib.join("steamapps").join(&manifest).exists())
-            })
-            .unwrap_or(false)
+        std::fs::read_to_string(steamapps.join("libraryfolders.vdf")).is_ok_and(|vdf| {
+            library_paths(&vdf)
+                .into_iter()
+                .any(|lib| lib.join("steamapps").join(&manifest).exists())
+        })
     })
 }
 
