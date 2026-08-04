@@ -8,7 +8,7 @@ workspace = true
 
 [dependencies]
 turnout-core = { path = "../core" }
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"

@@ -166,6 +166,23 @@ pub async fn replay_tutorial() -> Result<(), String> {
     invoke("replay_tutorial", &JsValue::NULL).await.map(|_| ())
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NimbyLaunchSetup {
+    pub os: String,
+    #[serde(default)]
+    pub launch_options: Option<String>,
+    #[serde(default)]
+    pub nimby_detected: bool,
+}
+
+/// The Steam Launch Options string (and NIMBY-detection result) for auto-launching
+/// Turnout with NIMBY Rails. `None` outside Tauri (e.g. the browser dev server).
+pub async fn nimby_launch_setup() -> Option<NimbyLaunchSetup> {
+    let result = invoke("nimby_launch_setup", &JsValue::NULL).await.ok()?;
+    from_js(result)
+}
+
 pub async fn blueprint_exists(name: &str) -> bool {
     let args = js_sys::Object::new();
     set(&args, "name", name);
