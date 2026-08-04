@@ -147,6 +147,22 @@ fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Maps `tracing` events to Sentry. Follows the default (`error!` → issue,
+/// `warn!`/`info!` → breadcrumb) except for `maplibre_native`: its C++ log
+/// callback surfaces transient tile/sprite fetch failures and optional-Vulkan-
+/// layer notices as `error!`. Those are operational noise, not crashes, so they
+/// stay breadcrumbs — attached as context to a real crash — instead of spawning
+/// a Sentry issue per line, which would bury genuine panics and burn the quota.
+fn sentry_event_filter(
+    metadata: &tracing::Metadata<'_>,
+) -> sentry::integrations::tracing::EventFilter {
+    use sentry::integrations::tracing::{default_event_filter, EventFilter};
+    if metadata.target().starts_with("maplibre_native") {
+        return EventFilter::Breadcrumb;
+    }
+    default_event_filter(metadata)
+}
+
 fn main() {
     // Leveled logging to stderr; RUST_LOG overrides the default (info and above).
     // The Sentry layer turns these events into breadcrumbs (the trail before a
@@ -159,7 +175,7 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with(tracing_subscriber::fmt::layer())
-        .with(sentry::integrations::tracing::layer())
+        .with(sentry::integrations::tracing::layer().event_filter(sentry_event_filter))
         .init();
 
     // Work around WebKitGTK EGL crashes on some Linux GPU drivers.
