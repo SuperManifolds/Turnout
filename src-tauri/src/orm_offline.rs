@@ -107,6 +107,14 @@ pub async fn download_orm_offline(
 
     let orm_base = crate::settings::resolve_orm_base(crate::settings::load(&app).orm_base_url.as_deref());
 
+    // Every fetch targets `orm_base`, whose tile endpoints 403 requests without a
+    // `Referer` header (see `orm_net::referer_for`). Set it once as a default so
+    // tiles, sprites and fonts all carry it.
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    if let Some(referer) = crate::orm_net::referer_for(&orm_base).and_then(|r| r.parse().ok()) {
+        default_headers.insert(reqwest::header::REFERER, referer);
+    }
+
     // HTTP/1.1 with a warm connection pool, NOT HTTP/2: the tile endpoint is
     // latency-bound, and a pool of independent connections parallelizes far better
     // than HTTP/2 multiplexing over a single connection (measured ~1.5x faster, and
@@ -115,6 +123,7 @@ pub async fn download_orm_offline(
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
+        .default_headers(default_headers)
         .http1_only()
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
         .build()

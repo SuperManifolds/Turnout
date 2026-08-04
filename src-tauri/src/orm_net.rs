@@ -152,6 +152,9 @@ impl OrmNetworkSource {
         let on_h2 = !self.downgraded.load(Ordering::Relaxed);
         let client = if on_h2 { &self.h2_client } else { &self.h1_client };
         let mut builder = client.get(&request.url);
+        if let Some(referer) = referer_for(&request.url) {
+            builder = builder.header(reqwest::header::REFERER, referer);
+        }
         if let Some(etag) = &request.prior_etag {
             builder = builder.header(reqwest::header::IF_NONE_MATCH, etag);
         }
@@ -179,6 +182,21 @@ impl OrmNetworkSource {
         };
         into_mln_response(request, response).await
     }
+}
+
+/// The `Referer` openrailwaymap.app's tile endpoints require. Their nginx guards
+/// the vector-tile paths with a coarse hotlink check that returns `403 Forbidden`
+/// to any request with no `Referer` header (its value is not validated — any
+/// non-empty referer passes; sprites, fonts and the site root are exempt). We
+/// derive it from the request's own origin so it matches whatever ORM host is
+/// configured, self-hosted bases included. `None` for a URL without a host.
+pub(crate) fn referer_for(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url).ok()?;
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{}://{host}:{port}/", url.scheme()),
+        None => format!("{}://{host}/", url.scheme()),
+    })
 }
 
 /// Whether a response represents a failure worth retrying: rate limiting,
@@ -294,6 +312,20 @@ pub(crate) fn register(handle: tokio::runtime::Handle) -> Result<(), reqwest::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn referer_matches_request_origin() {
+        assert_eq!(
+            referer_for("https://openrailwaymap.app/railway_line_high/8/136/85").as_deref(),
+            Some("https://openrailwaymap.app/")
+        );
+        // A self-hosted base with an explicit port keeps the port in the referer.
+        assert_eq!(
+            referer_for("http://192.168.1.2:8080/standard/14/8580/5410").as_deref(),
+            Some("http://192.168.1.2:8080/")
+        );
+        assert_eq!(referer_for("not a url"), None);
+    }
 
     #[test]
     fn h2_downgrades_after_consecutive_stalls_and_resets_on_success() {
