@@ -132,11 +132,9 @@ const STEPS: &[Step] = &[
         panel: Panel::None,
         placement: Placement::Center,
         icon: "fa-brands fa-steam",
-        title: "Auto-launch with NIMBY Rails",
-        body: &[
-            "The live overlays are served from a local server that only runs while Turnout is open, so Turnout has to be running before NIMBY loads them. Closing Turnout's window now keeps it in the tray / menu bar, so the server stays up.",
-            "To make Steam start Turnout automatically whenever you launch NIMBY Rails, add this to the game's Launch Options — Steam \u{2192} NIMBY Rails \u{2192} Properties \u{2192} Launch Options:",
-        ],
+        title: "Running with NIMBY Rails",
+        // Body is platform-specific, rendered in the auto-launch block below.
+        body: &[],
     },
     Step {
         target: None,
@@ -328,12 +326,15 @@ pub fn Tutorial(
 
             <Show when=move || step.get() == autolaunch>
                 {move || match launch_setup.get() {
+                    // Windows / Linux: Steam can auto-start Turnout with the game.
                     Some(setup) => match setup.launch_options {
                         Some(opts) => {
                             let to_copy = opts.clone();
                             let detected = setup.nimby_detected;
                             view! {
                                 <div class="tour-autolaunch">
+                                    <p>"The live overlays come from a local server that runs while Turnout is open, so Turnout has to be running before NIMBY Rails loads them. Closing Turnout's window keeps it in the tray with the server alive."</p>
+                                    <p>"To have Steam start Turnout automatically whenever you launch NIMBY Rails, add this to the game's Launch Options (Steam \u{2192} NIMBY Rails \u{2192} Properties \u{2192} Launch Options):"</p>
                                     <pre class="tour-code">{opts}</pre>
                                     <div class="tour-report">
                                         <button on:click=move |_| copy_to_clipboard(&to_copy)>
@@ -351,8 +352,9 @@ pub fn Tutorial(
                                 </div>
                             }.into_any()
                         }
+                        // macOS: no launch-argument setup; the tray keep-alive is it.
                         None => view! {
-                            <p class="tour-hint">"NIMBY Rails runs on Windows and Linux, so this Steam setup applies there. On macOS, just keep Turnout running — closing its window leaves it in the menu bar."</p>
+                            <p>"The live overlays come from a local server that runs while Turnout is open. Closing Turnout's window keeps it in the menu bar with the server alive, so NIMBY Rails can always reach the overlays."</p>
                         }.into_any(),
                     },
                     None => view! { <p class="tour-hint">"Preparing\u{2026}"</p> }.into_any(),
