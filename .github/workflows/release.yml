@@ -170,18 +170,24 @@ jobs:
           fi
           sentry-cli debug-files upload --include-sources "$DIR"
 
-      # Upload the frontend (Leptos wasm + JS bundle) source maps so
-      # @sentry/browser-captured frontend stack traces symbolicate to
-      # file:line instead of the minified wasm-bindgen glue. Associated with
-      # the release the SDK reports (turnout-tauri@<version> from
-      # src-tauri/Cargo.toml, the same source sentry::release_name!() uses), so
-      # they resolve for the matching events. `dist/` is Trunk's output
-      # (Trunk.toml dist = "dist", tauri.conf.json frontendDist = "../dist"),
-      # produced by the Tauri build above. sentry-cli is already installed by
-      # the debug-symbols step in this job. No-ops without the token; runs per
-      # matrix lane (re-upload is idempotent). Best-effort so a missing/empty
-      # source-map set never fails the build.
-      - name: Upload frontend source maps to Sentry
+      # Upload the frontend JS (the hand-written bridges + the wasm-bindgen
+      # glue, both shipped UNMINIFIED) as artifacts of the release the browser
+      # SDK reports (turnout-tauri@<version> from src-tauri/Cargo.toml, matching
+      # sentry::release_name!()), so @sentry/browser stack frames render with
+      # source context. `dist/` is Trunk's output (Trunk.toml dist = "dist",
+      # tauri.conf.json frontendDist = "../dist"), built by the Tauri step above
+      # and identical to what ships. sentry-cli only picks up JS/map files, so
+      # the 6.6 MB wasm binary is skipped; Trunk emits no .map files because the
+      # JS isn't minified (nothing to map).
+      #
+      # Scope/limits (deliberate): the injected @sentry/browser has NO wasm
+      # integration, so wasm panic *frames* cannot be symbolicated here — the
+      # Rust panic message + file:line already arrive via the frontend panic
+      # hook (sentry_bridge.js), which is the part that matters for triage. True
+      # wasm frame symbolication would need a self-hosted SDK + @sentry/wasm +
+      # an un-stripped wasm/DWARF upload (tracked separately). Best-effort,
+      # token-gated, per-matrix (re-upload is idempotent) — never fails the job.
+      - name: Upload frontend JS to Sentry (source context)
         continue-on-error: true
         shell: bash
         env:
@@ -191,7 +197,7 @@ jobs:
           SENTRY_URL: https://de.sentry.io
         run: |
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "SENTRY_AUTH_TOKEN not set — skipping source map upload"
+            echo "SENTRY_AUTH_TOKEN not set — skipping frontend JS upload"
             exit 0
           fi
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)

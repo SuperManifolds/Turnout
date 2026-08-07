@@ -168,18 +168,18 @@ jobs:
           npm install -g @sentry/cli
           sentry-cli debug-files upload --include-sources target/release
 
-      # Upload the frontend (Leptos wasm + JS bundle) source maps so nightly
-      # @sentry/browser-captured frontend stack traces symbolicate too. The SDK
-      # reports the release as turnout-tauri@<version> (from src-tauri/Cargo.toml,
-      # the same source sentry::release_name!() uses) — the nightly environment
-      # tag is separate from the release name — so associate the maps with that
-      # release. `dist/` is Trunk's output (Trunk.toml dist = "dist",
-      # tauri.conf.json frontendDist = "../dist"), produced by the Tauri build
-      # above. sentry-cli is already installed by the debug-symbols step in this
-      # job. No-ops without the token; runs per matrix lane (re-upload is
-      # idempotent). Best-effort so a missing/empty source-map set never fails
-      # the nightly build.
-      - name: Upload frontend source maps to Sentry
+      # Nightly counterpart of the release JS upload: ship the frontend JS (the
+      # hand-written bridges + the wasm-bindgen glue, both UNMINIFIED) as
+      # artifacts of the release the browser SDK reports (turnout-tauri@<version>
+      # from src-tauri/Cargo.toml, matching sentry::release_name!(); the nightly
+      # environment tag is separate from the release name), so @sentry/browser
+      # frames render with source context. sentry-cli only picks up JS/map files,
+      # so the wasm binary is skipped; Trunk emits no .map files (the JS isn't
+      # minified). The injected @sentry/browser has no wasm integration, so wasm
+      # panic frames aren't symbolicated here — the Rust panic message + file:line
+      # already arrive via the frontend panic hook. Best-effort, token-gated,
+      # per-matrix (idempotent) — never fails the nightly build.
+      - name: Upload frontend JS to Sentry (source context)
         continue-on-error: true
         shell: bash
         env:
@@ -189,7 +189,7 @@ jobs:
           SENTRY_URL: https://de.sentry.io
         run: |
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "SENTRY_AUTH_TOKEN not set — skipping source map upload"
+            echo "SENTRY_AUTH_TOKEN not set — skipping frontend JS upload"
             exit 0
           fi
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
