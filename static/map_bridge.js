@@ -133,6 +133,12 @@ function is_dark() {
 }
 
 window.map_set_theme = function(theme) {
+    // `settings-changed` fires on every settings save, not just theme changes, and
+    // setStyle reloads the entire base map (refetching tiles and re-adding every
+    // overlay), which visibly flickers the map — especially while the settings
+    // window is open and each edit triggers a save. Skip the reload when the theme
+    // is unchanged; the actual style is unaffected.
+    if (theme === _theme_override) return;
     _theme_override = theme;
     if (!_map) return;
     _map.setStyle(get_preferred_style(), { transformStyle: preserve_custom_layers });
