@@ -12,6 +12,18 @@ mod utils;
 extern "C" {
     fn map_set_theme(theme: &str);
     fn map_on_load(callback: &js_sys::Function);
+    #[wasm_bindgen(js_name = __turnout_report_panic)]
+    fn report_panic(msg: &str);
+}
+
+/// Installs a panic hook that keeps the standard console output and additionally
+/// forwards the panic (message plus `file:line` location) to Sentry. The Sentry
+/// forwarding is a no-op when the plugin global is absent.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        console_error_panic_hook::hook(info);
+        report_panic(&info.to_string());
+    }));
 }
 
 fn setup_theme_handling() {
@@ -45,7 +57,7 @@ fn setup_theme_handling() {
 }
 
 fn main() {
-    console_error_panic_hook::set_once();
+    install_panic_hook();
     mount_to_body(App);
 }
 

@@ -130,7 +130,9 @@ async fn save_settings(settings: &Settings) -> Result<(), String> {
 pub async fn mark_tutorial_completed() {
     let mut settings = load_settings().await;
     settings.tutorial_completed = true;
-    let _ = save_settings(&settings).await;
+    if let Err(e) = save_settings(&settings).await {
+        crate::tauri::report_error("save settings (tutorial completed)", &e);
+    }
 }
 
 /// Returns true if this webview is the settings window.

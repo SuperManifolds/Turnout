@@ -115,9 +115,14 @@ pub fn Map(
             // URL is built from it.
             let cb = Closure::once(move || {
                 spawn_local(async move {
-                    if let Ok(port) = crate::tauri::get_orm_port().await {
-                        map_set_orm_port(port);
-                        map_set_orm_style(ORM_DEFAULT_STYLE);
+                    match crate::tauri::get_orm_port().await {
+                        Ok(port) => {
+                            map_set_orm_port(port);
+                            map_set_orm_style(ORM_DEFAULT_STYLE);
+                        }
+                        Err(err) => {
+                            crate::tauri::report_error("ORM tile server bootstrap", &err);
+                        }
                     }
                 });
             });
@@ -457,6 +462,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
         Ok(d) => { unlisten(); d }
         Err(err) => {
             unlisten();
+            crate::tauri::report_error("blueprint import", &err);
             set_status.set(format!("Import failed: {err}"));
             return;
         }
