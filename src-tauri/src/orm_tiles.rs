@@ -149,7 +149,7 @@ fn crop_and_upscale(img: &RawImage, z: u8, x: u32, y: u32) -> RawImage {
     image::imageops::resize(&*cropped, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle)
 }
 
-fn extract_panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn extract_panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = e.downcast_ref::<&str>() {
         return (*s).to_string();
     }
@@ -365,10 +365,18 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
                             if restarts > MAX_WORKER_RESTARTS {
                                 // A worker that keeps panicking would otherwise spin
                                 // forever burning CPU; give up and let it stay down.
+                                // This is a distinct, terminal condition (the renderer
+                                // permanently loses a worker) rather than the panic
+                                // itself, so surface it as its own Sentry issue.
                                 tracing::error!("worker {i} panicked {restarts}× (last: {msg}); giving up");
                                 break;
                             }
-                            tracing::error!("worker {i} panicked: {msg} — restarting ({restarts}/{MAX_WORKER_RESTARTS})");
+                            // The process-global sentry panic hook already captured
+                            // this panic with a backtrace before catch_unwind returned
+                            // Err (catch_unwind doesn't suppress the hook). Log at warn
+                            // so it lands as a breadcrumb, not a second, backtrace-less
+                            // duplicate issue.
+                            tracing::warn!("worker {i} panicked: {msg} — restarting ({restarts}/{MAX_WORKER_RESTARTS})");
                             std::thread::sleep(std::time::Duration::from_secs(WORKER_RESTART_DELAY_SECS));
                         }
                     }

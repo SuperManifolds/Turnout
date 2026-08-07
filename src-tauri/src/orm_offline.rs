@@ -280,7 +280,15 @@ pub async fn download_orm_offline(
     // Stop fetching, then close the channel so the writer flushes its open transaction.
     drop(stream);
     drop(tx);
-    let conn = writer.join().map_err(|_| CommandError::Other("Tile writer thread panicked".to_string()))?;
+    // Join only after the sender is dropped, so this never deadlocks. On panic the
+    // process-global sentry panic hook has already captured it with a backtrace at
+    // panic time, so log the join failure at warn (a breadcrumb, not a second
+    // backtrace-less issue) before surfacing it to the caller as an error.
+    let conn = writer.join().map_err(|e| {
+        let msg = crate::orm_tiles::extract_panic_message(&e);
+        tracing::warn!("tile writer thread panicked: {msg}");
+        CommandError::Other(format!("Tile writer thread panicked: {msg}"))
+    })?;
     finalize_vector_mbtiles(&conn).map_err(|e| CommandError::Io(format!("Failed to finalize MBTiles: {e}")))?;
     emit_progress(&app, &progress);
 
