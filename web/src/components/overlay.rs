@@ -110,6 +110,18 @@ pub fn OverlayDrawer(
                 && !key.is_empty()
                 && (settings.apple_map_version.is_some() || settings.apple_sat_version.is_some())
             {
+                let new_creds = (
+                    key.clone(),
+                    settings.apple_map_version.clone(),
+                    settings.apple_sat_version.clone(),
+                );
+                // `settings-changed` fires on every settings save (theme, timeout,
+                // …), not just credential changes. Re-applying and re-syncing the
+                // Apple overlay re-adds its raster layers and flickers the map, so
+                // skip when the credentials are unchanged.
+                if apple_creds.get_untracked().as_ref() == Some(&new_creds) {
+                    return;
+                }
                 let s = tauri::update_apple_urls(
                     key,
                     settings.apple_map_version.as_deref(),
@@ -120,11 +132,7 @@ pub fn OverlayDrawer(
                     sync_map_layers(&s, &prev, true);
                     set_status.set(s);
                 }
-                set_apple_creds.set(Some((
-                    key.clone(),
-                    settings.apple_map_version,
-                    settings.apple_sat_version,
-                )));
+                set_apple_creds.set(Some(new_creds));
             } else {
                 set_apple_creds.set(None);
             }
