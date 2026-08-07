@@ -90,6 +90,35 @@ pub fn init() -> Option<sentry::ClientInitGuard> {
     Some(guard)
 }
 
+/// Arms the native minidump handler: a re-exec'd reporter process that outlives a
+/// crash of the main process and uploads a minidump. Returns the handle, which
+/// **must be kept alive for the whole program** — dropping it stops the reporter.
+///
+/// `None` when reporting is off (no Sentry client) *or* the reporter failed to
+/// start. A start failure is logged at `error!` so it becomes a Sentry event in
+/// its own right: without this we can't tell a machine where native capture is
+/// silently unavailable (a failed re-exec, sandbox, or temp-dir permission) from
+/// one that simply never crashed. Only covers the **main** process — a `WebView2`
+/// (Windows) or `WKWebView` renderer crash is a separate process and is not caught
+/// here (see the macOS-only `on_web_content_process_terminate` hook in `main`).
+pub fn arm_minidump_reporter(
+    client: Option<&sentry::ClientInitGuard>,
+) -> Option<tauri_plugin_sentry::minidump::Handle> {
+    let client = client?;
+    match tauri_plugin_sentry::minidump::init(client) {
+        Ok(handle) => {
+            tracing::info!("native crash reporter armed");
+            Some(handle)
+        }
+        Err(err) => {
+            tracing::error!(
+                "native crash reporter failed to start; native crashes will not be captured: {err}"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::reporting_enabled;

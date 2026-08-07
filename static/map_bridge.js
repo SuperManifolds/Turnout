@@ -28,6 +28,8 @@ const PREVIEW_GLOW_WIDTH = 8;
 const PREVIEW_GLOW_BLUR = 4;
 const HANDLE_LINE_WIDTH = 2.5;
 const FEATURE_QUERY_TOLERANCE = 10;
+const MAX_ORM_STYLE_RETRIES = 5;
+const ORM_STYLE_RETRY_DELAY_MS = 1000;
 
 function get_preferred_style() {
     if (_theme_override === "dark") return STYLE_DARK;
@@ -69,6 +71,19 @@ window.map_init = function(container) {
         localStorage.setItem("map_view", JSON.stringify({
             lng: c.lng, lat: c.lat, zoom: _map.getZoom()
         }));
+    });
+
+    // Forward MapLibre tile/style load errors to Sentry as breadcrumbs (not
+    // exceptions) so they add context to a later report without flooding it.
+    _map.on("error", function(ev) {
+        if (!(window.Sentry && window.Sentry.addBreadcrumb)) return;
+        var detail = ev && ev.error ? (ev.error.message || String(ev.error)) : "unknown error";
+        if (ev && ev.sourceId) detail = "[" + ev.sourceId + "] " + detail;
+        window.Sentry.addBreadcrumb({
+            category: "maplibre",
+            level: "warning",
+            message: detail,
+        });
     });
 
     // Flush deferred on-load callbacks
@@ -145,9 +160,10 @@ window.map_set_orm_port = function(port) {
     _orm_port = port;
 };
 
-window.map_set_orm_style = function(style_name) {
+window.map_set_orm_style = function(style_name, attempt) {
     if (!_map) return;
     if (_orm_port === null) return;
+    attempt = attempt || 0;
 
     // Remove previous ORM layer/source
     if (_map.getLayer("orm-layer")) _map.removeLayer("orm-layer");
@@ -176,11 +192,21 @@ window.map_set_orm_style = function(style_name) {
         _map.triggerRepaint();
     } catch (e) {
         console.error("[ORM] Failed to set style:", e);
+        if (attempt >= MAX_ORM_STYLE_RETRIES) {
+            if (window.Sentry && window.Sentry.captureMessage) {
+                window.Sentry.captureMessage(
+                    "ORM style '" + style_name + "' failed after " +
+                    MAX_ORM_STYLE_RETRIES + " retries: " + e,
+                    "error"
+                );
+            }
+            return;
+        }
         // Retry after a short delay
         setTimeout(function() {
-            console.log("[ORM] Retrying style '" + style_name + "'...");
-            map_set_orm_style(style_name);
-        }, 1000);
+            console.log("[ORM] Retrying style '" + style_name + "' (attempt " + (attempt + 1) + ")...");
+            map_set_orm_style(style_name, attempt + 1);
+        }, ORM_STYLE_RETRY_DELAY_MS);
     }
 };
 

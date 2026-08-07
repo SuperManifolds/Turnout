@@ -5,6 +5,18 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = __turnout_report_error)]
+    fn report_error_js(context: &str, detail: &str);
+}
+
+/// Forward a non-fatal command/IPC failure to Sentry as an error-level message.
+/// A no-op when the Sentry plugin global is absent (plain browser / dev).
+pub fn report_error(context: &str, detail: &str) {
+    report_error_js(context, detail);
+}
+
 pub async fn invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
     let invoke_fn = tauri_namespace_fn("core", "invoke").ok_or("Tauri not available")?;
     let promise = invoke_fn.call2(&JsValue::NULL, &cmd.into(), args)
@@ -368,6 +380,7 @@ pub struct ArcGisServiceInfo {
 /// The empty overlay status returned when an infallible overlay command fails.
 fn overlay_failed() -> OverlayStatus {
     web_sys::console::warn_1(&"overlay command failed".into());
+    report_error("overlay command", "returned no status");
     OverlayStatus { groups: Vec::new() }
 }
 

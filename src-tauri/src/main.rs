@@ -256,13 +256,25 @@ fn main() {
     // guards must live until the app exits — dropping them stops the reporter and
     // flushes Sentry. `None` when reporting is disabled (see `crash_reporting`).
     let sentry_guard = crash_reporting::init();
-    let _minidump_guard = sentry_guard.as_ref().map(|client| tauri_plugin_sentry::minidump::init(client));
+    let _minidump_guard = crash_reporting::arm_minidump_reporter(sentry_guard.as_ref());
 
     let mut builder = tauri::Builder::default();
     if let Some(client) = &sentry_guard {
         // Enriches webview errors with Rust/OS context and merges breadcrumbs
         // across the Rust and browser SDKs.
         builder = builder.plugin(tauri_plugin_sentry::init(client));
+    }
+    // The webview renders in a separate content process; when it dies the window
+    // goes blank with no Rust panic and no minidump (the minidump handler covers
+    // only the main process, and `@sentry/browser` only sees JS errors, not a
+    // renderer crash). Capture it as an error so it surfaces in Sentry. Tauri only
+    // exposes this on macos/ios — a WebView2 renderer crash on Windows has no
+    // equivalent hook, so that blind spot remains (tracked separately).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.on_web_content_process_terminate(|webview| {
+            tracing::error!("webview content process terminated: {}", webview.label());
+        });
     }
     builder
         .plugin(tauri_plugin_dialog::init())

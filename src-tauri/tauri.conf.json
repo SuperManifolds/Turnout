@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "trunk serve",
-    "beforeBuildCommand": "trunk build --release"
+    "beforeBuildCommand": "trunk build --release && node scripts/inject-wasm-build-id.mjs dist"
   },
   "app": {
     "withGlobalTauri": true,

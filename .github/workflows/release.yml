@@ -170,6 +170,42 @@ jobs:
           fi
           sentry-cli debug-files upload --include-sources "$DIR"
 
+      # Symbolicate the frontend for Sentry, from `dist/` (Trunk's output,
+      # tauri.conf.json frontendDist = "../dist"), which the Tauri step above
+      # built and bundled verbatim:
+      #   1. JS source context — ship the hand-written bridges + wasm-bindgen glue
+      #      (both UNMINIFIED) as artifacts of the release the browser SDK reports
+      #      (turnout-tauri@<version>, matching sentry::release_name!()), so
+      #      @sentry/browser JS frames render with source. sentry-cli only picks up
+      #      JS/map files here; no .map files exist because the JS isn't minified.
+      #   2. Wasm frames — upload the wasm as a debug file. It carries DWARF line
+      #      tables (profile.release = line-tables-only, retained via index.html
+      #      data-keep-debug) and a build_id custom section (beforeBuildCommand runs
+      #      scripts/inject-wasm-build-id.mjs). The build_id gives it the same
+      #      debug_id the vendored @sentry/wasm derives at runtime (see
+      #      static/sentry_wasm.min.js), so Sentry resolves wasm frames to Rust
+      #      function + file:line. We ship and upload the same file, so code offsets
+      #      match without wasm-split.
+      # Best-effort, token-gated, per-matrix (re-upload is idempotent) — never
+      # fails the job.
+      - name: Upload frontend JS + wasm debug info to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping frontend upload"
+            exit 0
+          fi
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          REL="turnout-tauri@${VERSION}"
+          sentry-cli sourcemaps upload --release "$REL" dist
+          sentry-cli debug-files upload --include-sources dist
+
   # The bundled AppImage carries Ubuntu-22.04 libxcb*/libwayland*, which shadow
   # the host's newer copies at runtime and break the host Vulkan driver (Arch
   # RADV needs wl_display_create_queue_with_name, absent from the bundled
