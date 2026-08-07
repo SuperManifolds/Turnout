@@ -17,6 +17,11 @@ let _map_loaded = false;
 let _dynamic_source_ids = new Set();
 let _dynamic_layer_ids = new Set();
 let _theme_override = "system"; // "system", "light", "dark"
+// The base-map style URL currently applied. Guards every setStyle path against a
+// redundant full base-map reload (which refetches tiles + re-adds every overlay,
+// flickering the map): setStyle runs only when the resolved style actually
+// changes. See apply_preferred_style and issue #74.
+let _applied_style = null;
 
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -69,6 +74,8 @@ window.map_init = function(container) {
         center: saved ? [saved.lng, saved.lat] : [8.534, 52.033],
         zoom: saved ? saved.zoom : 14,
     });
+    // The map is constructed with this style, so record it as applied.
+    _applied_style = get_preferred_style();
     _map.addControl(new maplibregl.NavigationControl(), "top-right");
 
     // Persist map position on move
@@ -100,8 +107,7 @@ window.map_init = function(container) {
     // Follow system theme changes (only when set to "system")
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function() {
         if (_theme_override !== "system") return;
-        _map.setStyle(get_preferred_style(), { transformStyle: preserve_custom_layers });
-        _map.once("styledata", update_orm_paint);
+        apply_preferred_style();
     });
 
     return _map;
@@ -132,17 +138,24 @@ function is_dark() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
-window.map_set_theme = function(theme) {
-    // `settings-changed` fires on every settings save, not just theme changes, and
-    // setStyle reloads the entire base map (refetching tiles and re-adding every
-    // overlay), which visibly flickers the map — especially while the settings
-    // window is open and each edit triggers a save. Skip the reload when the theme
-    // is unchanged; the actual style is unaffected.
-    if (theme === _theme_override) return;
-    _theme_override = theme;
+// Applies the theme-appropriate base-map style, but only when it differs from
+// what's already applied. setStyle reloads the whole base map (refetching tiles
+// and re-adding every overlay), so routing every caller through this no-op guard
+// is what stops the map flickering when unrelated state churns — a settings save
+// (map_set_theme fires even when the theme didn't change) or a spurious
+// prefers-color-scheme re-fire (which calls setStyle directly). See issue #74.
+function apply_preferred_style() {
     if (!_map) return;
-    _map.setStyle(get_preferred_style(), { transformStyle: preserve_custom_layers });
+    var target = get_preferred_style();
+    if (target === _applied_style) return;
+    _applied_style = target;
+    _map.setStyle(target, { transformStyle: preserve_custom_layers });
     _map.once("styledata", update_orm_paint);
+}
+
+window.map_set_theme = function(theme) {
+    _theme_override = theme;
+    apply_preferred_style();
 };
 
 function update_orm_paint() {
