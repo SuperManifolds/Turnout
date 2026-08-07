@@ -30,6 +30,12 @@ const HANDLE_LINE_WIDTH = 2.5;
 const FEATURE_QUERY_TOLERANCE = 10;
 const MAX_ORM_STYLE_RETRIES = 5;
 const ORM_STYLE_RETRY_DELAY_MS = 1000;
+// Disable MapLibre's default 300ms raster cross-fade on overlay layers. The ORM
+// overlay is fed by a local on-demand renderer whose tiles arrive raggedly;
+// cross-fading each arriving tile against an overlapping semi-transparent overlay
+// makes the overlap shimmer/flicker (worse under GPU contention, e.g. a second
+// window). Instant tile swaps remove the flicker. See issue #74.
+const RASTER_FADE_DURATION_MS = 0;
 
 function get_preferred_style() {
     if (_theme_override === "dark") return STYLE_DARK;
@@ -144,7 +150,7 @@ window.map_add_raster_layer = function(id, source, opacity) {
         id: id,
         type: "raster",
         source: source,
-        paint: { "raster-opacity": opacity },
+        paint: { "raster-opacity": opacity, "raster-fade-duration": RASTER_FADE_DURATION_MS },
     });
     update_orm_paint();
     orm_to_top();
@@ -183,7 +189,7 @@ window.map_set_orm_style = function(style_name, attempt) {
             id: "orm-layer",
             type: "raster",
             source: "orm",
-            paint: { "raster-opacity": 0.85 },
+            paint: { "raster-opacity": 0.85, "raster-fade-duration": RASTER_FADE_DURATION_MS },
         });
         // Register with preserve_custom_layers so theme changes keep the overlay
         _orm_source_ids = ["orm"];
@@ -406,7 +412,7 @@ window.map_add_overlay_layer = function(id, url, opacity) {
         id: id + "-layer",
         type: "raster",
         source: id,
-        paint: { "raster-opacity": opacity },
+        paint: { "raster-opacity": opacity, "raster-fade-duration": RASTER_FADE_DURATION_MS },
     }, beforeLayer);
     _dynamic_source_ids.add(id);
     _dynamic_layer_ids.add(id + "-layer");
