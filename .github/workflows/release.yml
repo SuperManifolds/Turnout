@@ -170,6 +170,34 @@ jobs:
           fi
           sentry-cli debug-files upload --include-sources "$DIR"
 
+      # Upload the frontend (Leptos wasm + JS bundle) source maps so
+      # @sentry/browser-captured frontend stack traces symbolicate to
+      # file:line instead of the minified wasm-bindgen glue. Associated with
+      # the release the SDK reports (turnout-tauri@<version> from
+      # src-tauri/Cargo.toml, the same source sentry::release_name!() uses), so
+      # they resolve for the matching events. `dist/` is Trunk's output
+      # (Trunk.toml dist = "dist", tauri.conf.json frontendDist = "../dist"),
+      # produced by the Tauri build above. sentry-cli is already installed by
+      # the debug-symbols step in this job. No-ops without the token; runs per
+      # matrix lane (re-upload is idempotent). Best-effort so a missing/empty
+      # source-map set never fails the build.
+      - name: Upload frontend source maps to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping source map upload"
+            exit 0
+          fi
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          REL="turnout-tauri@${VERSION}"
+          sentry-cli sourcemaps upload --release "$REL" dist
+
   # The bundled AppImage carries Ubuntu-22.04 libxcb*/libwayland*, which shadow
   # the host's newer copies at runtime and break the host Vulkan driver (Arch
   # RADV needs wl_display_create_queue_with_name, absent from the bundled
