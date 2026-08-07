@@ -8,6 +8,8 @@
 //! `wgpu` crate, which reads the same Vulkan `deviceName` strings mbgl matches
 //! against); [`crate::orm_tiles`] sets the env var from the user's choice.
 
+use std::collections::HashMap;
+
 use futures::executor::block_on;
 
 /// One available GPU adapter, surfaced to the settings picker.
@@ -65,7 +67,20 @@ fn rank(t: wgpu::DeviceType) -> u8 {
     }
 }
 
-/// Every adapter the primary backends expose, best-hardware-first.
+/// Preference when one physical device is exposed by several backends: keep the
+/// one the ORM renderer actually uses, which also matches `MLN_VULKAN_DEVICE_NAME`.
+/// Windows lists every GPU under both Vulkan and DX12, so without this the picker
+/// shows each device twice (see [`dedupe_by_device`]).
+fn backend_rank(b: wgpu::Backend) -> u8 {
+    match b {
+        wgpu::Backend::Vulkan => 0,
+        wgpu::Backend::Metal => 1,
+        wgpu::Backend::Dx12 => 2,
+        _ => 3,
+    }
+}
+
+/// Every adapter the primary backends expose, de-duplicated, best-hardware-first.
 pub fn list_gpus() -> Vec<GpuInfo> {
     let adapters = block_on(instance().enumerate_adapters(wgpu::Backends::PRIMARY));
     if adapters.is_empty() {
@@ -73,19 +88,46 @@ pub fn list_gpus() -> Vec<GpuInfo> {
             "no GPU adapters enumerated (Vulkan/Metal/DX12); ORM rendering may fall back to software"
         );
     }
-    let ranked: Vec<(u8, GpuInfo)> = adapters
+    let entries: Vec<(u8, u8, GpuInfo)> = adapters
         .iter()
         .map(|a| {
             let info = a.get_info();
-            (rank(info.device_type), GpuInfo {
-                name: info.name,
-                backend: format!("{:?}", info.backend),
-                kind: kind_str(info.device_type).to_string(),
-                is_software: is_software_type(info.device_type),
-            })
+            (
+                rank(info.device_type),
+                backend_rank(info.backend),
+                GpuInfo {
+                    name: info.name,
+                    backend: format!("{:?}", info.backend),
+                    kind: kind_str(info.device_type).to_string(),
+                    is_software: is_software_type(info.device_type),
+                },
+            )
         })
         .collect();
-    sort_best_first(ranked)
+    sort_best_first(dedupe_by_device(entries))
+}
+
+/// Collapses adapters that are the same device exposed by multiple backends
+/// (Windows lists each GPU under both Vulkan and DX12), keyed by device name and
+/// keeping the lowest [`backend_rank`] — the backend the renderer uses. Preserves
+/// first-seen order so listing is stable. Split out to test without a real GPU.
+fn dedupe_by_device(entries: Vec<(u8, u8, GpuInfo)>) -> Vec<(u8, GpuInfo)> {
+    let mut order: Vec<(u8, u8, GpuInfo)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for (device_rank, backend_rank, gpu) in entries {
+        match seen.get(&gpu.name) {
+            Some(&idx) if backend_rank >= order[idx].1 => {}
+            Some(&idx) => order[idx] = (device_rank, backend_rank, gpu),
+            None => {
+                seen.insert(gpu.name.clone(), order.len());
+                order.push((device_rank, backend_rank, gpu));
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|(device_rank, _, gpu)| (device_rank, gpu))
+        .collect()
 }
 
 /// Orders `(rank, adapter)` pairs best-hardware-first (lowest rank), dropping the
@@ -130,7 +172,10 @@ mod tests {
     #[test]
     fn sort_best_first_orders_by_rank() {
         let g = |name: &str| super::GpuInfo {
-            name: name.into(), backend: "Vulkan".into(), kind: "x".into(), is_software: false,
+            name: name.into(),
+            backend: "Vulkan".into(),
+            kind: "x".into(),
+            is_software: false,
         };
         // Deliberately unsorted input; sort_best_first must order lowest-rank first.
         let ranked = vec![
@@ -139,7 +184,10 @@ mod tests {
             (rank(IntegratedGpu), g("integrated")),
             (rank(Other), g("other")),
         ];
-        let names: Vec<String> = super::sort_best_first(ranked).into_iter().map(|g| g.name).collect();
+        let names: Vec<String> = super::sort_best_first(ranked)
+            .into_iter()
+            .map(|g| g.name)
+            .collect();
         assert_eq!(names, ["discrete", "integrated", "other", "sw"]);
     }
 
@@ -148,5 +196,30 @@ mod tests {
         // Whatever this machine has (or nothing, on headless CI), enumeration and
         // ranking must not panic.
         let _ = list_gpus();
+    }
+
+    #[test]
+    fn dedupe_collapses_multi_backend_devices_keeping_preferred() {
+        let g = |name: &str, backend: &str| super::GpuInfo {
+            name: name.into(),
+            backend: backend.into(),
+            kind: "discrete".into(),
+            is_software: false,
+        };
+        // The Windows case: one GPU under Vulkan (backend_rank 0) and DX12
+        // (backend_rank 2), plus a distinct second GPU. DX12 comes first to prove
+        // the lower backend_rank wins regardless of order.
+        let entries = vec![
+            (rank(DiscreteGpu), 2, g("NVIDIA RTX 4070", "Dx12")),
+            (rank(DiscreteGpu), 0, g("NVIDIA RTX 4070", "Vulkan")),
+            (rank(IntegratedGpu), 0, g("Intel UHD", "Vulkan")),
+        ];
+        let out = super::dedupe_by_device(entries);
+        assert_eq!(out.len(), 2, "the duplicated device must collapse to one");
+        let nvidia = out
+            .iter()
+            .find(|(_, g)| g.name == "NVIDIA RTX 4070")
+            .expect("deduped list keeps the device");
+        assert_eq!(nvidia.1.backend, "Vulkan", "keeps the renderer's backend");
     }
 }
