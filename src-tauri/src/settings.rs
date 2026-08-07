@@ -190,6 +190,14 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<()> {
     let store = app.store(SETTINGS_STORE).map_err(|e| CommandError::Io(e.to_string()))?;
+    // Captured before the write below: whether Apple auto-refresh was actually
+    // toggled. Waking the refresher on every save (not just a toggle) makes it
+    // re-fetch and re-emit `apple-token-refreshed`, which an open settings window
+    // relays back into another save — a ~1s infinite loop that reloads the map.
+    let auto_refresh_was = store
+        .get("apple_auto_refresh")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
     store.set("check_for_updates", serde_json::json!(settings.network.check_for_updates));
     store.set("map_theme", serde_json::json!(settings.map_theme));
@@ -221,8 +229,11 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     }
     let _ = app.emit("settings-changed", &settings);
     // Re-evaluate auto-refresh now (e.g. it was just re-enabled) instead of
-    // waiting out the loop's current sleep.
-    if let Some(refresh) = app.try_state::<crate::apple_token::AppleRefresh>() {
+    // waiting out the loop's current sleep — but only on an actual toggle, so an
+    // unrelated save can't kick the refresher into the feedback loop above.
+    if auto_refresh_was != settings.network.apple_auto_refresh
+        && let Some(refresh) = app.try_state::<crate::apple_token::AppleRefresh>()
+    {
         refresh.wake();
     }
     Ok(())
