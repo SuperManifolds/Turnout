@@ -70,6 +70,7 @@ impl Default for Settings {
 #[derive(Clone, serde::Deserialize)]
 pub struct GpuInfo {
     pub name: String,
+    pub backend: String,
     pub kind: String,
     #[serde(rename = "isSoftware")]
     pub is_software: bool,
@@ -435,10 +436,12 @@ pub fn AppSettings() -> impl IntoView {
                                 })
                         }}
                         {move || gpus.get().into_iter().map(|g| {
+                            // Show the render backend (Vulkan/Metal) so each row is
+                            // clearly a distinct device+API, not a bare duplicate.
                             let label = if g.is_software {
-                                format!("{} ({} · software)", g.name, g.kind)
+                                format!("{} — {} ({} · software)", g.name, g.backend, g.kind)
                             } else {
-                                format!("{} ({})", g.name, g.kind)
+                                format!("{} — {} ({})", g.name, g.backend, g.kind)
                             };
                             view! { <option value={g.name.clone()}>{label}</option> }
                         }).collect_view()}
