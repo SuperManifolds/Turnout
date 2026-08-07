@@ -168,18 +168,21 @@ jobs:
           npm install -g @sentry/cli
           sentry-cli debug-files upload --include-sources target/release
 
-      # Nightly counterpart of the release JS upload: ship the frontend JS (the
-      # hand-written bridges + the wasm-bindgen glue, both UNMINIFIED) as
-      # artifacts of the release the browser SDK reports (turnout-tauri@<version>
-      # from src-tauri/Cargo.toml, matching sentry::release_name!(); the nightly
-      # environment tag is separate from the release name), so @sentry/browser
-      # frames render with source context. sentry-cli only picks up JS/map files,
-      # so the wasm binary is skipped; Trunk emits no .map files (the JS isn't
-      # minified). The injected @sentry/browser has no wasm integration, so wasm
-      # panic frames aren't symbolicated here — the Rust panic message + file:line
-      # already arrive via the frontend panic hook. Best-effort, token-gated,
-      # per-matrix (idempotent) — never fails the nightly build.
-      - name: Upload frontend JS to Sentry (source context)
+      # Nightly counterpart of the release frontend symbolication upload, from
+      # `dist/` (built + bundled verbatim by the Tauri step above):
+      #   1. JS source context — the hand-written bridges + wasm-bindgen glue (both
+      #      UNMINIFIED), as artifacts of the release the browser SDK reports
+      #      (turnout-tauri@<version>, matching sentry::release_name!(); the nightly
+      #      environment tag is separate from the release name). No .map files exist
+      #      (the JS isn't minified).
+      #   2. Wasm frames — upload the wasm as a debug file. It carries DWARF line
+      #      tables (retained via index.html data-keep-debug) and a build_id
+      #      (beforeBuildCommand runs scripts/inject-wasm-build-id.mjs), giving it
+      #      the debug_id the vendored @sentry/wasm derives at runtime, so wasm
+      #      frames resolve to Rust function + file:line. Same file shipped and
+      #      uploaded, so offsets match without wasm-split.
+      # Best-effort, token-gated, per-matrix (idempotent) — never fails the build.
+      - name: Upload frontend JS + wasm debug info to Sentry
         continue-on-error: true
         shell: bash
         env:
@@ -189,12 +192,13 @@ jobs:
           SENTRY_URL: https://de.sentry.io
         run: |
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "SENTRY_AUTH_TOKEN not set — skipping frontend JS upload"
+            echo "SENTRY_AUTH_TOKEN not set — skipping frontend upload"
             exit 0
           fi
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
           REL="turnout-tauri@${VERSION}"
           sentry-cli sourcemaps upload --release "$REL" dist
+          sentry-cli debug-files upload --include-sources dist
 
       # The AppImage upstream excludelist requires the X11/Wayland client
       # libraries to come from the host, never the bundle. maplibre dlopens the

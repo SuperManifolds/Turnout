@@ -9,10 +9,21 @@
     <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
     <link data-trunk rel="copy-file" href="static/map_bridge.js" />
     <script src="map_bridge.js"></script>
+    <!-- Vendored @sentry/wasm must load before sentry_bridge.js (which uses
+         window.__SentryWasm) and before the wasm module below, so it can patch
+         WebAssembly.instantiateStreaming in time to register the module. -->
+    <link data-trunk rel="copy-file" href="static/sentry_wasm.min.js" />
+    <script src="sentry_wasm.min.js"></script>
     <link data-trunk rel="copy-file" href="static/sentry_bridge.js" />
     <script src="sentry_bridge.js"></script>
     <link data-trunk rel="scss" href="style/main.scss" />
-    <link data-trunk rel="rust" data-wasm-opt="z" href="web/Cargo.toml" />
+    <!-- data-keep-debug keeps the DWARF line tables (profile.release =
+         line-tables-only) + the name section so @sentry/wasm and the uploaded
+         debug file resolve wasm frames to Rust function + file:line. wasm-opt is
+         off (data-wasm-opt="0"): `wasm-opt -Oz` SIGABRTs on this DWARF, and it
+         only trades speed for size anyway (rustc opt-level=3 already optimized
+         the code), so the cost is a larger wasm, not a slower one. -->
+    <link data-trunk rel="rust" data-wasm-opt="0" data-keep-debug href="web/Cargo.toml" />
 </head>
 <body></body>
 </html>
