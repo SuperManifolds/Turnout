@@ -62,15 +62,32 @@ impl<'a, T> UnpoisonExt<RwLockWriteGuard<'a, T>>
 
 /// Bind `127.0.0.1:port`, retrying briefly (a just-stopped server can hold the
 /// port for a moment), then fall back to an ephemeral port so startup always
-/// succeeds and the URL stays stable across restarts when possible.
+/// succeeds. The fixed port matters: NIMBY Rails saves the overlay URL (with the
+/// port) once, so a fallback to a random port silently breaks it — hence the
+/// `SO_REUSEADDR` reclaim below and the single-instance guard in `main`.
 pub async fn bind_with_retry(port: u16, attempts: u32, delay: Duration) -> Result<TcpListener, String> {
     for _ in 0..attempts {
-        if let Ok(listener) = TcpListener::bind(format!("127.0.0.1:{port}")).await {
+        if let Ok(listener) = bind_reusable(port) {
             return Ok(listener);
         }
         tokio::time::sleep(delay).await;
     }
+    // Last resort so startup never fails; the port won't match NIMBY's saved URL.
     TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())
+}
+
+/// Bind the fixed port with `SO_REUSEADDR` so a just-restarted server reclaims it
+/// even while a prior client connection lingers in `TIME_WAIT` — otherwise the
+/// bind fails and we drop to a random port that breaks NIMBY Rails' saved URL.
+/// Unix-only: on Windows `SO_REUSEADDR` lets an unrelated socket steal the port,
+/// and Windows frees a closed listener's port promptly anyway (the single-instance
+/// guard covers the duplicate-launch case there).
+fn bind_reusable(port: u16) -> std::io::Result<TcpListener> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    #[cfg(unix)]
+    socket.set_reuseaddr(true)?;
+    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
+    socket.listen(1024)
 }
 
 /// A `Mutex<LruCache>` of the given capacity.
