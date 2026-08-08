@@ -258,7 +258,14 @@ fn main() {
     let sentry_guard = crash_reporting::init();
     let _minidump_guard = crash_reporting::arm_minidump_reporter(sentry_guard.as_ref());
 
-    let mut builder = tauri::Builder::default();
+    // single-instance must be the first plugin registered. A second launch (e.g.
+    // from the taskbar while Turnout is resident in the tray) focuses the existing
+    // window instead of starting a duplicate — a duplicate can't bind the fixed
+    // tile-server ports the first instance already holds, so it falls back to
+    // random ports and breaks NIMBY Rails' saved overlay URLs.
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        show_main_window(app);
+    }));
     if let Some(client) = &sentry_guard {
         // Enriches webview errors with Rust/OS context and merges breadcrumbs
         // across the Rust and browser SDKs.
