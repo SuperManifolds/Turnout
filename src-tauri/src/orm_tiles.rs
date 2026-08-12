@@ -238,6 +238,14 @@ impl OrmHandle {
 }
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
+    // mbgl's Vulkan backend crashes the whole process (an uncatchable C++ access
+    // violation in `vk::DispatchLoaderDynamic::init`) on machines with no
+    // Vulkan-capable GPU. Probe with wgpu — which fails gracefully — and bail out
+    // so the app runs without ORM rendering instead of crashing a render worker.
+    if !crate::gpu::render_backend_available() {
+        return Err("no Vulkan-capable GPU found; ORM tile rendering disabled".into());
+    }
+
     let dispatch = Arc::new(Dispatch {
         queues: Mutex::new(Queues { main: VecDeque::new(), prefetch: VecDeque::new() }),
         waiters: Mutex::new(HashMap::new()),

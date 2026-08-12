@@ -80,6 +80,32 @@ fn backend_rank(b: wgpu::Backend) -> u8 {
     }
 }
 
+/// Whether the GPU backend the ORM renderer (mbgl) will use is actually present.
+///
+/// mbgl uses Metal on macOS (always available) and **Vulkan** everywhere else. On a
+/// machine with no Vulkan-capable device, mbgl's Vulkan init dereferences a null
+/// loader (`vk::DispatchLoaderDynamic::init`) and takes the whole process down with
+/// an uncatchable C++ access violation — it offers no fallible path. `wgpu`, by
+/// contrast, enumerates the same devices and simply returns an empty list when
+/// Vulkan is unavailable, so we probe with it first and let the caller skip ORM
+/// rendering (rather than crash) when nothing turns up. A software Vulkan (lavapipe)
+/// still counts — mbgl runs on it, slowly, without crashing.
+#[must_use]
+pub fn render_backend_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::default()
+        });
+        !block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN)).is_empty()
+    }
+}
+
 /// Every adapter the primary backends expose, de-duplicated, best-hardware-first.
 pub fn list_gpus() -> Vec<GpuInfo> {
     let adapters = block_on(instance().enumerate_adapters(wgpu::Backends::PRIMARY));
@@ -196,6 +222,13 @@ mod tests {
         // Whatever this machine has (or nothing, on headless CI), enumeration and
         // ranking must not panic.
         let _ = list_gpus();
+    }
+
+    #[test]
+    fn render_backend_probe_never_panics() {
+        // The probe must fail gracefully on any machine — that is the whole point
+        // (it stands in for mbgl's Vulkan init, which does not).
+        let _ = super::render_backend_available();
     }
 
     #[test]
