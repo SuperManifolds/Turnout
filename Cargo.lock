@@ -7891,6 +7891,7 @@ dependencies = [
  "tracing-subscriber",
  "turnout-core",
  "wgpu",
+ "winreg",
 ]
 
 [[package]]

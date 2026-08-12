@@ -110,6 +110,45 @@ fn windows_probe() -> LoaderProbe {
     }
 }
 
+/// Registered Vulkan drivers (ICDs) and implicit layers, by JSON basename — read
+/// from the registry so crash reports show which drivers exist (none/stale
+/// explains "no Vulkan") and which overlay layers are injected (Steam/Discord/
+/// RTSS implicit layers are a classic cause of loader/init crashes on otherwise
+/// capable machines). Empty off Windows.
+#[must_use]
+pub fn registry_summary() -> (Vec<String>, Vec<String>) {
+    #[cfg(windows)]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        use winreg::RegKey;
+
+        fn basenames(root: &RegKey, path: &str, out: &mut Vec<String>) {
+            let Ok(key) = root.open_subkey(path) else { return };
+            for (name, _value) in key.enum_values().flatten() {
+                let base = std::path::Path::new(&name)
+                    .file_name()
+                    .map_or(name.clone(), |s| s.to_string_lossy().into_owned());
+                if !out.contains(&base) {
+                    out.push(base);
+                }
+            }
+        }
+
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (mut icds, mut layers) = (Vec::new(), Vec::new());
+        for root in [&hklm, &hkcu] {
+            basenames(root, r"SOFTWARE\Khronos\Vulkan\Drivers", &mut icds);
+            basenames(root, r"SOFTWARE\Khronos\Vulkan\ImplicitLayers", &mut layers);
+        }
+        (icds, layers)
+    }
+    #[cfg(not(windows))]
+    {
+        (Vec::new(), Vec::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::probe_loader;

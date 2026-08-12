@@ -114,6 +114,10 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
     // and the path that resolves — distinguishes a shadowing `vulkan-1.dll`.
     let loader = crate::vulkan::probe_loader();
 
+    // Registered Vulkan drivers (ICDs) and implicit layers: no ICD explains "no
+    // Vulkan" on capable hardware; a stale/broken implicit layer explains a crash.
+    let (icds, layers) = crate::vulkan::registry_summary();
+
     // Every adapter, so a hybrid (e.g. NVIDIA dGPU + AMD iGPU) laptop is visible.
     let all_gpus = gpus
         .iter()
@@ -133,6 +137,10 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
         scope.set_tag("vulkan_loader", loader.tag());
         if let Some(path) = &loader.path {
             scope.set_tag("vulkan_loader_path", path.as_str());
+        }
+        scope.set_tag("vulkan_icds", if icds.is_empty() { "none".to_string() } else { icds.join(",") });
+        if !layers.is_empty() {
+            scope.set_tag("vulkan_layers", layers.join(","));
         }
         scope.set_tag("remote_session", if remote_session { "yes" } else { "no" });
         if !all_gpus.is_empty() {

@@ -44,5 +44,9 @@ sentry = { version = "0.42", default-features = false, features = ["backtrace", 
 tauri-plugin-sentry = "0.5"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk"] }
 
+# Read the Vulkan driver (ICD) and implicit-layer registry for crash diagnostics.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
