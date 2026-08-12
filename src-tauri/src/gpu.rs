@@ -58,11 +58,13 @@ fn is_software_type(t: wgpu::DeviceType) -> bool {
     matches!(t, wgpu::DeviceType::Cpu | wgpu::DeviceType::Other)
 }
 
-fn instance() -> wgpu::Instance {
-    // PRIMARY = Vulkan / Metal / DX12 — the hardware-backed APIs. GL (a common
-    // software-fallback path) is deliberately excluded.
+fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+    // Callers pass PRIMARY (Vulkan / Metal / DX12 — the hardware-backed APIs, GL
+    // deliberately excluded) to enumerate all adapters, or VULKAN alone to probe
+    // mbgl's actual render backend. `InstanceDescriptor` has no `Default` in
+    // wgpu 29, so every field is set explicitly.
     wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
+        backends,
         flags: wgpu::InstanceFlags::default(),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         backend_options: wgpu::BackendOptions::default(),
@@ -122,17 +124,15 @@ pub fn render_backend_available() -> bool {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            ..wgpu::InstanceDescriptor::default()
-        });
+        let instance = instance(wgpu::Backends::VULKAN);
         !block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN)).is_empty()
     }
 }
 
 /// Every adapter the primary backends expose, de-duplicated, best-hardware-first.
 pub fn list_gpus() -> Vec<GpuInfo> {
-    let adapters = block_on(instance().enumerate_adapters(wgpu::Backends::PRIMARY));
+    let adapters =
+        block_on(instance(wgpu::Backends::PRIMARY).enumerate_adapters(wgpu::Backends::PRIMARY));
     if adapters.is_empty() {
         tracing::warn!(
             "no GPU adapters enumerated (Vulkan/Metal/DX12); ORM rendering may fall back to software"
