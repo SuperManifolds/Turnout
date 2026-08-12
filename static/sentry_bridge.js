@@ -56,3 +56,18 @@ window.__turnout_report_error = function(context, detail) {
         }
     } catch (e) {}
 };
+
+// Record a breadcrumb — a step in the trail Sentry attaches to the next error,
+// so a report reads as "what the user did" rather than a bare stack. Level is
+// "info" for actions and "warning" for non-fatal failures.
+window.__turnout_breadcrumb = function(category, message, level) {
+    try {
+        if (window.Sentry && window.Sentry.addBreadcrumb) {
+            window.Sentry.addBreadcrumb({
+                category: category,
+                message: message,
+                level: level || "info",
+            });
+        }
+    } catch (e) {}
+};

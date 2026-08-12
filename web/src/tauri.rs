@@ -9,6 +9,8 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 extern "C" {
     #[wasm_bindgen(js_name = __turnout_report_error)]
     fn report_error_js(context: &str, detail: &str);
+    #[wasm_bindgen(js_name = __turnout_breadcrumb)]
+    fn breadcrumb_js(category: &str, message: &str, level: &str);
 }
 
 /// Forward a non-fatal command/IPC failure to Sentry as an error-level message.
@@ -17,11 +19,25 @@ pub fn report_error(context: &str, detail: &str) {
     report_error_js(context, detail);
 }
 
+/// Record a Sentry breadcrumb — a step in the trail attached to the next error,
+/// so a frontend crash report shows the actions that led up to it. A no-op when
+/// the Sentry plugin global is absent (plain browser / dev).
+pub fn breadcrumb(category: &str, message: &str) {
+    breadcrumb_js(category, message, "info");
+}
+
 pub async fn invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
     let invoke_fn = tauri_namespace_fn("core", "invoke").ok_or("Tauri not available")?;
     let promise = invoke_fn.call2(&JsValue::NULL, &cmd.into(), args)
         .map_err(|e| format!("{e:?}"))?;
-    await_promise(promise).await
+    let result = await_promise(promise).await;
+    // Leave a warning breadcrumb for a failed command so the trail before a later
+    // crash shows which IPC calls errored — most callers propagate or swallow the
+    // error, making these invisible otherwise. Successes aren't recorded (noise).
+    if let Err(detail) = &result {
+        breadcrumb_js("invoke", &format!("{cmd} failed: {detail}"), "warning");
+    }
+    result
 }
 
 /// Invoke a command whose arguments are an args object, taking ownership so the

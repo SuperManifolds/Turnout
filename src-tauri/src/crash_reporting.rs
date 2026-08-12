@@ -24,6 +24,18 @@ const CRASH_REPORTING_KEY: &str = "crash_reporting";
 /// Settings key holding the preferred GPU adapter, attached to events as a tag.
 const GPU_ADAPTER_KEY: &str = "gpu_adapter";
 
+/// Settings key holding the app version last seen on disk. Compared against the
+/// running version at startup to tell a fresh install from an in-place update.
+const LAST_VERSION_KEY: &str = "last_seen_version";
+
+/// Settings key holding how many times the app has launched (with reporting on).
+const RUN_COUNT_KEY: &str = "run_count";
+
+/// The running app version (`tauri.conf.json` is kept in sync with this at
+/// release time). `sentry::release_name!` also carries it, but the tags below let
+/// a report be sliced by *transition* — did this crash only start after an update.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The GPU backend mbgl (the ORM renderer) is compiled against — Metal on macOS,
 /// Vulkan elsewhere, matching `maplibre_native`'s default features. Update this if
 /// the crate's backend feature changes.
@@ -172,6 +184,78 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
     });
 }
 
+/// Process start, stamped the first time [`attach_uptime_processor`] runs. Lets
+/// every event carry an `uptime_s` tag, which separates startup crashes (init,
+/// GPU, config) from steady-state ones (leaks, the tile pipeline).
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Tag events with the install/update transition, derived from the version last
+/// seen on disk versus the running one. Read-only: it runs in both the app and
+/// the re-exec'd reporter (before the fork), so native crashes carry it too; the
+/// new version is written once, later, by [`record_launch`] in the app process.
+///
+/// `install_kind` is `fresh` (no prior version — first launch), `updated` (a
+/// different prior version — the prime "did the release do it?" signal, paired
+/// with `updated_from`), or `same`. `run_count` includes the current launch.
+fn attach_release_scope(store: Option<&serde_json::Value>) {
+    let last = store
+        .and_then(|s| s.get(LAST_VERSION_KEY))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let run_count = store
+        .and_then(|s| s.get(RUN_COUNT_KEY))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let install_kind = match last {
+        None => "fresh",
+        Some(v) if v == APP_VERSION => "same",
+        Some(_) => "updated",
+    };
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("install_kind", install_kind);
+        scope.set_tag("run_count", run_count + 1);
+        if install_kind == "updated"
+            && let Some(prev) = last
+        {
+            scope.set_tag("updated_from", prev);
+        }
+    });
+}
+
+/// Add a scope event processor that stamps every outgoing event with seconds
+/// since process start. Covers Rust panics and `error!` events (native minidumps
+/// are uploaded by the reporter process and carry their own timestamps instead).
+fn attach_uptime_processor() {
+    START.get_or_init(std::time::Instant::now);
+    sentry::configure_scope(|scope| {
+        scope.add_event_processor(|mut event| {
+            if let Some(start) = START.get() {
+                event
+                    .tags
+                    .insert("uptime_s".to_string(), start.elapsed().as_secs().to_string());
+            }
+            Some(event)
+        });
+    });
+}
+
+/// Persist the running version and bump the launch counter, so the next startup
+/// can detect an update and report the run count. Uses the Tauri store plugin, so
+/// it must run in the app process **after** that plugin is initialised (the setup
+/// hook), not in [`init`] which predates Tauri. Best-effort: a store failure just
+/// means the next launch sees a slightly stale fingerprint.
+pub fn record_launch(app: &tauri::AppHandle) {
+    use tauri_plugin_store::StoreExt;
+    let Ok(store) = app.store(crate::settings::SETTINGS_STORE) else {
+        return;
+    };
+    let prev = store.get(RUN_COUNT_KEY).and_then(|v| v.as_u64()).unwrap_or(0);
+    store.set(RUN_COUNT_KEY, serde_json::json!(prev + 1));
+    store.set(LAST_VERSION_KEY, serde_json::json!(APP_VERSION));
+    let _ = store.save();
+}
+
 /// Whether the store permits crash reporting. Absent key, absent store, a
 /// non-bool value, or `true` all mean enabled (opt-out, fail-open) so a
 /// first-launch or corrupt-store crash still reports.
@@ -230,6 +314,8 @@ pub fn init() -> Option<sentry::ClientInitGuard> {
     // native-crash events carry it too. Device/OS come free via `contexts`.
     attach_gpu_scope(store.as_ref());
     attach_system_scope();
+    attach_release_scope(store.as_ref());
+    attach_uptime_processor();
     Some(guard)
 }
 

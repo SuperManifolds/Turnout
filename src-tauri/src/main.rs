@@ -119,7 +119,11 @@ async fn prompt_install(app: &tauri::AppHandle, update: tauri_plugin_updater::Up
         return;
     }
 
+    tracing::info!(%version, "installing update");
     if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+        // error! so a failed auto-update surfaces as a Sentry issue, not just a
+        // dialog the user dismisses — update breakage is otherwise invisible.
+        tracing::error!("update to {version} failed: {e}");
         app.dialog().message(format!("Update failed: {e}")).title("Update Error").blocking_show();
         return;
     }
@@ -292,6 +296,9 @@ fn main() {
         .setup(|app| {
             setup_menu(app.handle())?;
             setup_tray(app.handle())?;
+            // Persist this launch's version + run count for the next startup's
+            // install/update fingerprint (see crash_reporting::attach_release_scope).
+            crash_reporting::record_launch(app.handle());
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
             // Restore persisted overlays synchronously here, before the Apple-token
@@ -305,6 +312,7 @@ fn main() {
             let orm_availability = orm_tiles::OrmAvailability::default();
             match orm_tiles::start_blocking() {
                 Ok(h) => {
+                    tracing::info!("ORM tile server started");
                     let base = settings::resolve_orm_base(settings::load(app.handle()).orm_base_url.as_deref());
                     if base != settings::DEFAULT_ORM_BASE {
                         h.set_base_url(base);
