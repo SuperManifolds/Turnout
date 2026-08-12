@@ -33,7 +33,7 @@ lru = "0.12"
 quick-xml = "0.37"
 tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
-maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "58fa28a", features = ["json", "tokio"] }
+maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "463ff19", features = ["json", "tokio"] }
 mvt = "0.13.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -42,6 +42,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # (native crash capture) and injects @sentry/browser into the webview.
 sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "reqwest", "rustls", "release-health", "tracing", "logs"] }
 tauri-plugin-sentry = "0.5"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk"] }
+
+# Read the Vulkan driver (ICD) and implicit-layer registry for crash diagnostics.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

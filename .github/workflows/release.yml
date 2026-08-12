@@ -53,7 +53,9 @@ jobs:
             args: ""
             rust_target: ""
           - platform: windows
-            runner: windows-latest
+            # Pinned off windows-latest: its VS18/CMake 4.4 image breaks mbgl's
+            # vendored-vcpkg bootstrap. See the note in ci.yml.
+            runner: windows-2022
             args: ""
             rust_target: ""
 
@@ -86,6 +88,21 @@ jobs:
           key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
+
+      # Cache vcpkg's package source downloads on a rev-independent key so an mbgl
+      # bump (which changes the cargo-cache key above) doesn't force a full
+      # re-download through the flaky vendored-vcpkg path. See ci.yml.
+      - name: Set vcpkg downloads dir (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: echo "VCPKG_DOWNLOADS=$GITHUB_WORKSPACE/vcpkg-downloads" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg downloads (Windows)
+        if: matrix.platform == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-downloads
+          key: ${{ runner.os }}-vcpkg-downloads-v1
 
       - name: Install system dependencies (Linux)
         if: startsWith(matrix.platform, 'linux')

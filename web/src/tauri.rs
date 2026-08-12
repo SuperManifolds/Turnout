@@ -685,6 +685,11 @@ pub async fn get_orm_port() -> Result<u16, String> {
     result.as_f64().map(|v| v as u16).ok_or_else(|| "unexpected response".into())
 }
 
+/// The reason ORM (rail overlay) rendering is disabled, or `None` when running.
+pub async fn orm_disabled_reason() -> Option<String> {
+    invoke("orm_disabled_reason", &JsValue::NULL).await.ok().and_then(|v| v.as_string())
+}
+
 pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {
     let args = js_sys::Object::new();
     match dir {

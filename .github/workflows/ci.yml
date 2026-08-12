@@ -123,7 +123,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest, windows-latest]
+        # Pinned to windows-2022: the windows-latest image (VS18 / CMake 4.4,
+        # rolled out ~2026-08) breaks maplibre-native's vendored-vcpkg bootstrap
+        # ("Downloading vcpkg.exe failed / Access is denied"), failing the mbgl
+        # C++ build before CURL is found. windows-2022 has the toolchain mbgl's
+        # vcpkg build expects.
+        os: [ubuntu-22.04, macos-latest, windows-2022]
     env:
       RUST_BACKTRACE: 1
     steps:
@@ -180,6 +185,23 @@ jobs:
           key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
+
+      # Point vcpkg's downloads at a stable path and cache it on a rev-independent
+      # key, so the package source tarballs (curl, ICU, ...) survive an mbgl rev
+      # bump — which changes the cargo-cache key above and would otherwise force a
+      # full re-download of every source through the flaky vendored-vcpkg path. The
+      # fork's Get-VendorPackages retry covers a cold-cache/bootstrap blip.
+      - name: Set vcpkg downloads dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "VCPKG_DOWNLOADS=$GITHUB_WORKSPACE/vcpkg-downloads" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg downloads (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-downloads
+          key: ${{ runner.os }}-vcpkg-downloads-v1
 
       # turnout-web is a wasm-only frontend crate (no host tests); it is
       # exercised by `trunk build` in the release workflow.

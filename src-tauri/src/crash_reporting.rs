@@ -24,6 +24,154 @@ const CRASH_REPORTING_KEY: &str = "crash_reporting";
 /// Settings key holding the preferred GPU adapter, attached to events as a tag.
 const GPU_ADAPTER_KEY: &str = "gpu_adapter";
 
+/// The GPU backend mbgl (the ORM renderer) is compiled against — Metal on macOS,
+/// Vulkan elsewhere, matching `maplibre_native`'s default features. Update this if
+/// the crate's backend feature changes.
+#[cfg(target_os = "macos")]
+const RENDER_BACKEND: &str = "metal";
+#[cfg(not(target_os = "macos"))]
+const RENDER_BACKEND: &str = "vulkan";
+
+/// Attach the machine's GPU details and the render backend to the Sentry scope, so
+/// every event — including native minidumps — records what hardware is present and
+/// which backend mbgl is trying to use. No adapter (`gpu = "none"`) is itself the
+/// signal for the Vulkan-init crash. Runs before the minidump fork so native
+/// crashes carry it.
+/// Attach system resources to the Sentry scope: RAM, CPU, and free disk space.
+/// Low disk (a near-full drive) and low RAM cause a wide range of otherwise
+/// baffling failures — including graphics/driver init — so this helps far beyond
+/// the GPU case. Runs before the minidump fork so native crashes carry it.
+fn attach_system_scope() {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+
+    let bytes_to_mb = |b: u64| b / (1024 * 1024);
+    let cpu = sys.cpus().first().map(|c| c.brand().trim().to_string()).filter(|s| !s.is_empty());
+
+    // Free space on the drive holding our tile cache (writing there fails when
+    // it's full) and the smallest free across all drives (a near-full system).
+    let cache_dir = dirs_next::cache_dir();
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let (mut min_free, mut cache_free, mut best_prefix) = (None::<u64>, None::<u64>, 0usize);
+    for disk in disks.list() {
+        let free = disk.available_space();
+        min_free = Some(min_free.map_or(free, |m: u64| m.min(free)));
+        let mount = disk.mount_point();
+        if let Some(dir) = &cache_dir
+            && dir.starts_with(mount)
+            && mount.as_os_str().len() >= best_prefix
+        {
+            best_prefix = mount.as_os_str().len();
+            cache_free = Some(free);
+        }
+    }
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("ram_total_mb", bytes_to_mb(sys.total_memory()));
+        scope.set_tag("ram_available_mb", bytes_to_mb(sys.available_memory()));
+        scope.set_tag("cpu_logical", sys.cpus().len());
+        if let Some(cpu) = &cpu {
+            scope.set_tag("cpu", cpu.as_str());
+        }
+        if let Some(physical) = sysinfo::System::physical_core_count() {
+            scope.set_tag("cpu_physical", physical);
+        }
+        if let Some(free) = cache_free {
+            scope.set_tag("disk_free_mb", bytes_to_mb(free));
+        }
+        if let Some(free) = min_free {
+            scope.set_tag("disk_min_free_mb", bytes_to_mb(free));
+        }
+    });
+}
+
+fn attach_gpu_scope(store: Option<&serde_json::Value>) {
+    let gpus = crate::gpu::list_gpus();
+    let primary = gpus.first();
+
+    // The adapter the user pinned in Settings, and (resolved from the live list)
+    // the backend it renders through.
+    let selected = store
+        .and_then(|s| s.get(GPU_ADAPTER_KEY))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let selected_backend = selected
+        .and_then(|name| gpus.iter().find(|g| g.name == name))
+        .map(|g| g.backend.clone());
+
+    // Whether the backend mbgl actually renders with is usable. This is the
+    // decisive tag: a machine can list a GPU via DX12 (in `gpu` below) while its
+    // Vulkan runtime is missing/broken — the exact case that crashes mbgl. macOS
+    // (Metal) is always ok.
+    let render_ok = if RENDER_BACKEND == "metal" {
+        gpus.iter().any(|g| g.backend == "Metal")
+    } else {
+        gpus.iter().any(|g| g.backend == "Vulkan")
+    };
+
+    // The precise state of the Vulkan loader mbgl loads (missing / broken / ok)
+    // and the path that resolves — distinguishes a shadowing `vulkan-1.dll`.
+    let loader = crate::vulkan::probe_loader();
+
+    // Registered Vulkan drivers (ICDs) and implicit layers: no ICD explains "no
+    // Vulkan" on capable hardware; a stale/broken implicit layer explains a crash.
+    let (icds, layers) = crate::vulkan::registry_summary();
+
+    // Every adapter, so a hybrid (e.g. NVIDIA dGPU + AMD iGPU) laptop is visible.
+    let all_gpus = gpus
+        .iter()
+        .map(|g| format!("{} [{}/{}]", g.name, g.backend, g.kind))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    // A remote-desktop session has no real display adapter (a common no-Vulkan
+    // cause). Windows sets SESSIONNAME to `RDP-Tcp#N` under RDP, `Console` locally.
+    let remote_session = std::env::var("SESSIONNAME").is_ok_and(|s| s.starts_with("RDP-"));
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("render_backend", RENDER_BACKEND);
+        scope.set_tag("render_backend_ok", if render_ok { "yes" } else { "no" });
+        scope.set_tag("vulkan_loader", loader.tag());
+        if let Some(path) = &loader.path {
+            scope.set_tag("vulkan_loader_path", path.as_str());
+        }
+        scope.set_tag("vulkan_icds", if icds.is_empty() { "none".to_string() } else { icds.join(",") });
+        if !layers.is_empty() {
+            scope.set_tag("vulkan_layers", layers.join(","));
+        }
+        scope.set_tag("remote_session", if remote_session { "yes" } else { "no" });
+        if !all_gpus.is_empty() {
+            scope.set_tag("gpus", all_gpus.as_str());
+        }
+        scope.set_tag("gpu", primary.map_or("none", |g| g.name.as_str()));
+        scope.set_tag(
+            "gpu_backend",
+            primary.map_or("none", |g| g.backend.as_str()),
+        );
+        scope.set_tag("gpu_type", primary.map_or("none", |g| g.kind.as_str()));
+        scope.set_tag("gpu_count", gpus.len());
+        if let Some(name) = selected {
+            scope.set_tag("gpu_adapter", name);
+        }
+        if let Some(backend) = &selected_backend {
+            scope.set_tag("gpu_selected_backend", backend.as_str());
+        }
+        if let Some(g) = primary {
+            scope.set_context(
+                "gpu",
+                sentry::protocol::GpuContext {
+                    name: g.name.clone(),
+                    api_type: Some(g.backend.clone()),
+                    vendor_name: g.vendor.clone(),
+                    driver_version: g.driver.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+    });
+}
+
 /// Whether the store permits crash reporting. Absent key, absent store, a
 /// non-bool value, or `true` all mean enabled (opt-out, fail-open) so a
 /// first-launch or corrupt-store crash still reports.
@@ -76,17 +224,12 @@ pub fn init() -> Option<sentry::ClientInitGuard> {
             ..Default::default()
         },
     ));
-    // Tag the chosen GPU so render/startup crashes can be sliced by adapter — a
-    // prime suspect. Set before `minidump::init` forks (both processes run this),
-    // so native-crash events carry it too. Device/OS come free via `contexts`.
-    if let Some(gpu) = store
-        .as_ref()
-        .and_then(|s| s.get(GPU_ADAPTER_KEY))
-        .and_then(serde_json::Value::as_str)
-        .filter(|gpu| !gpu.is_empty())
-    {
-        sentry::configure_scope(|scope| scope.set_tag("gpu_adapter", gpu));
-    }
+    // Attach GPU details so render/startup crashes can be sliced by hardware — the
+    // prime suspect (the mbgl Vulkan-init crash happens precisely when no adapter
+    // is found). Set before `minidump::init` forks (both processes run this), so
+    // native-crash events carry it too. Device/OS come free via `contexts`.
+    attach_gpu_scope(store.as_ref());
+    attach_system_scope();
     Some(guard)
 }
 

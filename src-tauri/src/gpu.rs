@@ -23,6 +23,30 @@ pub struct GpuInfo {
     /// True for adapter types that are (or may be) a software rasterizer rather
     /// than a real GPU — see [`is_software_type`].
     pub is_software: bool,
+    /// Vendor name resolved from the PCI id (`NVIDIA` / `AMD` / `Intel` / …), when
+    /// recognised. Useful in crash reports to spot driver-family issues.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// Driver name/version string the backend reports, when non-empty — often the
+    /// real culprit in GPU crashes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+}
+
+/// Human vendor name for a PCI vendor id (Vulkan reports the same ids).
+fn vendor_name(id: u32) -> Option<String> {
+    let name = match id {
+        0x10DE => "NVIDIA",
+        0x1002 | 0x1022 => "AMD",
+        0x8086 => "Intel",
+        0x1414 => "Microsoft", // WARP / Basic Render Driver
+        0x106B => "Apple",
+        0x13B5 => "ARM",
+        0x5143 => "Qualcomm",
+        0x1010 => "ImgTec",
+        _ => return None,
+    };
+    Some(name.to_string())
 }
 
 /// Whether an adapter type is a software rasterizer rather than real hardware.
@@ -34,11 +58,13 @@ fn is_software_type(t: wgpu::DeviceType) -> bool {
     matches!(t, wgpu::DeviceType::Cpu | wgpu::DeviceType::Other)
 }
 
-fn instance() -> wgpu::Instance {
-    // PRIMARY = Vulkan / Metal / DX12 — the hardware-backed APIs. GL (a common
-    // software-fallback path) is deliberately excluded.
+fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+    // Callers pass PRIMARY (Vulkan / Metal / DX12 — the hardware-backed APIs, GL
+    // deliberately excluded) to enumerate all adapters, or VULKAN alone to probe
+    // mbgl's actual render backend. `InstanceDescriptor` has no `Default` in
+    // wgpu 29, so every field is set explicitly.
     wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
+        backends,
         flags: wgpu::InstanceFlags::default(),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         backend_options: wgpu::BackendOptions::default(),
@@ -80,9 +106,33 @@ fn backend_rank(b: wgpu::Backend) -> u8 {
     }
 }
 
+/// Whether the GPU backend the ORM renderer (mbgl) will use is actually present.
+///
+/// mbgl uses Metal on macOS (always available) and **Vulkan** everywhere else. On a
+/// machine with no Vulkan-capable device, mbgl's Vulkan init dereferences a null
+/// loader (`vk::DispatchLoaderDynamic::init`) and takes the whole process down with
+/// an uncatchable C++ access violation — it offers no fallible path. `wgpu`, by
+/// contrast, enumerates the same devices and simply returns an empty list when
+/// Vulkan is unavailable, so we probe with it first and let the caller skip ORM
+/// rendering (rather than crash) when nothing turns up. A software Vulkan (lavapipe)
+/// still counts — mbgl runs on it, slowly, without crashing.
+#[must_use]
+pub fn render_backend_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let instance = instance(wgpu::Backends::VULKAN);
+        !block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN)).is_empty()
+    }
+}
+
 /// Every adapter the primary backends expose, de-duplicated, best-hardware-first.
 pub fn list_gpus() -> Vec<GpuInfo> {
-    let adapters = block_on(instance().enumerate_adapters(wgpu::Backends::PRIMARY));
+    let adapters =
+        block_on(instance(wgpu::Backends::PRIMARY).enumerate_adapters(wgpu::Backends::PRIMARY));
     if adapters.is_empty() {
         tracing::warn!(
             "no GPU adapters enumerated (Vulkan/Metal/DX12); ORM rendering may fall back to software"
@@ -92,6 +142,16 @@ pub fn list_gpus() -> Vec<GpuInfo> {
         .iter()
         .map(|a| {
             let info = a.get_info();
+            let driver = {
+                let di = info.driver_info.trim();
+                let d = if di.is_empty() {
+                    info.driver.trim()
+                } else {
+                    di
+                };
+                (!d.is_empty()).then(|| d.to_string())
+            };
+            let vendor = vendor_name(info.vendor);
             (
                 rank(info.device_type),
                 backend_rank(info.backend),
@@ -100,6 +160,8 @@ pub fn list_gpus() -> Vec<GpuInfo> {
                     backend: format!("{:?}", info.backend),
                     kind: kind_str(info.device_type).to_string(),
                     is_software: is_software_type(info.device_type),
+                    vendor,
+                    driver,
                 },
             )
         })
@@ -176,6 +238,8 @@ mod tests {
             backend: "Vulkan".into(),
             kind: "x".into(),
             is_software: false,
+            vendor: None,
+            driver: None,
         };
         // Deliberately unsorted input; sort_best_first must order lowest-rank first.
         let ranked = vec![
@@ -199,12 +263,21 @@ mod tests {
     }
 
     #[test]
+    fn render_backend_probe_never_panics() {
+        // The probe must fail gracefully on any machine — that is the whole point
+        // (it stands in for mbgl's Vulkan init, which does not).
+        let _ = super::render_backend_available();
+    }
+
+    #[test]
     fn dedupe_collapses_multi_backend_devices_keeping_preferred() {
         let g = |name: &str, backend: &str| super::GpuInfo {
             name: name.into(),
             backend: backend.into(),
             kind: "discrete".into(),
             is_software: false,
+            vendor: None,
+            driver: None,
         };
         // The Windows case: one GPU under Vulkan (backend_rank 0) and DX12
         // (backend_rank 2), plus a distinct second GPU. DX12 comes first to prove
