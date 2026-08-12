@@ -37,6 +37,55 @@ const RENDER_BACKEND: &str = "vulkan";
 /// which backend mbgl is trying to use. No adapter (`gpu = "none"`) is itself the
 /// signal for the Vulkan-init crash. Runs before the minidump fork so native
 /// crashes carry it.
+/// Attach system resources to the Sentry scope: RAM, CPU, and free disk space.
+/// Low disk (a near-full drive) and low RAM cause a wide range of otherwise
+/// baffling failures — including graphics/driver init — so this helps far beyond
+/// the GPU case. Runs before the minidump fork so native crashes carry it.
+fn attach_system_scope() {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+
+    let bytes_to_mb = |b: u64| b / (1024 * 1024);
+    let cpu = sys.cpus().first().map(|c| c.brand().trim().to_string()).filter(|s| !s.is_empty());
+
+    // Free space on the drive holding our tile cache (writing there fails when
+    // it's full) and the smallest free across all drives (a near-full system).
+    let cache_dir = dirs_next::cache_dir();
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let (mut min_free, mut cache_free, mut best_prefix) = (None::<u64>, None::<u64>, 0usize);
+    for disk in disks.list() {
+        let free = disk.available_space();
+        min_free = Some(min_free.map_or(free, |m: u64| m.min(free)));
+        let mount = disk.mount_point();
+        if let Some(dir) = &cache_dir
+            && dir.starts_with(mount)
+            && mount.as_os_str().len() >= best_prefix
+        {
+            best_prefix = mount.as_os_str().len();
+            cache_free = Some(free);
+        }
+    }
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("ram_total_mb", bytes_to_mb(sys.total_memory()));
+        scope.set_tag("ram_available_mb", bytes_to_mb(sys.available_memory()));
+        scope.set_tag("cpu_logical", sys.cpus().len());
+        if let Some(cpu) = &cpu {
+            scope.set_tag("cpu", cpu.as_str());
+        }
+        if let Some(physical) = sysinfo::System::physical_core_count() {
+            scope.set_tag("cpu_physical", physical);
+        }
+        if let Some(free) = cache_free {
+            scope.set_tag("disk_free_mb", bytes_to_mb(free));
+        }
+        if let Some(free) = min_free {
+            scope.set_tag("disk_min_free_mb", bytes_to_mb(free));
+        }
+    });
+}
+
 fn attach_gpu_scope(store: Option<&serde_json::Value>) {
     let gpus = crate::gpu::list_gpus();
     let primary = gpus.first();
@@ -174,6 +223,7 @@ pub fn init() -> Option<sentry::ClientInitGuard> {
     // is found). Set before `minidump::init` forks (both processes run this), so
     // native-crash events carry it too. Device/OS come free via `contexts`.
     attach_gpu_scope(store.as_ref());
+    attach_system_scope();
     Some(guard)
 }
 

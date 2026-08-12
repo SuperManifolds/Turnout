@@ -42,6 +42,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # (native crash capture) and injects @sentry/browser into the webview.
 sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "reqwest", "rustls", "release-health", "tracing", "logs"] }
 tauri-plugin-sentry = "0.5"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
