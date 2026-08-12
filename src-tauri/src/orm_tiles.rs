@@ -237,6 +237,30 @@ impl OrmHandle {
     }
 }
 
+/// Whether ORM tile rendering started, and if not, why — so the UI can tell the
+/// user the rail overlay is unavailable (e.g. no working Vulkan runtime) instead
+/// of it silently never appearing.
+#[derive(Default)]
+pub struct OrmAvailability(std::sync::Mutex<Option<String>>);
+
+impl OrmAvailability {
+    pub fn set_disabled(&self, reason: String) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+    }
+
+    fn reason(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+}
+
+/// The reason ORM rendering is disabled, or `None` when it is running.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn orm_disabled_reason(app: tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    app.try_state::<OrmAvailability>().and_then(|s| s.reason())
+}
+
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
     // mbgl's Vulkan backend crashes the whole process (an uncatchable C++ access
     // violation in `vk::DispatchLoaderDynamic::init`) when the Vulkan loader is

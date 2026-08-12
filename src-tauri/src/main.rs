@@ -302,6 +302,7 @@ fn main() {
             app.manage(mbtiles::DownloadState::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(check_for_updates_on_startup(handle));
+            let orm_availability = orm_tiles::OrmAvailability::default();
             match orm_tiles::start_blocking() {
                 Ok(h) => {
                     let base = settings::resolve_orm_base(settings::load(app.handle()).orm_base_url.as_deref());
@@ -310,8 +311,12 @@ fn main() {
                     }
                     app.manage(h);
                 }
-                Err(e) => tracing::error!("ORM tiles failed: {e}"),
+                Err(e) => {
+                    tracing::error!("ORM tiles failed: {e}");
+                    orm_availability.set_disabled(e.to_string());
+                }
             }
+            app.manage(orm_availability);
             app.manage(apple_token::AppleRefresh::new());
             apple_token::spawn_auto_refresh(app.handle().clone());
             app.manage(vector_tiles::VectorLayerState::default());
@@ -390,6 +395,7 @@ fn main() {
             orm_offline::download_orm_tiles,
             orm_tiles::set_orm_offline,
             orm_tiles::get_orm_port,
+            orm_tiles::orm_disabled_reason,
             vector_tiles::start_orm_vector_layers,
             vector_tiles::stop_orm_vector_layers,
             vector_tiles::open_workshop_mod,

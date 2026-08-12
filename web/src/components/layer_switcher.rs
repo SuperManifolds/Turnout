@@ -1,4 +1,7 @@
-use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, SignalSet, CollectView, SignalGet};
+use leptos::{
+    component, create_signal, spawn_local, view, wasm_bindgen, CollectView, IntoView, ReadSignal,
+    Show, SignalGet, SignalSet, WriteSignal,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -31,7 +34,20 @@ pub fn LayerSwitcher(
         }
     };
 
+    // When ORM rendering couldn't start (e.g. no working Vulkan runtime), tell the
+    // user why the rail overlay does nothing rather than leaving it silently blank.
+    let (disabled_reason, set_disabled_reason) = create_signal::<Option<String>>(None);
+    spawn_local(async move {
+        set_disabled_reason.set(crate::tauri::orm_disabled_reason().await);
+    });
+
     view! {
+        <Show when=move || disabled_reason.get().is_some()>
+            <p id="orm-unavailable" title=move || disabled_reason.get().unwrap_or_default()>
+                "Rail overlay unavailable — no working Vulkan runtime on this system. "
+                "Update or reinstall your graphics drivers."
+            </p>
+        </Show>
         <nav id="layer-switcher">
             {ORM_STYLES.iter().map(|&(id, label)| {
                 let id_active = id.to_string();
