@@ -198,6 +198,16 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
         .get("apple_auto_refresh")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    // Breadcrumb a GPU-adapter change: it re-points mbgl's render device (applied
+    // on the next launch), so it's prime context for a subsequent render crash.
+    let gpu_was = store.get("gpu_adapter").and_then(|v| v.as_str().map(String::from));
+    if gpu_was.as_deref() != settings.gpu_adapter.as_deref() {
+        tracing::info!(
+            from = gpu_was.as_deref().unwrap_or("auto"),
+            to = settings.gpu_adapter.as_deref().unwrap_or("auto"),
+            "GPU adapter changed",
+        );
+    }
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
     store.set("check_for_updates", serde_json::json!(settings.network.check_for_updates));
     store.set("map_theme", serde_json::json!(settings.map_theme));

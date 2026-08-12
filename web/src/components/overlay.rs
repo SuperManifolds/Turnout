@@ -297,6 +297,9 @@ pub fn OverlayDrawer(
     let on_toggle_orm = move |_| {
         let visible = !orm_visible.get();
         set_orm_visible.set(visible);
+        // Breadcrumb: the rail overlay drives the maplibre GPU renderer, so its
+        // toggle is prime context for a render/GPU crash report.
+        tauri::breadcrumb("ui", if visible { "ORM overlay shown" } else { "ORM overlay hidden" });
         if visible {
             map_set_orm_style(&orm_style.get());
         } else {
