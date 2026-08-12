@@ -239,9 +239,20 @@ impl OrmHandle {
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
     // mbgl's Vulkan backend crashes the whole process (an uncatchable C++ access
-    // violation in `vk::DispatchLoaderDynamic::init`) on machines with no
-    // Vulkan-capable GPU. Probe with wgpu — which fails gracefully — and bail out
-    // so the app runs without ORM rendering instead of crashing a render worker.
+    // violation in `vk::DispatchLoaderDynamic::init`) when the Vulkan loader is
+    // missing/broken or no Vulkan device exists. Predict both failures safely and
+    // bail out so the app runs without ORM rendering instead of crashing a worker:
+    //   1. Replicate mbgl's exact loader load and check it exposes the entry point.
+    //   2. Confirm wgpu can enumerate a Vulkan adapter (a usable device).
+    let loader = crate::vulkan::probe_loader();
+    if !loader.usable() {
+        return Err(format!(
+            "Vulkan loader {} ({}); ORM tile rendering disabled",
+            loader.tag(),
+            loader.path.as_deref().unwrap_or("no path")
+        )
+        .into());
+    }
     if !crate::gpu::render_backend_available() {
         return Err("no Vulkan-capable GPU found; ORM tile rendering disabled".into());
     }

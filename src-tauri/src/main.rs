@@ -19,6 +19,7 @@ mod server_core;
 mod settings;
 mod tile_server;
 mod vector_tiles;
+mod vulkan;
 mod wms;
 mod wmts;
 

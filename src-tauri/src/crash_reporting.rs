@@ -61,9 +61,34 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
         gpus.iter().any(|g| g.backend == "Vulkan")
     };
 
+    // The precise state of the Vulkan loader mbgl loads (missing / broken / ok)
+    // and the path that resolves — distinguishes a shadowing `vulkan-1.dll`.
+    let loader = crate::vulkan::probe_loader();
+
+    // Every adapter, so a hybrid (e.g. NVIDIA dGPU + AMD iGPU) laptop is visible.
+    let all_gpus = gpus
+        .iter()
+        .map(|g| format!("{} [{}/{}]", g.name, g.backend, g.kind))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    // A remote-desktop session has no real display adapter (a common no-Vulkan
+    // cause). Windows sets SESSIONNAME to `RDP-Tcp#N` under RDP, `Console` locally.
+    let remote_session = std::env::var("SESSIONNAME")
+        .map(|s| s.starts_with("RDP-"))
+        .unwrap_or(false);
+
     sentry::configure_scope(|scope| {
         scope.set_tag("render_backend", RENDER_BACKEND);
         scope.set_tag("render_backend_ok", if render_ok { "yes" } else { "no" });
+        scope.set_tag("vulkan_loader", loader.tag());
+        if let Some(path) = &loader.path {
+            scope.set_tag("vulkan_loader_path", path.as_str());
+        }
+        scope.set_tag("remote_session", if remote_session { "yes" } else { "no" });
+        if !all_gpus.is_empty() {
+            scope.set_tag("gpus", all_gpus.as_str());
+        }
         scope.set_tag("gpu", primary.map_or("none", |g| g.name.as_str()));
         scope.set_tag(
             "gpu_backend",
