@@ -3837,29 +3837,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "maplibre_native"
-version = "0.8.4"
-source = "git+https://github.com/SuperManifolds/maplibre-native-rs?rev=58fa28a#58fa28a401c5ab2595399492308b9070e30826f6"
-dependencies = [
- "cmake",
- "cxx",
- "cxx-build",
- "downloader",
- "flate2",
- "geojson",
- "image",
- "log",
- "serde_json",
- "tar",
- "thiserror 2.0.19",
- "tokio",
- "toml 1.1.3+spec-1.1.0",
- "url",
- "vcpkg",
- "walkdir",
-]
-
-[[package]]
 name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4676,7 +4653,7 @@ dependencies = [
 name = "orm-bench"
 version = "0.0.0"
 dependencies = [
- "maplibre_native 0.8.4 (git+https://github.com/SuperManifolds/maplibre-native-rs?rev=58fa28a)",
+ "maplibre_native",
  "serde_json",
 ]
 
@@ -7889,7 +7866,7 @@ dependencies = [
  "futures",
  "image",
  "lru",
- "maplibre_native 0.8.4 (git+https://github.com/SuperManifolds/maplibre-native-rs?rev=0986089)",
+ "maplibre_native",
  "mvt",
  "notify",
  "quick-xml 0.37.5",

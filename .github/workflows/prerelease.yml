@@ -69,7 +69,9 @@ jobs:
           - platform: linux-x86
             runner: ubuntu-22.04
           - platform: windows
-            runner: windows-latest
+            # Pinned off windows-latest: its VS18/CMake 4.4 image breaks mbgl's
+            # vendored-vcpkg bootstrap. See the note in ci.yml.
+            runner: windows-2022
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4

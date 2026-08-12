@@ -53,7 +53,9 @@ jobs:
             args: ""
             rust_target: ""
           - platform: windows
-            runner: windows-latest
+            # Pinned off windows-latest: its VS18/CMake 4.4 image breaks mbgl's
+            # vendored-vcpkg bootstrap. See the note in ci.yml.
+            runner: windows-2022
             args: ""
             rust_target: ""
 

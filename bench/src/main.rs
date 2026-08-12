@@ -62,7 +62,8 @@ fn bench_style(style: &str, tiles: &[(u8, u32, u32)]) -> (f64, f64, f64) {
     let mut renderer = ImageRendererBuilder::new()
         .with_size(size, size)
         .with_resource_options(opts)
-        .build_tile_renderer();
+        .build_tile_renderer()
+        .expect("failed to build tile renderer (no working GPU/Vulkan backend)");
     renderer.load_style_from_json_str(style);
 
     for _ in 0..WARMUP_PASSES {
@@ -103,7 +104,10 @@ fn main() {
     // compilation happens once during warmup and the timed frames measure pure
     // steady-state rendering, like the app's long-lived per-style renderers.
     if let Ok(n) = std::env::var("BENCH_LAYERS").map(|s| s.parse::<usize>().unwrap_or(1)) {
-        let secs: u64 = std::env::var("BENCH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
+        let secs: u64 = std::env::var("BENCH_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(12);
         let (style, actual) = style_with_layers(n);
         let size = NonZeroU32::new(TILE_SIZE).expect("nonzero tile size");
         let opts = ResourceOptions::default()
@@ -112,7 +116,8 @@ fn main() {
         let mut renderer = ImageRendererBuilder::new()
             .with_size(size, size)
             .with_resource_options(opts)
-            .build_tile_renderer();
+            .build_tile_renderer()
+            .expect("failed to build tile renderer (no working GPU/Vulkan backend)");
         renderer.load_style_from_json_str(&style);
 
         for _ in 0..WARMUP_PASSES {
