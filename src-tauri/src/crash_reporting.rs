@@ -51,8 +51,19 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
         .and_then(|name| gpus.iter().find(|g| g.name == name))
         .map(|g| g.backend.clone());
 
+    // Whether the backend mbgl actually renders with is usable. This is the
+    // decisive tag: a machine can list a GPU via DX12 (in `gpu` below) while its
+    // Vulkan runtime is missing/broken — the exact case that crashes mbgl. macOS
+    // (Metal) is always ok.
+    let render_ok = if RENDER_BACKEND == "metal" {
+        gpus.iter().any(|g| g.backend == "Metal")
+    } else {
+        gpus.iter().any(|g| g.backend == "Vulkan")
+    };
+
     sentry::configure_scope(|scope| {
         scope.set_tag("render_backend", RENDER_BACKEND);
+        scope.set_tag("render_backend_ok", if render_ok { "yes" } else { "no" });
         scope.set_tag("gpu", primary.map_or("none", |g| g.name.as_str()));
         scope.set_tag(
             "gpu_backend",
