@@ -24,6 +24,63 @@ const CRASH_REPORTING_KEY: &str = "crash_reporting";
 /// Settings key holding the preferred GPU adapter, attached to events as a tag.
 const GPU_ADAPTER_KEY: &str = "gpu_adapter";
 
+/// The GPU backend mbgl (the ORM renderer) is compiled against — Metal on macOS,
+/// Vulkan elsewhere, matching `maplibre_native`'s default features. Update this if
+/// the crate's backend feature changes.
+#[cfg(target_os = "macos")]
+const RENDER_BACKEND: &str = "metal";
+#[cfg(not(target_os = "macos"))]
+const RENDER_BACKEND: &str = "vulkan";
+
+/// Attach the machine's GPU details and the render backend to the Sentry scope, so
+/// every event — including native minidumps — records what hardware is present and
+/// which backend mbgl is trying to use. No adapter (`gpu = "none"`) is itself the
+/// signal for the Vulkan-init crash. Runs before the minidump fork so native
+/// crashes carry it.
+fn attach_gpu_scope(store: Option<&serde_json::Value>) {
+    let gpus = crate::gpu::list_gpus();
+    let primary = gpus.first();
+
+    // The adapter the user pinned in Settings, and (resolved from the live list)
+    // the backend it renders through.
+    let selected = store
+        .and_then(|s| s.get(GPU_ADAPTER_KEY))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let selected_backend = selected
+        .and_then(|name| gpus.iter().find(|g| g.name == name))
+        .map(|g| g.backend.clone());
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("render_backend", RENDER_BACKEND);
+        scope.set_tag("gpu", primary.map_or("none", |g| g.name.as_str()));
+        scope.set_tag(
+            "gpu_backend",
+            primary.map_or("none", |g| g.backend.as_str()),
+        );
+        scope.set_tag("gpu_type", primary.map_or("none", |g| g.kind.as_str()));
+        scope.set_tag("gpu_count", gpus.len());
+        if let Some(name) = selected {
+            scope.set_tag("gpu_adapter", name);
+        }
+        if let Some(backend) = &selected_backend {
+            scope.set_tag("gpu_selected_backend", backend.as_str());
+        }
+        if let Some(g) = primary {
+            scope.set_context(
+                "gpu",
+                sentry::protocol::GpuContext {
+                    name: g.name.clone(),
+                    api_type: Some(g.backend.clone()),
+                    vendor_name: g.vendor.clone(),
+                    driver_version: g.driver.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+    });
+}
+
 /// Whether the store permits crash reporting. Absent key, absent store, a
 /// non-bool value, or `true` all mean enabled (opt-out, fail-open) so a
 /// first-launch or corrupt-store crash still reports.
@@ -76,17 +133,11 @@ pub fn init() -> Option<sentry::ClientInitGuard> {
             ..Default::default()
         },
     ));
-    // Tag the chosen GPU so render/startup crashes can be sliced by adapter — a
-    // prime suspect. Set before `minidump::init` forks (both processes run this),
-    // so native-crash events carry it too. Device/OS come free via `contexts`.
-    if let Some(gpu) = store
-        .as_ref()
-        .and_then(|s| s.get(GPU_ADAPTER_KEY))
-        .and_then(serde_json::Value::as_str)
-        .filter(|gpu| !gpu.is_empty())
-    {
-        sentry::configure_scope(|scope| scope.set_tag("gpu_adapter", gpu));
-    }
+    // Attach GPU details so render/startup crashes can be sliced by hardware — the
+    // prime suspect (the mbgl Vulkan-init crash happens precisely when no adapter
+    // is found). Set before `minidump::init` forks (both processes run this), so
+    // native-crash events carry it too. Device/OS come free via `contexts`.
+    attach_gpu_scope(store.as_ref());
     Some(guard)
 }
 

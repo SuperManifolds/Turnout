@@ -23,6 +23,30 @@ pub struct GpuInfo {
     /// True for adapter types that are (or may be) a software rasterizer rather
     /// than a real GPU — see [`is_software_type`].
     pub is_software: bool,
+    /// Vendor name resolved from the PCI id (`NVIDIA` / `AMD` / `Intel` / …), when
+    /// recognised. Useful in crash reports to spot driver-family issues.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// Driver name/version string the backend reports, when non-empty — often the
+    /// real culprit in GPU crashes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+}
+
+/// Human vendor name for a PCI vendor id (Vulkan reports the same ids).
+fn vendor_name(id: u32) -> Option<String> {
+    let name = match id {
+        0x10DE => "NVIDIA",
+        0x1002 | 0x1022 => "AMD",
+        0x8086 => "Intel",
+        0x1414 => "Microsoft", // WARP / Basic Render Driver
+        0x106B => "Apple",
+        0x13B5 => "ARM",
+        0x5143 => "Qualcomm",
+        0x1010 => "ImgTec",
+        _ => return None,
+    };
+    Some(name.to_string())
 }
 
 /// Whether an adapter type is a software rasterizer rather than real hardware.
@@ -118,6 +142,16 @@ pub fn list_gpus() -> Vec<GpuInfo> {
         .iter()
         .map(|a| {
             let info = a.get_info();
+            let driver = {
+                let di = info.driver_info.trim();
+                let d = if di.is_empty() {
+                    info.driver.trim()
+                } else {
+                    di
+                };
+                (!d.is_empty()).then(|| d.to_string())
+            };
+            let vendor = vendor_name(info.vendor);
             (
                 rank(info.device_type),
                 backend_rank(info.backend),
@@ -126,6 +160,8 @@ pub fn list_gpus() -> Vec<GpuInfo> {
                     backend: format!("{:?}", info.backend),
                     kind: kind_str(info.device_type).to_string(),
                     is_software: is_software_type(info.device_type),
+                    vendor,
+                    driver,
                 },
             )
         })
@@ -202,6 +238,8 @@ mod tests {
             backend: "Vulkan".into(),
             kind: "x".into(),
             is_software: false,
+            vendor: None,
+            driver: None,
         };
         // Deliberately unsorted input; sort_best_first must order lowest-rank first.
         let ranked = vec![
@@ -238,6 +276,8 @@ mod tests {
             backend: backend.into(),
             kind: "discrete".into(),
             is_software: false,
+            vendor: None,
+            driver: None,
         };
         // The Windows case: one GPU under Vulkan (backend_rank 0) and DX12
         // (backend_rank 2), plus a distinct second GPU. DX12 comes first to prove
