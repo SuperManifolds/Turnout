@@ -127,9 +127,7 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
 
     // A remote-desktop session has no real display adapter (a common no-Vulkan
     // cause). Windows sets SESSIONNAME to `RDP-Tcp#N` under RDP, `Console` locally.
-    let remote_session = std::env::var("SESSIONNAME")
-        .map(|s| s.starts_with("RDP-"))
-        .unwrap_or(false);
+    let remote_session = std::env::var("SESSIONNAME").is_ok_and(|s| s.starts_with("RDP-"));
 
     sentry::configure_scope(|scope| {
         scope.set_tag("render_backend", RENDER_BACKEND);
