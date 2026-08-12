@@ -485,11 +485,10 @@ fn enable_wal(path: &std::path::Path) {
     }
 }
 
-fn build_renderer(
-    cache_path: &std::path::Path,
-    style: &str,
-    shared: &OrmShared,
-) -> maplibre_native::ImageRenderer<maplibre_native::Tile> {
+type RendererResult =
+    Result<maplibre_native::ImageRenderer<maplibre_native::Tile>, Box<dyn std::error::Error + Send + Sync>>;
+
+fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared) -> RendererResult {
     use maplibre_native::{ImageRendererBuilder, ResourceOptions};
     use std::num::NonZeroU32;
 
@@ -497,12 +496,14 @@ fn build_renderer(
     let resource_opts = ResourceOptions::default()
         .with_cache_path(cache_path.to_path_buf())
         .with_maximum_cache_size(MBGL_CACHE_BYTES);
+    // The graphics backend can fail to initialize (no working Vulkan runtime / no
+    // GPU); it now returns an error instead of crashing the process.
     let mut r = ImageRendererBuilder::new()
         .with_size(tile_size, tile_size)
         .with_resource_options(resource_opts)
-        .build_tile_renderer();
+        .build_tile_renderer()?;
     r.load_style_from_json_str(resolve_style_source(style, shared));
-    r
+    Ok(r)
 }
 
 /// Returns the style JSON to load: the on-disk offline variant when offline mode is
@@ -631,18 +632,20 @@ fn refresh_generation(
 
 /// Builds one not-yet-built style renderer (styles in list order, `standard` first)
 /// for the current generation. Returns `false` when every style is already built.
+/// Builds one not-yet-built style. `Ok(true)` warmed one, `Ok(false)` all warm;
+/// `Err` means the graphics backend can't initialize (ORM is unavailable).
 fn warm_one_style(
     renderers: &mut HashMap<Arc<str>, maplibre_native::ImageRenderer<maplibre_native::Tile>>,
     cache_path: &std::path::Path,
     shared: &OrmShared,
-) -> bool {
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     for (name, _) in STYLES {
         if !renderers.contains_key(*name) {
-            renderers.insert(Arc::from(*name), build_renderer(cache_path, name, shared));
-            return true;
+            renderers.insert(Arc::from(*name), build_renderer(cache_path, name, shared)?);
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 fn render_worker_inner(
@@ -671,10 +674,17 @@ fn render_worker_inner(
             k
         } else {
             refresh_generation(&mut renderers, shared, &mut current_gen);
-            if warm_one_style(&mut renderers, cache_path, shared) {
-                continue;
+            match warm_one_style(&mut renderers, cache_path, shared) {
+                Ok(true) => continue,
+                Ok(false) => pop_key_blocking(dispatch),
+                Err(e) => {
+                    // The graphics backend can't initialize; ORM can't render.
+                    // Exit cleanly (no crash, no restart spin) — the worker's
+                    // catch_unwind treats a normal return as a clean shutdown.
+                    tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    return;
+                }
             }
-            pop_key_blocking(dispatch)
         };
         let style = Arc::clone(&key.0);
         let (z, x, y) = (key.1, key.2, key.3);
@@ -711,8 +721,16 @@ fn render_worker_inner(
 
         if !renderers.contains_key(style.as_ref()) {
             tracing::debug!("worker {id} loading style '{style}'");
-            renderers.insert(Arc::clone(&style), build_renderer(cache_path, &style, shared));
-            tracing::debug!("worker {id} style '{style}' loaded");
+            match build_renderer(cache_path, &style, shared) {
+                Ok(r) => {
+                    renderers.insert(Arc::clone(&style), r);
+                    tracing::debug!("worker {id} style '{style}' loaded");
+                }
+                Err(e) => {
+                    tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    return;
+                }
+            }
         }
 
         let (render_z, render_x, render_y) = parent_coords(z, x, y);
