@@ -196,20 +196,64 @@ fn setup_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Maps `tracing` events to Sentry. Follows the default (`error!` → issue,
-/// `warn!`/`info!` → breadcrumb) except for `maplibre_native`: its C++ log
-/// callback surfaces transient tile/sprite fetch failures and optional-Vulkan-
-/// layer notices as `error!`. Those are operational noise, not crashes, so they
-/// stay breadcrumbs — attached as context to a real crash — instead of spawning
-/// a Sentry issue per line, which would bury genuine panics and burn the quota.
-fn sentry_event_filter(
-    metadata: &tracing::Metadata<'_>,
-) -> sentry::integrations::tracing::EventFilter {
-    use sentry::integrations::tracing::{default_event_filter, EventFilter};
-    if metadata.target().starts_with("maplibre_native") {
-        return EventFilter::Breadcrumb;
+/// Dependency log targets that emit transient or benign operational noise — ORM
+/// tile-fetch failures, the absent optional Vulkan validation layer, update-check
+/// network blips — rather than actionable bugs. Their events become Sentry
+/// breadcrumbs (context on a real crash) instead of an issue per line, which would
+/// bury genuine panics and burn the quota.
+const NOISY_LOG_TARGETS: &[&str] = &["maplibre_native", "tauri_plugin_updater"];
+
+fn is_noisy_target(target: &str) -> bool {
+    NOISY_LOG_TARGETS.iter().any(|prefix| target.starts_with(prefix))
+}
+
+/// Pulls the real target out of a `log`-crate record. These reach us via
+/// `tracing-log`, which gives the bridged event a generic `metadata().target()`
+/// of `"log"` and stashes the true target (e.g. `maplibre_native::bridge`) in a
+/// `log.target` field — so a check on the metadata target alone never matches
+/// them. maplibre-native and `tauri_plugin_updater` both log via the `log` crate.
+struct LogTargetVisitor(Option<String>);
+
+impl tracing::field::Visit for LogTargetVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "log.target" {
+            self.0 = Some(value.to_string());
+        }
     }
-    default_event_filter(metadata)
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+}
+
+/// Maps `tracing` events to Sentry. Mirrors the default (`error!` → issue,
+/// `warn!`/`info!` → breadcrumb, lower → ignore), except events from
+/// [`NOISY_LOG_TARGETS`] always become breadcrumbs. A mapper (not an
+/// `event_filter`) is required because the filter only sees `Metadata`, whose
+/// target is `"log"` for the `log`-bridged records these noisy deps actually emit.
+fn sentry_event_mapper<S>(
+    event: &tracing::Event<'_>,
+    _ctx: tracing_subscriber::layer::Context<'_, S>,
+) -> sentry::integrations::tracing::EventMapping
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use sentry::integrations::tracing::{breadcrumb_from_event, event_from_event, EventMapping};
+    use tracing_subscriber::layer::Context;
+
+    let mut visitor = LogTargetVisitor(None);
+    event.record(&mut visitor);
+    let target = visitor.0.as_deref().unwrap_or_else(|| event.metadata().target());
+
+    let no_ctx = None::<&Context<'_, S>>;
+    if is_noisy_target(target) {
+        return EventMapping::Breadcrumb(breadcrumb_from_event(event, no_ctx));
+    }
+    match *event.metadata().level() {
+        tracing::Level::ERROR => EventMapping::Event(event_from_event(event, no_ctx)),
+        tracing::Level::WARN | tracing::Level::INFO => {
+            EventMapping::Breadcrumb(breadcrumb_from_event(event, no_ctx))
+        }
+        tracing::Level::DEBUG | tracing::Level::TRACE => EventMapping::Ignore,
+    }
 }
 
 fn main() {
@@ -224,7 +268,7 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with(tracing_subscriber::fmt::layer())
-        .with(sentry::integrations::tracing::layer().event_filter(sentry_event_filter))
+        .with(sentry::integrations::tracing::layer().event_mapper(sentry_event_mapper))
         .init();
 
     // Work around WebKitGTK EGL crashes on some Linux GPU drivers.
@@ -422,4 +466,26 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             let _ = (&app, &event);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_noisy_target;
+
+    #[test]
+    fn noisy_targets_match_by_prefix() {
+        // The real `log.target` values these deps emit (sub-modules included).
+        assert!(is_noisy_target("maplibre_native::bridge"));
+        assert!(is_noisy_target("maplibre_native"));
+        assert!(is_noisy_target("tauri_plugin_updater::updater"));
+    }
+
+    #[test]
+    fn our_own_and_unknown_targets_are_not_noise() {
+        // Our instrumented errors and the generic bridged target stay issues.
+        assert!(!is_noisy_target("turnout_tauri::orm_tiles"));
+        assert!(!is_noisy_target("turnout_core"));
+        assert!(!is_noisy_target("log"));
+        assert!(!is_noisy_target("reqwest"));
+    }
 }
