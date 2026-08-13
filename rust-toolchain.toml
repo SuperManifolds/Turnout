@@ -10,4 +10,13 @@
 [toolchain]
 channel = "1.97.1"
 components = ["clippy", "rustfmt"]
-targets = ["wasm32-unknown-unknown"]
+# Every target any workflow builds for. The release cross-compiles both macOS
+# arches (x86 on the arm64 runner needs x86_64-apple-darwin explicitly); the
+# frontend is wasm. Linux/Windows build for their host target, so none is listed.
+# The pinned toolchain must carry these itself — `rustup target add` in the CI
+# action targets the default toolchain, not this file's, so it wouldn't reach them.
+targets = [
+    "wasm32-unknown-unknown",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
