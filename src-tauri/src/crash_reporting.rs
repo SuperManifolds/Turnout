@@ -335,7 +335,7 @@ const MINIDUMP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_mill
 
 /// Only leftover reporter socket files older than this are swept, so a live
 /// reporter's freshly created socket is never removed.
-const REPORTER_SOCKET_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const REPORTER_SOCKET_MAX_AGE: std::time::Duration = std::time::Duration::from_hours(1);
 
 /// Whether this process is the re-exec'd crash-reporter server (it carries
 /// minidumper-child's server flag) rather than the main app process. Mirrors
