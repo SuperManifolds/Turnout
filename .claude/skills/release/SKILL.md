@@ -136,6 +136,17 @@ caches are cold. Everything else is fast.
     git rev-parse origin/main   # HEAD must match a green run above
     ```
 
+  - **A toolchain or target change means CI green is NOT enough.** If anything
+    since the last tag touched `rust-toolchain.toml`, the CI toolchain setup, or
+    the target list, flag it: **CI only builds host targets — it never exercises
+    the release's cross-compilation** (macOS x86 on the arm64 runner, the arm64
+    Linux/macOS targets). The pinned toolchain must itself carry *every* target
+    the release matrix builds (`x86_64-apple-darwin`, `aarch64-apple-darwin`,
+    `wasm32-unknown-unknown`) — `rustup target add` in the CI action installs
+    against the *default* toolchain, not a `rust-toolchain.toml`-pinned one. A
+    green CI on such a change can still fail the release build ~10 min in with
+    "target … is not installed" (this bit v0.4.1).
+
 - **Claude proposes the version, you confirm.** Per [SemVer](https://semver.org/):
   **minor** (`v0.3.0`) if anything since the last tag is a user-facing feature,
   **patch** (`v0.2.1`) if it's only fixes. Derive it from the PR/commit prefixes:
@@ -360,7 +371,21 @@ avoids rebuilding the platforms that already passed. Re-verify (Phase 5), publis
 **Code/config failure (needs a source change)** — re-tag after landing the fix:
 
 1. Land the fix in `main`; confirm CI green on the fix commit.
-2. Re-tag the fix commit by explicit SHA and force-push to re-run the build:
+2. **Delete the existing draft release for the tag first** (by ID — this leaves
+   the git tag intact):
+
+   ```sh
+   gh api repos/SuperManifolds/Turnout/releases \
+     --jq '.[] | select(.tag_name=="v0.3.0") | "\(.id) draft=\(.draft) assets=\(.assets|length)"'
+   gh api -X DELETE repos/SuperManifolds/Turnout/releases/<stale-draft-id>
+   ```
+
+   The re-tagged build's `create-release` makes a *fresh* draft; if the old draft
+   from the failed run is still around you end up with **two draft releases
+   sharing the tag**, and `harden-linux-appimage`'s `gh release download <tag>`
+   grabs the wrong (often empty) one — failing with "no assets to download" (this
+   bit v0.4.1). Delete by ID, never with `--cleanup-tag`, so the tag survives.
+3. Re-tag the fix commit by explicit SHA and force-push to re-run the build:
 
    ```sh
    git tag -f -a v0.3.0 <fix-sha> -m "Turnout v0.3.0"
