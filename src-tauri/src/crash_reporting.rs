@@ -319,39 +319,137 @@ pub fn init() -> Option<sentry::ClientInitGuard> {
     Some(guard)
 }
 
+/// The flag `minidumper-child` appends to the re-exec'd crash-reporter process
+/// (its default `server_arg`). Its presence is how that crate — and we — tell the
+/// reporter process apart from the main app process.
+const CRASH_REPORTER_SERVER_ARG: &str = "--crash-reporter-server";
+
+/// How many times the **main** process tries to start the native reporter before
+/// giving up. Each attempt spawns a fresh reporter with a new socket name, so a
+/// transient bind collision (`EADDRINUSE`, os error 10048) with a leftover socket
+/// file resolves on the next try.
+const MINIDUMP_INIT_ATTEMPTS: u32 = 3;
+
+/// Delay between reporter start attempts.
+const MINIDUMP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Only leftover reporter socket files older than this are swept, so a live
+/// reporter's freshly created socket is never removed.
+const REPORTER_SOCKET_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Whether this process is the re-exec'd crash-reporter server (it carries
+/// minidumper-child's server flag) rather than the main app process. Mirrors
+/// `minidumper_child`'s own argv check.
+fn is_crash_reporter_process() -> bool {
+    std::env::args().any(|arg| arg.starts_with(CRASH_REPORTER_SERVER_ARG))
+}
+
+/// Name of a leftover reporter IPC socket file (minidumper's `temp-socket-<uuid>`).
+fn is_reporter_socket_name(name: &str) -> bool {
+    name.starts_with("temp-socket-")
+}
+
+/// Remove leftover crash-reporter IPC socket files from the temp dir. On
+/// Windows/macOS minidumper binds an `AF_UNIX` socket at `<temp>/temp-socket-<uuid>`
+/// and never deletes it, so they accumulate; a leftover file also makes a
+/// reporter's `bind` fail with `EADDRINUSE`. Only files older than
+/// [`REPORTER_SOCKET_MAX_AGE`] are removed, so a live reporter's socket is left
+/// alone. Best-effort — errors are ignored. (Linux uses abstract sockets, so its
+/// temp dir has none of these and this is a no-op there.)
+fn sweep_stale_reporter_sockets() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(is_reporter_socket_name) {
+            continue;
+        }
+        let too_old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > REPORTER_SOCKET_MAX_AGE);
+        if too_old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Arms the native minidump handler: a re-exec'd reporter process that outlives a
 /// crash of the main process and uploads a minidump. Returns the handle, which
 /// **must be kept alive for the whole program** — dropping it stops the reporter.
 ///
 /// `None` when reporting is off (no Sentry client) *or* the reporter failed to
-/// start. A start failure is logged at `error!` so it becomes a Sentry event in
-/// its own right: without this we can't tell a machine where native capture is
-/// silently unavailable (a failed re-exec, sandbox, or temp-dir permission) from
-/// one that simply never crashed. Only covers the **main** process — a `WebView2`
-/// (Windows) or `WKWebView` renderer crash is a separate process and is not caught
-/// here (see the macOS-only `on_web_content_process_terminate` hook in `main`).
+/// start after [`MINIDUMP_INIT_ATTEMPTS`]. The reporter's IPC socket bind can hit
+/// `EADDRINUSE` (a leftover socket file); the main process sweeps stale sockets
+/// and retries with a fresh reporter to recover. A final failure is logged at
+/// `error!` so it becomes a Sentry event in its own right: without this we can't
+/// tell a machine where native capture is silently unavailable from one that
+/// simply never crashed. Only covers the **main** process — a `WebView2` (Windows)
+/// or `WKWebView` renderer crash is a separate process and is not caught here (see
+/// the macOS-only `on_web_content_process_terminate` hook in `main`).
 pub fn arm_minidump_reporter(
     client: Option<&sentry::ClientInitGuard>,
 ) -> Option<tauri_plugin_sentry::minidump::Handle> {
     let client = client?;
-    match tauri_plugin_sentry::minidump::init(client) {
-        Ok(handle) => {
-            tracing::info!("native crash reporter armed");
-            Some(handle)
-        }
-        Err(err) => {
-            tracing::error!(
-                "native crash reporter failed to start; native crashes will not be captured: {err}"
-            );
-            None
+    let reporter_process = is_crash_reporter_process();
+
+    // The reporter process gets a single attempt — its socket name is fixed by the
+    // parent's flag, so a retry would only re-bind the same failing name. The main
+    // process sweeps stale sockets once, then retries with fresh reporters.
+    let attempts = if reporter_process {
+        1
+    } else {
+        sweep_stale_reporter_sockets();
+        MINIDUMP_INIT_ATTEMPTS
+    };
+
+    for attempt in 1..=attempts {
+        match tauri_plugin_sentry::minidump::init(client) {
+            Ok(handle) => {
+                tracing::info!("native crash reporter armed");
+                return Some(handle);
+            }
+            Err(err) if attempt < attempts => {
+                tracing::warn!(
+                    "native crash reporter start attempt {attempt}/{attempts} failed: {err}; retrying"
+                );
+                std::thread::sleep(MINIDUMP_RETRY_DELAY);
+            }
+            Err(err) => {
+                tracing::error!(
+                    "native crash reporter failed to start; native crashes will not be captured: {err}"
+                );
+                // In the reporter process a failed start means minidumper-child
+                // returned before its own `exit(0)`, so `main` would go on to run a
+                // second, half-initialised copy of the app. Exit instead.
+                if reporter_process {
+                    std::process::exit(1);
+                }
+                return None;
+            }
         }
     }
+    None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::reporting_enabled;
+    use super::{is_reporter_socket_name, reporting_enabled};
     use serde_json::json;
+
+    #[test]
+    fn reporter_socket_names_are_recognized() {
+        assert!(is_reporter_socket_name(
+            "temp-socket-2f1a9c0b4d5e4f6a8b7c1d2e3f405162"
+        ));
+        // Don't sweep unrelated temp files.
+        assert!(!is_reporter_socket_name("orm-bench-cache.db"));
+        assert!(!is_reporter_socket_name("settings.json"));
+        assert!(!is_reporter_socket_name(""));
+    }
 
     #[test]
     fn opt_out_is_honored() {
