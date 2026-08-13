@@ -1,0 +1,13 @@
+# Single source of truth for the Rust toolchain, honored by both local dev and CI.
+# cargo/rustup apply this directory override ahead of `rustup default` (which the
+# CI action sets) and ahead of a developer's global default, so the exact same
+# rustc/clippy runs everywhere. That keeps `cargo clippy` results identical — a
+# lint can't pass locally and fail in CI because of a version gap (which is what
+# bit us with clippy::duration_suboptimal_units, new in 1.97).
+#
+# Bump this deliberately, as a reviewed one-line change; everyone then picks it up
+# automatically on their next cargo invocation.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
