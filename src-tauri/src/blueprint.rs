@@ -33,47 +33,111 @@ pub fn resolve_mods_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     find_mods_dir()
 }
 
-fn find_mods_dir() -> Option<PathBuf> {
-    let home = dirs_next::home_dir()?;
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    #[cfg(target_os = "windows")]
-    {
-        candidates.push(home.join("Saved Games/Weird and Wry/NIMBY Rails/mods"));
-    }
+/// Windows-prefix `drive_c` directories to search on macOS/Linux: `CrossOver` and
+/// `Whisky` bottles, a plain wine prefix, and NIMBY Rails' Proton compatdata. Both
+/// the Saved-Games mods folder and the Steam install live under one of these, so
+/// the mods- and game-dir resolvers share this enumeration. Empty on native
+/// Windows, where the game lives on the real filesystem.
+#[cfg(not(target_os = "windows"))]
+fn wine_drive_c_roots() -> Vec<PathBuf> {
+    let Some(home) = dirs_next::home_dir() else { return Vec::new() };
+    let mut roots = Vec::new();
 
     #[cfg(target_os = "macos")]
-    {
-        for base in &[
-            home.join("Library/Application Support/CrossOver/Bottles"),
-            home.join("Library/Containers/com.isaacmarovitz.Whisky/Bottles"),
-        ] {
-            if let Ok(bottles) = fs::read_dir(base) {
-                for bottle in bottles.flatten() {
-                    let users = bottle.path().join("drive_c/users");
-                    if let Ok(entries) = fs::read_dir(&users) {
-                        for user in entries.flatten() {
-                            candidates.push(user.path().join("Saved Games/Weird and Wry/NIMBY Rails/mods"));
-                        }
-                    }
-                }
+    for base in &[
+        home.join("Library/Application Support/CrossOver/Bottles"),
+        home.join("Library/Containers/com.isaacmarovitz.Whisky/Bottles"),
+    ] {
+        if let Ok(bottles) = fs::read_dir(base) {
+            for bottle in bottles.flatten() {
+                roots.push(bottle.path().join("drive_c"));
             }
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        let wine_users = home.join(".wine/drive_c/users");
-        if let Ok(users) = fs::read_dir(&wine_users) {
+        roots.push(home.join(".wine/drive_c"));
+        roots.push(home.join(".local/share/Steam/steamapps/compatdata/1134710/pfx/drive_c"));
+        roots.push(home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1134710/pfx/drive_c"));
+    }
+
+    roots
+}
+
+#[cfg(target_os = "windows")]
+fn wine_drive_c_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+const MODS_SUBPATH: &str = "Saved Games/Weird and Wry/NIMBY Rails/mods";
+/// The game's Steam install directory, relative to a `Steam/` root.
+const NIMBY_INSTALL_SUBPATH: &str = "steamapps/common/NIMBY Rails";
+
+fn find_mods_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    if let Some(home) = dirs_next::home_dir() {
+        candidates.push(home.join(MODS_SUBPATH));
+    }
+
+    for drive_c in wine_drive_c_roots() {
+        if let Ok(users) = fs::read_dir(drive_c.join("users")) {
             for user in users.flatten() {
-                candidates.push(user.path().join("Saved Games/Weird and Wry/NIMBY Rails/mods"));
+                candidates.push(user.path().join(MODS_SUBPATH));
             }
         }
-        candidates.push(home.join(".local/share/Steam/steamapps/compatdata/1134710/pfx/drive_c/users/steamuser/Saved Games/Weird and Wry/NIMBY Rails/mods"));
-        candidates.push(home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/1134710/pfx/drive_c/users/steamuser/Saved Games/Weird and Wry/NIMBY Rails/mods"));
     }
 
     candidates.into_iter().find(|p| p.exists())
+}
+
+/// The game's install directory, honoring the `game_dir_override` setting and
+/// falling back to the default Steam install locations (in-bottle Steam on
+/// macOS/Linux, native Steam otherwise). Mirrors [`resolve_mods_dir`].
+pub fn resolve_game_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let s = settings::load(app);
+    if let Some(ref override_path) = s.game_dir_override {
+        let p = PathBuf::from(override_path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    find_game_dir()
+}
+
+fn find_game_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // In-bottle / Proton-prefix Steam installs (macOS/Linux).
+    for drive_c in wine_drive_c_roots() {
+        candidates.push(drive_c.join("Program Files (x86)/Steam").join(NIMBY_INSTALL_SUBPATH));
+        candidates.push(drive_c.join("Program Files/Steam").join(NIMBY_INSTALL_SUBPATH));
+    }
+
+    #[cfg(target_os = "windows")]
+    for var in ["ProgramFiles(x86)", "ProgramFiles"] {
+        if let Some(pf) = std::env::var_os(var) {
+            candidates.push(PathBuf::from(pf).join("Steam").join(NIMBY_INSTALL_SUBPATH));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(home) = dirs_next::home_dir() {
+        candidates.push(home.join(".steam/steam").join(NIMBY_INSTALL_SUBPATH));
+        candidates.push(home.join(".local/share/Steam").join(NIMBY_INSTALL_SUBPATH));
+        candidates.push(home.join(".var/app/com.valvesoftware.Steam/data/Steam").join(NIMBY_INSTALL_SUBPATH));
+    }
+
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+/// Path to NIMBY Rails' population map (`resources/maps/pop400.pmtiles`), if the
+/// install can be located and the file is present.
+pub fn pop400_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let path = resolve_game_dir(app)?.join("resources/maps/pop400.pmtiles");
+    path.is_file().then_some(path)
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -269,6 +333,12 @@ fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgb
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_mods_dir(app: tauri::AppHandle) -> Option<String> {
     resolve_mods_dir(&app).map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_game_dir(app: tauri::AppHandle) -> Option<String> {
+    resolve_game_dir(&app).map(|p| p.to_string_lossy().to_string())
 }
 
 #[tauri::command]

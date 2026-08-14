@@ -15,6 +15,8 @@ mod orm_offline;
 mod orm_tiles;
 mod overlay;
 mod overpass;
+mod pop_tiles;
+mod pop_write;
 mod server_core;
 mod settings;
 mod tile_server;
@@ -403,6 +405,7 @@ fn main() {
             orm_import::import_orm,
             orm_import::count_track_nodes,
             blueprint::get_mods_dir,
+            blueprint::get_game_dir,
             blueprint::save_blueprint,
             blueprint::blueprint_exists,
             blueprint::list_blueprints,
@@ -431,6 +434,30 @@ fn main() {
             overlay::add_arcgis_layer,
             overlay::add_xyz_layer,
             overlay::add_mbtiles_layer,
+            overlay::add_population_layer,
+            overlay::remove_population_layer,
+            overlay::pop_brush,
+            overlay::pop_clear_edits,
+            overlay::pop_region_total,
+            overlay::pop_set_region,
+            overlay::pop_layers,
+            overlay::pop_add_layer,
+            overlay::pop_remove_layer,
+            overlay::pop_rename_layer,
+            overlay::pop_set_layer_visible,
+            overlay::pop_set_layer_blend,
+            overlay::pop_set_active_layer,
+            overlay::pop_move_layer,
+            overlay::pick_shapefile,
+            overlay::pick_geotiff,
+            overlay::pick_pmtiles,
+            overlay::pop_shapefile_fields,
+            overlay::pop_import_shapefile,
+            overlay::pop_import_geotiff,
+            overlay::pop_add_source_layer,
+            overlay::pop_apply,
+            overlay::pop_restore_original,
+            overlay::pop_apply_status,
             overlay::update_apple_urls,
             apple_token::refresh_apple_token,
             overlay::fetch_wmts_layers,

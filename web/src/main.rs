@@ -112,6 +112,14 @@ fn App() -> impl IntoView {
     // drawer owns visibility, and each reads the other's signal.
     let (orm_style, set_orm_style) = create_signal("standard".to_string());
     let (orm_visible, set_orm_visible) = create_signal(true);
+    // Population brush: the overlay drawer owns the tools, the map paints with them.
+    let (pop_editor_open, set_pop_editor_open) = create_signal(false);
+    let (pop_tool, set_pop_tool) = create_signal(components::PopTool::None);
+    let (pop_brush_radius, set_pop_brush_radius) = create_signal(30.0_f64);
+    let (pop_brush_strength, set_pop_brush_strength) = create_signal(60_u32);
+    // The active selection bbox (south, west, north, east), mirrored out of Map so
+    // the population region tool can read it.
+    let (selection_bbox, set_selection_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
 
     // First-launch guided tour: auto-opens until completed, and re-openable from
     // the settings window via the `start-tutorial` event.
@@ -146,6 +154,12 @@ fn App() -> impl IntoView {
                         set_drawer_open=set_drawer_open
                         show_vector_layers=show_vector_layers
                         set_show_vector_layers=set_show_vector_layers
+                        pop_tool=pop_tool
+                        pop_brush_radius=pop_brush_radius
+                        pop_brush_strength=pop_brush_strength
+                        pop_editor_open=pop_editor_open
+                        set_pop_editor_open=set_pop_editor_open
+                        set_selection_bbox=set_selection_bbox
                     />
                     <components::Search />
                     <components::LayerSwitcher
@@ -178,6 +192,17 @@ fn App() -> impl IntoView {
                         orm_style=orm_style
                         orm_visible=orm_visible
                         set_orm_visible=set_orm_visible
+                    />
+                    <components::Population
+                        open=pop_editor_open
+                        set_open=set_pop_editor_open
+                        tool=pop_tool
+                        set_tool=set_pop_tool
+                        brush_radius=pop_brush_radius
+                        set_brush_radius=set_pop_brush_radius
+                        brush_strength=pop_brush_strength
+                        set_brush_strength=set_pop_brush_strength
+                        selection_bbox=selection_bbox
                     />
                     <components::BlueprintDrawer
                         open=drawer_open

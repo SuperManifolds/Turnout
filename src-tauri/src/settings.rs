@@ -79,6 +79,11 @@ impl Default for NetworkSettings {
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
+    /// User-set NIMBY Rails install directory (the folder containing
+    /// `resources/`). `None` = auto-detect the default Steam install. Used to
+    /// locate the population map for the population overlay/editor.
+    #[serde(default)]
+    pub game_dir_override: Option<String>,
     pub map_theme: String,
     #[serde(default = "default_overpass_timeout")]
     pub overpass_timeout: u32,
@@ -122,6 +127,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mods_dir_override: None,
+            game_dir_override: None,
             map_theme: "system".to_string(),
             overpass_timeout: 60,
             type_speed_overrides: std::collections::HashMap::new(),
@@ -142,6 +148,8 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
     };
     Settings {
         mods_dir_override: store.get("mods_dir_override")
+            .and_then(|v| v.as_str().map(String::from)),
+        game_dir_override: store.get("game_dir_override")
             .and_then(|v| v.as_str().map(String::from)),
         map_theme: store.get("map_theme")
             .and_then(|v| v.as_str().map(String::from))
@@ -209,6 +217,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
         );
     }
     store.set("mods_dir_override", serde_json::json!(settings.mods_dir_override));
+    store.set("game_dir_override", serde_json::json!(settings.game_dir_override));
     store.set("check_for_updates", serde_json::json!(settings.network.check_for_updates));
     store.set("map_theme", serde_json::json!(settings.map_theme));
     store.set("overpass_timeout", serde_json::json!(settings.overpass_timeout));

@@ -35,6 +35,9 @@ tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "463ff19", features = ["json", "tokio"] }
 mvt = "0.13.0"
+# Reads NIMBY Rails' population map (pop400.pmtiles). Trimmed to the memory-mapped
+# local-file backend only — no HTTP/S3/object-store backends.
+pmtiles = { version = "0.23", default-features = false, features = ["mmap-async-tokio", "iter-async", "write"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Crash reporting. rustls transport only — no native-tls/openssl, matching the
