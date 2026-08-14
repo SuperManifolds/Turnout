@@ -420,6 +420,7 @@ window.map_add_overlay_layer = function(id, url, opacity) {
         map_on_load(function() { map_add_overlay_layer(id, url, opacity); });
         return;
     }
+    if (id === POPULATION_SOURCE) _population_url = url;
     if (_map.getSource(id)) return;
     _map.addSource(id, {
         type: "raster",
@@ -449,4 +450,116 @@ window.map_remove_overlay_layer = function(id) {
 window.map_fit_bounds = function(west, south, east, north) {
     if (!_map) return;
     _map.fitBounds([[west, south], [east, north]], { padding: 50 });
+};
+
+// --- Population brush ---
+// Source/layer for the built-in population overlay and the live paint preview.
+const POPULATION_SOURCE = "population";
+const BRUSH_PREVIEW_SOURCE = "pop-brush-preview";
+const BRUSH_CIRCLE_SEGMENTS = 32;
+const EARTH_RADIUS_M = 6371008.8;
+var _population_url = null;
+
+function haversine_m(lat1, lon1, lat2, lon2) {
+    var toRad = Math.PI / 180;
+    var dLat = (lat2 - lat1) * toRad;
+    var dLon = (lon2 - lon1) * toRad;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return EARTH_RADIUS_M * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Ground metres per one screen pixel at the current map center — lets a fixed
+// on-screen brush radius map to a real-world radius for the backend.
+window.map_meters_per_pixel = function() {
+    if (!_map) return 0;
+    var p = _map.project(_map.getCenter());
+    var a = _map.unproject([p.x, p.y]);
+    var b = _map.unproject([p.x + 1, p.y]);
+    return haversine_m(a.lat, a.lng, b.lat, b.lng);
+};
+
+// Force the population tiles to refetch (they now include the latest edits) by
+// bumping a cache-busting query param. Called once when a paint stroke ends.
+window.map_refresh_population = function() {
+    if (!_map || !_population_url) return;
+    var src = _map.getSource(POPULATION_SOURCE);
+    if (!src || !src.setTiles) return;
+    var sep = _population_url.indexOf("?") >= 0 ? "&" : "?";
+    src.setTiles([_population_url + sep + "v=" + Date.now()]);
+};
+
+// Screen-accurate circle polygon (ring of lng/lat) of `radius_px` around a point.
+function brush_circle(lng, lat, radius_px) {
+    var c = _map.project([lng, lat]);
+    var ring = [];
+    for (var i = 0; i <= BRUSH_CIRCLE_SEGMENTS; i++) {
+        var t = (i / BRUSH_CIRCLE_SEGMENTS) * 2 * Math.PI;
+        var ll = _map.unproject([c.x + radius_px * Math.cos(t), c.y + radius_px * Math.sin(t)]);
+        ring.push([ll.lng, ll.lat]);
+    }
+    return ring;
+}
+
+// Client-side paint preview: accumulate translucent brush circles as the stroke
+// is drawn (immediate, every frame) until the authoritative tiles refresh.
+var _brush_points = [];
+
+window.map_brush_preview_begin = function(erase) {
+    if (!_map) return;
+    _brush_points = [];
+    if (!_map.getSource(BRUSH_PREVIEW_SOURCE)) {
+        _map.addSource(BRUSH_PREVIEW_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        _map.addLayer({
+            id: BRUSH_PREVIEW_SOURCE + "-layer",
+            type: "fill",
+            source: BRUSH_PREVIEW_SOURCE,
+            paint: { "fill-color": erase ? "#e05a5a" : "#f5d015", "fill-opacity": 0.35 },
+        });
+    } else {
+        _map.setPaintProperty(BRUSH_PREVIEW_SOURCE + "-layer", "fill-color", erase ? "#e05a5a" : "#f5d015");
+    }
+    orm_to_top();
+};
+
+window.map_brush_preview_add = function(lng, lat, radius_px) {
+    if (!_map || !_map.getSource(BRUSH_PREVIEW_SOURCE)) return;
+    _brush_points.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [brush_circle(lng, lat, radius_px)] } });
+    _map.getSource(BRUSH_PREVIEW_SOURCE).setData({ type: "FeatureCollection", features: _brush_points });
+};
+
+window.map_brush_preview_end = function() {
+    if (!_map) return;
+    _brush_points = [];
+    if (_map.getLayer(BRUSH_PREVIEW_SOURCE + "-layer")) _map.removeLayer(BRUSH_PREVIEW_SOURCE + "-layer");
+    if (_map.getSource(BRUSH_PREVIEW_SOURCE)) _map.removeSource(BRUSH_PREVIEW_SOURCE);
+};
+
+// Population selection marquee — a dedicated overlay independent of the app's
+// track-import selection, so it never triggers blueprint/import behaviour.
+const POP_MARQUEE_SOURCE = "pop-marquee";
+
+window.map_set_pop_marquee = function(west, south, east, north) {
+    if (!_map) return;
+    var data = { type: "Feature", geometry: { type: "Polygon",
+        coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]] } };
+    if (!_map.getSource(POP_MARQUEE_SOURCE)) {
+        _map.addSource(POP_MARQUEE_SOURCE, { type: "geojson", data: data });
+        _map.addLayer({ id: POP_MARQUEE_SOURCE + "-fill", type: "fill", source: POP_MARQUEE_SOURCE,
+            paint: { "fill-color": "#4a9eff", "fill-opacity": 0.08 } });
+        _map.addLayer({ id: POP_MARQUEE_SOURCE + "-line", type: "line", source: POP_MARQUEE_SOURCE,
+            paint: { "line-color": "#4a9eff", "line-width": 1.5, "line-dasharray": [3, 2] } });
+    } else {
+        _map.getSource(POP_MARQUEE_SOURCE).setData(data);
+    }
+    if (_map.getLayer(POP_MARQUEE_SOURCE + "-fill")) _map.moveLayer(POP_MARQUEE_SOURCE + "-fill");
+    if (_map.getLayer(POP_MARQUEE_SOURCE + "-line")) _map.moveLayer(POP_MARQUEE_SOURCE + "-line");
+};
+
+window.map_clear_pop_marquee = function() {
+    if (!_map) return;
+    if (_map.getLayer(POP_MARQUEE_SOURCE + "-line")) _map.removeLayer(POP_MARQUEE_SOURCE + "-line");
+    if (_map.getLayer(POP_MARQUEE_SOURCE + "-fill")) _map.removeLayer(POP_MARQUEE_SOURCE + "-fill");
+    if (_map.getSource(POP_MARQUEE_SOURCE)) _map.removeSource(POP_MARQUEE_SOURCE);
 };

@@ -256,6 +256,11 @@ pub async fn get_mods_dir() -> Option<String> {
     result.as_string()
 }
 
+pub async fn get_game_dir() -> Option<String> {
+    let result = invoke("get_game_dir", &JsValue::NULL).await.ok()?;
+    result.as_string()
+}
+
 /// Resize the current webview window to `(width, height)` logical pixels via the
 /// Tauri window API. A no-op if any part of the API is unavailable.
 pub fn set_window_logical_size(width: f64, height: f64) {
@@ -535,6 +540,240 @@ pub async fn add_xyz_layer_with_kind(url_template: &str, display_name: &str, gro
         set(&args, "kind", k);
     }
     overlay_command_result("add_xyz_layer", args).await
+}
+
+/// Turn on the built-in population overlay; returns its tile-URL template to add
+/// as a raster source.
+pub async fn add_population_layer() -> Result<String, String> {
+    let result = invoke("add_population_layer", &JsValue::NULL).await?;
+    result.as_string().ok_or_else(|| "unexpected response".into())
+}
+
+pub async fn remove_population_layer() {
+    let _ = invoke("remove_population_layer", &JsValue::NULL).await;
+}
+
+/// Paint a population brush stroke over `points` (`(lon, lat)` pairs) with an
+/// on-ground `radius_m`. `mode` is `"add"` or `"remove"`. When `clip` (a
+/// west/south/east/north selection bbox) is set, the stroke is constrained to it.
+pub async fn pop_brush(
+    points: &[(f64, f64)],
+    radius_m: f64,
+    strength: u32,
+    mode: &str,
+    clip: Option<(f64, f64, f64, f64)>,
+) {
+    let arr = js_sys::Array::new();
+    for &(lon, lat) in points {
+        arr.push(&js_sys::Array::of2(&JsValue::from_f64(lon), &JsValue::from_f64(lat)));
+    }
+    let args = js_sys::Object::new();
+    set(&args, "points", arr);
+    set(&args, "radiusM", radius_m);
+    set(&args, "strength", f64::from(strength));
+    set(&args, "mode", mode);
+    if let Some((w, s, e, n)) = clip {
+        set(&args, "clip", js_sys::Array::of4(
+            &JsValue::from_f64(w), &JsValue::from_f64(s), &JsValue::from_f64(e), &JsValue::from_f64(n),
+        ));
+    }
+    let _ = invoke_obj("pop_brush", args).await;
+}
+
+pub async fn pop_clear_edits() {
+    let _ = invoke("pop_clear_edits", &JsValue::NULL).await;
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PopLayerInfo {
+    pub id: u32,
+    pub name: String,
+    pub visible: bool,
+    pub active: bool,
+    /// "base", "paint", or "import".
+    #[serde(default)]
+    pub kind: String,
+    /// "add" or "normal" (import blend mode).
+    #[serde(default)]
+    pub blend: String,
+}
+
+async fn pop_layers_cmd(cmd: &str, args: js_sys::Object) -> Vec<PopLayerInfo> {
+    invoke_obj(cmd, args).await.ok().and_then(from_js).unwrap_or_default()
+}
+
+pub async fn pop_layers() -> Vec<PopLayerInfo> {
+    pop_layers_cmd("pop_layers", js_sys::Object::new()).await
+}
+
+pub async fn pop_add_layer() -> Vec<PopLayerInfo> {
+    pop_layers_cmd("pop_add_layer", js_sys::Object::new()).await
+}
+
+pub async fn pop_remove_layer(id: u32) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "id", f64::from(id));
+    pop_layers_cmd("pop_remove_layer", args).await
+}
+
+pub async fn pop_rename_layer(id: u32, name: &str) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "id", f64::from(id));
+    set(&args, "name", name);
+    pop_layers_cmd("pop_rename_layer", args).await
+}
+
+pub async fn pop_set_layer_visible(id: u32, visible: bool) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "id", f64::from(id));
+    set(&args, "visible", visible);
+    pop_layers_cmd("pop_set_layer_visible", args).await
+}
+
+pub async fn pop_set_active_layer(id: u32) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "id", f64::from(id));
+    pop_layers_cmd("pop_set_active_layer", args).await
+}
+
+pub async fn pop_move_layer(id: u32, up: bool) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "id", f64::from(id));
+    set(&args, "up", up);
+    pop_layers_cmd("pop_move_layer", args).await
+}
+
+pub async fn pop_set_layer_blend(id: u32, blend: &str) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "id", f64::from(id));
+    set(&args, "blend", blend);
+    pop_layers_cmd("pop_set_layer_blend", args).await
+}
+
+/// Open a native file dialog to pick a shapefile; `None` if cancelled.
+pub async fn pick_shapefile() -> Option<String> {
+    invoke("pick_shapefile", &JsValue::NULL).await.ok().and_then(|v| v.as_string())
+}
+
+/// Open a native file dialog to pick a `GeoTIFF`; `None` if cancelled.
+pub async fn pick_geotiff() -> Option<String> {
+    invoke("pick_geotiff", &JsValue::NULL).await.ok().and_then(|v| v.as_string())
+}
+
+/// Open a native file dialog to pick a baked `PMTiles`; `None` if cancelled.
+pub async fn pick_pmtiles() -> Option<String> {
+    invoke("pick_pmtiles", &JsValue::NULL).await.ok().and_then(|v| v.as_string())
+}
+
+/// Add a baked `PMTiles` as a file-backed (memory-mapped) source layer.
+pub async fn pop_add_source_layer(path: &str, name: &str, blend: &str) -> Vec<PopLayerInfo> {
+    let args = js_sys::Object::new();
+    set(&args, "path", path);
+    set(&args, "name", name);
+    set(&args, "blend", blend);
+    invoke_obj("pop_add_source_layer", args).await.ok().and_then(from_js).unwrap_or_default()
+}
+
+/// Import a geographic `GeoTIFF` within a lon/lat bbox `(west, south, east, north)`.
+pub async fn pop_import_geotiff(
+    path: &str,
+    name: &str,
+    blend: &str,
+    scale: f64,
+    bbox: (f64, f64, f64, f64),
+) -> Result<PopImportResult, String> {
+    let args = js_sys::Object::new();
+    set(&args, "path", path);
+    set(&args, "name", name);
+    set(&args, "blend", blend);
+    set(&args, "scale", scale);
+    let arr = js_sys::Array::of4(
+        &JsValue::from_f64(bbox.0),
+        &JsValue::from_f64(bbox.1),
+        &JsValue::from_f64(bbox.2),
+        &JsValue::from_f64(bbox.3),
+    );
+    set(&args, "bbox", arr);
+    invoke_obj("pop_import_geotiff", args).await.map(|v| from_js(v).unwrap_or_default())
+}
+
+/// Numeric-capable DBF field names of a shapefile, for the import field picker.
+pub async fn pop_shapefile_fields(path: &str) -> Result<Vec<String>, String> {
+    let args = js_sys::Object::new();
+    set(&args, "path", path);
+    invoke_obj("pop_shapefile_fields", args).await.map(|v| from_js(v).unwrap_or_default())
+}
+
+/// Summary of a completed population import.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PopImportResult {
+    pub id: u32,
+    pub covered_pixels: u64,
+    pub source_total: f64,
+    pub applied_scale: f64,
+    pub layers: Vec<PopLayerInfo>,
+}
+
+/// Import a shapefile's polygons as a new population layer.
+pub async fn pop_import_shapefile(
+    path: &str,
+    field: &str,
+    name: &str,
+    blend: &str,
+    scale: f64,
+) -> Result<PopImportResult, String> {
+    let args = js_sys::Object::new();
+    set(&args, "path", path);
+    set(&args, "field", field);
+    set(&args, "name", name);
+    set(&args, "blend", blend);
+    set(&args, "scale", scale);
+    invoke_obj("pop_import_shapefile", args).await.map(|v| from_js(v).unwrap_or_default())
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PopApplyStatus {
+    pub has_backup: bool,
+    pub has_edits: bool,
+}
+
+/// Write edits into the game file; returns the number of tiles written.
+pub async fn pop_apply() -> Result<u64, String> {
+    let v = invoke("pop_apply", &JsValue::NULL).await?;
+    Ok(v.as_f64().unwrap_or(0.0) as u64)
+}
+
+pub async fn pop_restore_original() -> Result<(), String> {
+    invoke("pop_restore_original", &JsValue::NULL).await.map(|_| ())
+}
+
+pub async fn pop_apply_status() -> PopApplyStatus {
+    invoke("pop_apply_status", &JsValue::NULL).await.ok().and_then(from_js).unwrap_or_default()
+}
+
+/// Total effective population density within a lon/lat region.
+pub async fn pop_region_total(west: f64, south: f64, east: f64, north: f64) -> f64 {
+    let args = js_sys::Object::new();
+    set(&args, "west", west);
+    set(&args, "south", south);
+    set(&args, "east", east);
+    set(&args, "north", north);
+    invoke_obj("pop_region_total", args).await.ok().and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+/// Set a region's population to `target` (scale existing, or `flat` uniform fill).
+pub async fn pop_set_region(west: f64, south: f64, east: f64, north: f64, target: f64, flat: bool) {
+    let args = js_sys::Object::new();
+    set(&args, "west", west);
+    set(&args, "south", south);
+    set(&args, "east", east);
+    set(&args, "north", north);
+    set(&args, "target", target);
+    set(&args, "flat", flat);
+    let _ = invoke_obj("pop_set_region", args).await;
 }
 
 pub async fn move_layer(layer_id: u32, from_group_id: u32, to_group_id: u32) -> Result<OverlayStatus, String> {
