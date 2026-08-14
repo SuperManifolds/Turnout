@@ -343,6 +343,64 @@ pub async fn add_mbtiles_layer(
 /// Turn on the built-in population overlay, returning its tile-URL template for
 /// the frontend to add as a raster source. Idempotent: if already on, returns the
 /// existing URL. Auto-locates `pop400.pmtiles` in the NIMBY Rails install.
+/// Store key holding the user's imported population source layers, so they
+/// survive a restart (the paint/edit layers are session state and are not saved).
+const POP_SOURCES_KEY: &str = "pop_source_layers";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedPopSource {
+    path: String,
+    name: String,
+    blend: turnout_core::pop_edit::Blend,
+    #[serde(default = "default_visible")]
+    visible: bool,
+}
+
+fn default_visible() -> bool {
+    true
+}
+
+/// Persist the current file-backed population source layers. Best-effort: a store
+/// failure just means the imports aren't remembered next launch.
+fn save_pop_sources(app: &tauri::AppHandle, handle: &tile_server::ServerHandle) {
+    use tauri_plugin_store::StoreExt;
+    let sources: Vec<SavedPopSource> = handle
+        .pop_source_descriptors()
+        .into_iter()
+        .map(|(path, name, blend, visible)| SavedPopSource { path, name, blend, visible })
+        .collect();
+    if let Ok(store) = app.store(crate::settings::SETTINGS_STORE) {
+        store.set(POP_SOURCES_KEY, serde_json::json!(sources));
+        let _ = store.save();
+    }
+}
+
+/// Re-add the persisted source layers onto a freshly-enabled population handle. A
+/// source whose file has since moved/been deleted is skipped (not an error).
+async fn restore_pop_sources(app: &tauri::AppHandle, handle: &tile_server::ServerHandle) {
+    use tauri_plugin_store::StoreExt;
+    let Ok(store) = app.store(crate::settings::SETTINGS_STORE) else {
+        return;
+    };
+    let Some(sources) = store
+        .get(POP_SOURCES_KEY)
+        .and_then(|v| serde_json::from_value::<Vec<SavedPopSource>>(v).ok())
+    else {
+        return;
+    };
+    for s in sources {
+        if !std::path::Path::new(&s.path).exists() {
+            continue;
+        }
+        if let Ok(layers) = handle.pop_add_source_layer(s.path, s.name, s.blend).await
+            && !s.visible
+            && let Some(l) = layers.last()
+        {
+            handle.pop_set_layer_visible(l.id, false);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn add_population_layer(app: tauri::AppHandle) -> CommandResult<String> {
     let state = app.state::<OverlayState>();
@@ -366,7 +424,10 @@ pub async fn add_population_layer(app: tauri::AppHandle) -> CommandResult<String
         .map_err(|e| CommandError::Server(format!("Failed to start population tile server: {e}")))?;
     handle.add_pop_layer(path, "Population density".to_string());
     let url = population_tile_url(handle.port);
-    *state.population.lock().unpoison() = Some(Arc::new(handle));
+    let handle = Arc::new(handle);
+    *state.population.lock().unpoison() = Some(Arc::clone(&handle));
+    // Re-add any source layers the user imported in a previous session.
+    restore_pop_sources(&app, &handle).await;
     Ok(url)
 }
 
@@ -423,6 +484,7 @@ pub fn pop_remove_layer(app: tauri::AppHandle, id: u32) -> Vec<turnout_core::pop
     let state = app.state::<OverlayState>();
     let Some(handle) = population_handle(&state) else { return Vec::new() };
     handle.pop_remove_layer(id);
+    save_pop_sources(&app, &handle);
     handle.pop_list_layers()
 }
 
@@ -432,6 +494,7 @@ pub fn pop_rename_layer(app: tauri::AppHandle, id: u32, name: String) -> Vec<tur
     let state = app.state::<OverlayState>();
     let Some(handle) = population_handle(&state) else { return Vec::new() };
     handle.pop_rename_layer(id, name);
+    save_pop_sources(&app, &handle);
     handle.pop_list_layers()
 }
 
@@ -441,6 +504,7 @@ pub fn pop_set_layer_visible(app: tauri::AppHandle, id: u32, visible: bool) -> V
     let state = app.state::<OverlayState>();
     let Some(handle) = population_handle(&state) else { return Vec::new() };
     handle.pop_set_layer_visible(id, visible);
+    save_pop_sources(&app, &handle);
     handle.pop_list_layers()
 }
 
@@ -450,6 +514,7 @@ pub fn pop_set_layer_blend(app: tauri::AppHandle, id: u32, blend: turnout_core::
     let state = app.state::<OverlayState>();
     let Some(handle) = population_handle(&state) else { return Vec::new() };
     handle.pop_set_layer_blend(id, blend);
+    save_pop_sources(&app, &handle);
     handle.pop_list_layers()
 }
 
@@ -495,7 +560,9 @@ pub async fn pop_add_source_layer(
     let state = app.state::<OverlayState>();
     let handle = population_handle(&state)
         .ok_or_else(|| CommandError::NotFound("Turn on the population layer first.".into()))?;
-    handle.pop_add_source_layer(path, name, blend).await.map_err(CommandError::Io)
+    let layers = handle.pop_add_source_layer(path, name, blend).await.map_err(CommandError::Io)?;
+    save_pop_sources(&app, &handle);
+    Ok(layers)
 }
 
 /// Import a geographic `GeoTIFF` raster within a lon/lat bbox as a new layer.
@@ -532,6 +599,7 @@ pub fn pop_move_layer(app: tauri::AppHandle, id: u32, up: bool) -> Vec<turnout_c
     let state = app.state::<OverlayState>();
     let Some(handle) = population_handle(&state) else { return Vec::new() };
     handle.pop_move_layer(id, up);
+    save_pop_sources(&app, &handle);
     handle.pop_list_layers()
 }
 

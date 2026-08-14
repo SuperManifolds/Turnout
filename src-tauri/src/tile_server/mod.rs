@@ -387,6 +387,17 @@ impl ServerHandle {
         self.state.pop_sources.lock().unpoison().remove(&id);
     }
 
+    /// The file-backed source layers as `(path, name, blend, visible)`, in stack
+    /// order — enough to re-create them after a restart. Edit (paint) layers,
+    /// which have no backing file, are excluded.
+    pub fn pop_source_descriptors(&self) -> Vec<(String, String, Blend, bool)> {
+        let sources = self.state.pop_sources.lock().unpoison();
+        self.pop_list_layers()
+            .into_iter()
+            .filter_map(|l| sources.get(&l.id).map(|path| (path.clone(), l.name, l.blend, l.visible)))
+            .collect()
+    }
+
     pub fn pop_rename_layer(&self, id: u32, name: String) {
         self.state.pop_layers.write().unpoison().rename_layer(id, name);
     }
