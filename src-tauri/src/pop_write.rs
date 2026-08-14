@@ -35,13 +35,24 @@ fn encode(values: Vec<u16>) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Base density values for a tile, or all-zero if absent.
-async fn base_values(reader: &AsyncPmTilesReader<MmapBackend>, z: u8, x: u32, y: u32) -> Vec<u16> {
+/// Base density values for a tile. An *absent* tile is all-zero (the format's
+/// meaning of "no data" — e.g. ocean). A tile that is present but fails to decode
+/// is an error, not zeros: silently zeroing it would write a hole into the user's
+/// population map on apply.
+async fn base_values(
+    reader: &AsyncPmTilesReader<MmapBackend>,
+    z: u8,
+    x: u32,
+    y: u32,
+) -> Result<Vec<u16>, WriteError> {
     let zeros = || vec![0u16; (TILE_PX * TILE_PX) as usize];
-    let Ok(coord) = TileCoord::new(z, x, y) else { return zeros() };
+    let Ok(coord) = TileCoord::new(z, x, y) else { return Ok(zeros()) };
     match reader.get_tile(coord).await {
-        Ok(Some(bytes)) => decode(&bytes).unwrap_or_else(zeros),
-        _ => zeros(),
+        Ok(Some(bytes)) => {
+            decode(&bytes).ok_or_else(|| format!("base tile {z}/{x}/{y} failed to decode").into())
+        }
+        Ok(None) => Ok(zeros()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -51,7 +62,7 @@ async fn regenerate(
     reader: &Arc<AsyncPmTilesReader<MmapBackend>>,
     layers: &PopLayers,
     max_zoom: u8,
-) -> HashMap<Coord, Vec<u8>> {
+) -> Result<HashMap<Coord, Vec<u8>>, WriteError> {
     let r = reader.as_ref();
     let mut new_bytes: HashMap<Coord, Vec<u8>> = HashMap::new();
     let mut values: HashMap<Coord, Vec<u16>> = HashMap::new();
@@ -66,11 +77,10 @@ async fn regenerate(
     // for now, so no source tiles are supplied here.
     let no_sources = HashMap::new();
     for &(tx, ty) in &dirty {
-        let base = base_values(r, EDIT_ZOOM, tx, ty).await;
+        let base = base_values(r, EDIT_ZOOM, tx, ty).await?;
         let v = layers.apply_tile(tx, ty, &base, &no_sources);
-        if let Some(png) = encode(v.clone()) {
-            new_bytes.insert((EDIT_ZOOM, tx, ty), png);
-        }
+        let png = encode(v.clone()).ok_or_else(|| format!("failed to encode tile {EDIT_ZOOM}/{tx}/{ty}"))?;
+        new_bytes.insert((EDIT_ZOOM, tx, ty), png);
         values.insert((EDIT_ZOOM, tx, ty), v);
     }
 
@@ -87,7 +97,7 @@ async fn regenerate(
             {
                 let v = match values.get(&(child_z, cx, cy)) {
                     Some(v) => v.clone(),
-                    None => base_values(r, child_z, cx, cy).await,
+                    None => base_values(r, child_z, cx, cy).await?,
                 };
                 child_values[i] = Some(v);
             }
@@ -98,15 +108,14 @@ async fn regenerate(
                 child_values[3].as_ref(),
             ];
             let parent = downsample_children(refs);
-            if let Some(png) = encode(parent.clone()) {
-                new_bytes.insert((z, px, py), png);
-            }
+            let png = encode(parent.clone()).ok_or_else(|| format!("failed to encode overview tile {z}/{px}/{py}"))?;
+            new_bytes.insert((z, px, py), png);
             values.insert((z, px, py), parent);
         }
         dirty = parents;
     }
 
-    new_bytes
+    Ok(new_bytes)
 }
 
 /// Every z10 tile present in the base archive — the dirty set when the base is
@@ -132,7 +141,7 @@ type WriteError = Box<dyn std::error::Error + Send + Sync>;
 pub async fn apply_edits(base_path: &Path, out_path: &Path, layers: &PopLayers) -> Result<u64, WriteError> {
     let reader = Arc::new(AsyncPmTilesReader::new_with_path(base_path).await?);
     let max_zoom = reader.get_header().max_zoom;
-    let new_bytes = regenerate(&reader, layers, max_zoom).await;
+    let new_bytes = regenerate(&reader, layers, max_zoom).await?;
 
     let file = std::fs::File::create(out_path)?;
     let mut writer = pmtiles::PmTilesWriter::new(TileType::Png)
@@ -178,5 +187,50 @@ pub async fn apply_edits(base_path: &Path, out_path: &Path, layers: &PopLayers) 
     }
 
     writer.finalize()?;
+
+    // Flush the written archive to disk before the caller renames it over the
+    // user's game file — a bare rename isn't power-loss-safe.
+    std::fs::OpenOptions::new().write(true).open(out_path)?.sync_all()?;
+
+    // Verify what we just wrote is a readable archive before it replaces the
+    // original. Catches a silently-wrong write (e.g. a corrupt/zeroed tile that
+    // slipped through) so the caller keeps the good file + backup.
+    let check = AsyncPmTilesReader::new_with_path(out_path)
+        .await
+        .map_err(|e| format!("verification of {} failed: {e}", out_path.display()))?;
+    if check.get_header().max_zoom != max_zoom {
+        return Err(format!(
+            "verification of {} failed: max_zoom {} != {max_zoom}",
+            out_path.display(),
+            check.get_header().max_zoom
+        )
+        .into());
+    }
+    drop(check);
+
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode, encode};
+    use turnout_core::pop_edit::TILE_PX;
+
+    #[test]
+    fn decode_encode_round_trips() {
+        let n = (TILE_PX * TILE_PX) as usize;
+        let grid: Vec<u16> = (0..n).map(|i| (i % 65536) as u16).collect();
+        let png = encode(grid.clone()).expect("encode a full tile");
+        let back = decode(&png).expect("decode the tile we just encoded");
+        assert_eq!(back, grid, "16-bit gray PNG must round-trip losslessly");
+    }
+
+    #[test]
+    fn decode_rejects_non_image_bytes() {
+        // The basis of the apply-time corruption guard: a base tile that fails to
+        // decode yields None, which base_values now turns into an error (aborting
+        // the apply) rather than silently substituting zeros into the game file.
+        assert!(decode(b"not a png at all").is_none());
+        assert!(decode(&[]).is_none());
+    }
 }

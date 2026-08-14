@@ -577,11 +577,19 @@ pub async fn pop_brush(
             &JsValue::from_f64(w), &JsValue::from_f64(s), &JsValue::from_f64(e), &JsValue::from_f64(n),
         ));
     }
+    // Fire-and-forget: the brush fires continuously as the pointer moves, so a
+    // per-stroke error toast would be spam. A genuine IPC failure is still
+    // recorded — the `invoke` wrapper leaves a warning breadcrumb for any failed
+    // command, so it shows up in a later crash report.
     let _ = invoke_obj("pop_brush", args).await;
 }
 
 pub async fn pop_clear_edits() {
-    let _ = invoke("pop_clear_edits", &JsValue::NULL).await;
+    // A discrete button press, so surface a failure to the user rather than a
+    // silent no-op.
+    if let Err(e) = invoke("pop_clear_edits", &JsValue::NULL).await {
+        report_error("clear population edits", &e);
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

@@ -593,29 +593,39 @@ impl ServerHandle {
         let (base, rect) = self.pop_region_base(&reader, west, south, east, north).await;
         let (gx0, gy0, gx1, gy1) = rect;
 
-        let mut layers = self.state.pop_layers.write().unpoison();
-        let current = region_sum(&base, &layers, rect);
-        let uniform = target / count as f64;
-        let factor = if current > 0.0 { target / current } else { 0.0 };
-
-        // Set the active layer's delta so the composite effective density hits the
-        // per-pixel target, relative to the base and the other visible layers.
-        for gy in gy0..=gy1 {
-            for gx in gx0..=gx1 {
-                let (tx, ty) = (gx / TILE_PX, gy / TILE_PX);
-                let (px, py) = ((gx % TILE_PX) as u16, (gy % TILE_PX) as u16);
-                let base_v = base_at(&base, tx, ty, px, py);
-                let target_eff = if flat || current <= 0.0 {
-                    uniform
-                } else {
-                    f64::from(layers.effective(base_v, tx, ty, px, py)) * factor
-                };
-                let target_eff = target_eff.round().clamp(0.0, f64::from(u16::MAX)) as i64;
-                // The active-layer delta lifts everything beneath it up to the target.
-                let beneath = i64::from(layers.effective_excluding_active(base_v, tx, ty, px, py));
-                let delta = target_eff - beneath;
-                layers.set_delta(tx, ty, px, py, delta.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
+        // Compute every pixel's new delta under a *shared read* lock (which tile
+        // rendering also takes, so renders keep running), then take the exclusive
+        // write lock only long enough to apply them. Holding the write lock across
+        // the whole ~8M-pixel composite would stall all tile serving.
+        let updates: Vec<(u32, u32, u16, u16, i32)> = {
+            let layers = self.state.pop_layers.read().unpoison();
+            let current = region_sum(&base, &layers, rect);
+            let uniform = target / count as f64;
+            let factor = if current > 0.0 { target / current } else { 0.0 };
+            let mut updates = Vec::with_capacity(count as usize);
+            for gy in gy0..=gy1 {
+                for gx in gx0..=gx1 {
+                    let (tx, ty) = (gx / TILE_PX, gy / TILE_PX);
+                    let (px, py) = ((gx % TILE_PX) as u16, (gy % TILE_PX) as u16);
+                    let base_v = base_at(&base, tx, ty, px, py);
+                    let target_eff = if flat || current <= 0.0 {
+                        uniform
+                    } else {
+                        f64::from(layers.effective(base_v, tx, ty, px, py)) * factor
+                    };
+                    let target_eff = target_eff.round().clamp(0.0, f64::from(u16::MAX)) as i64;
+                    // The active-layer delta lifts everything beneath it up to the target.
+                    let beneath = i64::from(layers.effective_excluding_active(base_v, tx, ty, px, py));
+                    let delta = target_eff - beneath;
+                    updates.push((tx, ty, px, py, delta.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32));
+                }
             }
+            updates
+        };
+
+        let mut layers = self.state.pop_layers.write().unpoison();
+        for (tx, ty, px, py, delta) in updates {
+            layers.set_delta(tx, ty, px, py, delta);
         }
         drop(layers);
         self.clear_cache();

@@ -592,20 +592,53 @@ pub async fn pop_apply(app: tauri::AppHandle) -> CommandResult<u64> {
     // thread that drives it with the current runtime.
     let tmp = game.with_extension("pmtiles.turnout-tmp");
     let (game_w, tmp_w) = (game.clone(), tmp.clone());
-    let count = tokio::task::spawn_blocking(move || {
+    let write = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(crate::pop_write::apply_edits(&game_w, &tmp_w, &layers))
     })
     .await
-    .map_err(|e| CommandError::Io(e.to_string()))?
-    .map_err(|e| CommandError::Io(format!("Write failed: {e}")))?;
-    std::fs::rename(&tmp, &game).map_err(|e| CommandError::Io(format!("Swap-in failed: {e}")))?;
+    .map_err(|e| CommandError::Io(e.to_string()))?;
+    let count = match write {
+        Ok(count) => count,
+        Err(e) => {
+            // Don't leave the partial temp behind for the next apply to trip over.
+            let _ = std::fs::remove_file(&tmp);
+            return Err(CommandError::Io(format!("Write failed: {e}")));
+        }
+    };
 
+    // Drop the tile server's cached mmap readers on the pre-swap file *before* the
+    // rename (and again after), so no reader lingers on the old inode serving
+    // stale tiles across the swap.
+    let handle = population_handle(&app.state::<OverlayState>());
+    if let Some(h) = &handle {
+        h.evict_pop_readers();
+    }
+    std::fs::rename(&tmp, &game).map_err(|e| CommandError::Io(format!("Swap-in failed: {e}")))?;
     // Edits are baked into the file now: reset the session and re-read the base.
-    if let Some(handle) = population_handle(&app.state::<OverlayState>()) {
-        handle.clear_pop_edits();
-        handle.evict_pop_readers();
+    if let Some(h) = &handle {
+        h.clear_pop_edits();
+        h.evict_pop_readers();
     }
     Ok(count)
+}
+
+/// Cheap sanity check that a backup file is a plausible `pmtiles` archive before
+/// we copy it over the live game file: the `PMTiles` v3 magic (`"PMTiles"`) and a
+/// size past the header. Catches an empty or truncated backup (e.g. the process
+/// died during the initial copy) that would otherwise clobber a good game file.
+fn backup_is_valid(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < 128 {
+        return false;
+    }
+    let mut magic = [0u8; 7];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok()
+        && &magic == b"PMTiles"
 }
 
 /// Restore the pristine original population map from the backup.
@@ -616,6 +649,11 @@ pub fn pop_restore_original(app: tauri::AppHandle) -> CommandResult<()> {
         .ok_or_else(|| CommandError::NotFound("Could not find the game's population map.".into()))?;
     let backup = pop_backup_path(&app).filter(|p| p.exists())
         .ok_or_else(|| CommandError::NotFound("No backup to restore.".into()))?;
+    if !backup_is_valid(&backup) {
+        return Err(CommandError::Io(
+            "The backup looks incomplete or corrupt; not restoring over the game file.".into(),
+        ));
+    }
     std::fs::copy(&backup, &game).map_err(|e| CommandError::Io(format!("Restore failed: {e}")))?;
     if let Some(handle) = population_handle(&app.state::<OverlayState>()) {
         handle.clear_pop_edits();
@@ -1016,3 +1054,41 @@ fn build_status(groups: &[TileGroup]) -> OverlayStatus {
 
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::backup_is_valid;
+    use std::io::Write;
+
+    #[test]
+    fn backup_validity_checks_magic_and_size() {
+        let dir = std::env::temp_dir();
+        let uniq = std::process::id();
+
+        // Valid: the PMTiles magic followed by enough bytes to clear the header.
+        let good = dir.join(format!("turnout-backup-good-{uniq}.pmtiles"));
+        {
+            let mut f = std::fs::File::create(&good).expect("create good");
+            f.write_all(b"PMTiles").expect("write magic");
+            f.write_all(&[0u8; 200]).expect("write padding");
+        }
+        assert!(backup_is_valid(&good));
+
+        // Truncated: right magic but smaller than a header — reject.
+        let small = dir.join(format!("turnout-backup-small-{uniq}.pmtiles"));
+        std::fs::write(&small, b"PMTiles").expect("write small");
+        assert!(!backup_is_valid(&small));
+
+        // Wrong magic — reject.
+        let bad = dir.join(format!("turnout-backup-bad-{uniq}.pmtiles"));
+        std::fs::write(&bad, vec![0u8; 300]).expect("write bad");
+        assert!(!backup_is_valid(&bad));
+
+        // Missing file — reject.
+        assert!(!backup_is_valid(&dir.join(format!("turnout-backup-missing-{uniq}.pmtiles"))));
+
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&small);
+        let _ = std::fs::remove_file(&bad);
+    }
+}
