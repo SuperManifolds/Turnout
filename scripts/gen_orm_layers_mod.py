@@ -36,14 +36,22 @@ TYPE_COLORS = {
 
 # Screen-space widths (tenths of a pixel): thin, zoom-stable overlay lines that
 # don't balloon with real-world scale when zoomed in.
-HALF_STROKE_PX = 12            # 1.2 px half-stroke -> ~2.4 px line
+HALF_STROKE_PX = 12            # 1.2 px half-stroke -> ~2.4 px line at ground level
 CASING_EXTRA_PX = 12          # extra half-stroke for the bridge casing pass
 CASING_COLOR = "#1a1a1aff"     # dark casing under bridges
 TUNNEL_TEXTURE = "textures/dash.png"
 # Distinct from the tunnel dash so construction/proposed can't be mistaken for a tunnel.
 CONSTRUCTION_TEXTURE = "textures/construction.png"
 GROUND_LIGHTNESS = 0.56         # level 0; hue-independent so every type ramps alike
-LIGHTNESS_STEP = 0.072         # per level (deeper darker, higher lighter)
+# Lightness alone (a subtle per-level shade) barely reads on a ~2.4 px line, so the
+# vertical level is also encoded as line weight below. A wider lightness step than
+# before still helps at a glance on the wider (elevated) lines.
+LIGHTNESS_STEP = 0.11          # per level (deeper darker, higher lighter)
+# Per-level half-stroke ramp (tenths of a px): deeper underground draws thinner,
+# higher elevated bolder, so the level reads from line weight even where adjacent
+# lightness shades are close. Clamped so the deepest/highest lines stay legible.
+WIDTH_STEP_PX = 2
+HALF_STROKE_MIN, HALF_STROKE_MAX = 7, 22
 LIGHTNESS_MIN, LIGHTNESS_MAX = 0.20, 0.85
 PLATFORM_FILL_ALPHA = "aa"     # semi-transparent so the platform reads as a pad
 # Rail modes a platform can serve (via OSM boolean flags), coloured like the tracks.
@@ -68,6 +76,12 @@ def level_color(base_hex: str, level: int) -> str:
     lightness = max(LIGHTNESS_MIN, min(LIGHTNESS_MAX, GROUND_LIGHTNESS + level * LIGHTNESS_STEP))
     r, g, b = colorsys.hls_to_rgb(h, lightness, s)
     return "#%02x%02x%02xff" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def level_half_stroke(level: int) -> int:
+    """Half-stroke width (tenths of a px) for a vertical level: thinner deeper,
+    bolder higher, so the level reads from line weight as well as lightness."""
+    return max(HALF_STROKE_MIN, min(HALF_STROKE_MAX, HALF_STROKE_PX + level * WIDTH_STEP_PX))
 
 
 def layer_name(level: int) -> str:
@@ -99,10 +113,10 @@ def rule(level: int, rtype: str) -> str:
         *not_lifecycle,
         f"pass1_color = {CASING_COLOR}",
         "pass1_half_stroke_phys_mm = 0",
-        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX + CASING_EXTRA_PX}",
+        f"pass1_half_stroke_px_dec = {level_half_stroke(level) + CASING_EXTRA_PX}",
         f"pass2_color = {color}",
         "pass2_half_stroke_phys_mm = 0",
-        f"pass2_half_stroke_px_dec = {HALF_STROKE_PX}",
+        f"pass2_half_stroke_px_dec = {level_half_stroke(level)}",
         f"gameplay_layer = {level}",
     ]))
 
@@ -116,7 +130,7 @@ def rule(level: int, rtype: str) -> str:
         f"pass1_color = {color}",
         f"pass1_texture = {TUNNEL_TEXTURE}",
         "pass1_half_stroke_phys_mm = 0",
-        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+        f"pass1_half_stroke_px_dec = {level_half_stroke(level)}",
         f"gameplay_layer = {level}",
     ]))
 
@@ -130,7 +144,7 @@ def rule(level: int, rtype: str) -> str:
         *not_lifecycle,
         f"pass1_color = {color}",
         "pass1_half_stroke_phys_mm = 0",
-        f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+        f"pass1_half_stroke_px_dec = {level_half_stroke(level)}",
         f"gameplay_layer = {level}",
     ]))
 
@@ -150,11 +164,11 @@ def rule(level: int, rtype: str) -> str:
             "and bridge = yes",
             f"pass1_color = {CASING_COLOR}",
             "pass1_half_stroke_phys_mm = 0",
-            f"pass1_half_stroke_px_dec = {HALF_STROKE_PX + CASING_EXTRA_PX}",
+            f"pass1_half_stroke_px_dec = {level_half_stroke(level) + CASING_EXTRA_PX}",
             f"pass2_color = {fill}",
             f"pass2_texture = {CONSTRUCTION_TEXTURE}",
             "pass2_half_stroke_phys_mm = 0",
-            f"pass2_half_stroke_px_dec = {HALF_STROKE_PX}",
+            f"pass2_half_stroke_px_dec = {level_half_stroke(level)}",
             f"gameplay_layer = {level}",
         ]))
 
@@ -168,7 +182,7 @@ def rule(level: int, rtype: str) -> str:
             f"pass1_color = {tunnel_fill}",
             f"pass1_texture = {CONSTRUCTION_TEXTURE}",
             "pass1_half_stroke_phys_mm = 0",
-            f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+            f"pass1_half_stroke_px_dec = {level_half_stroke(level)}",
             f"gameplay_layer = {level}",
         ]))
 
@@ -183,7 +197,7 @@ def rule(level: int, rtype: str) -> str:
             f"pass1_color = {fill}",
             f"pass1_texture = {CONSTRUCTION_TEXTURE}",
             "pass1_half_stroke_phys_mm = 0",
-            f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+            f"pass1_half_stroke_px_dec = {level_half_stroke(level)}",
             f"gameplay_layer = {level}",
         ]))
     return "".join(out)
@@ -219,7 +233,7 @@ def platform_rules(level: int) -> str:
             f"and mode = {mode}",
             f"pass1_color = {color}",
             "pass1_half_stroke_phys_mm = 0",
-            f"pass1_half_stroke_px_dec = {HALF_STROKE_PX}",
+            f"pass1_half_stroke_px_dec = {level_half_stroke(level)}",
             f"gameplay_layer = {level}",
         ]))
     return "".join(out)
