@@ -29,7 +29,7 @@ futures = "0.3"
 # NOT the maplibre `wgpu` backend feature (that upstream backend does not build);
 # the wgpu crate on its own reads adapter names fine.
 wgpu = "29.0.0"
-lru = "0.12"
+lru = "0.16.3"
 quick-xml = "0.37"
 tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
