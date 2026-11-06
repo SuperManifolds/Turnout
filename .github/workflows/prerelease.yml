@@ -248,6 +248,8 @@ jobs:
           ( cd "$work" && "$OLDPWD/$appimage" --appimage-extract >/dev/null )
           rm -fv "$work"/squashfs-root/usr/lib/libxcb*.so* \
                  "$work"/squashfs-root/usr/lib/libwayland*.so*
+          # appimagetool rejects an AppDir that other users cannot read; the bundler's dirs are 0700.
+          chmod -R a+rX "$work/squashfs-root"
 
           out="$work/Turnout_amd64.AppImage"
           ARCH=x86_64 "$tooldir/appimagetool" --appimage-extract-and-run \
