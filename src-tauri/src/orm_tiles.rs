@@ -55,6 +55,13 @@ const MAX_NATIVE_ZOOM: u8 = 19;
 const PARENT_CACHE_CAPACITY: usize = 32;
 const RENDER_TIMEOUT_SECS: u64 = 30;
 const STATS_INTERVAL: u64 = 50;
+/// A render slower than this (ms) counts toward the sustained-slow signal. Healthy
+/// hardware renders a tile in tens of ms; seconds means a software fallback.
+const SLOW_RENDER_MS: u128 = 2000;
+/// How many slow renders a process takes before one Sentry event flags the install
+/// as slow (usually a software Vulkan fallback). High enough to ignore a cold cache
+/// or a one-off stall, low enough to catch a user who notices the lag.
+const SLOW_RENDER_STREAK: u64 = 20;
 const WORKER_RESTART_DELAY_SECS: u64 = 1;
 /// Cap on consecutive panic-restarts of a render worker. Past this it stays down
 /// rather than spinning forever (each restart burns a `WORKER_RESTART_DELAY_SECS`
@@ -195,6 +202,12 @@ struct OrmShared {
     /// (and captured by Sentry) a single time per process rather than once per
     /// worker per idle warm-up pass.
     render_failure_logged: AtomicBool,
+    /// Renders slower than [`SLOW_RENDER_MS`] seen this process, and whether the
+    /// sustained-slow signal has fired. A persistently slow install (usually a
+    /// software Vulkan fallback) is otherwise invisible: the overlay works, just
+    /// slowly, so nothing crashes and nothing reaches Sentry.
+    slow_render_count: AtomicU64,
+    slow_render_reported: AtomicBool,
 }
 
 impl OrmShared {
@@ -211,6 +224,15 @@ impl OrmShared {
 
     fn render_failure(&self) -> Option<String> {
         self.render_failure.lock().unpoison().clone()
+    }
+
+    /// Counts a slow render and returns true exactly once, when slow renders first
+    /// cross [`SLOW_RENDER_STREAK`] for this process, so the caller emits a single
+    /// Sentry event (carrying the GPU scope tags) for a persistently slow install
+    /// rather than staying silent or logging on every tile.
+    fn note_slow_render(&self) -> bool {
+        let n = self.slow_render_count.fetch_add(1, Ordering::Relaxed) + 1;
+        n >= SLOW_RENDER_STREAK && !self.slow_render_reported.swap(true, Ordering::SeqCst)
     }
 }
 
@@ -332,6 +354,8 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         bound_port: AtomicU16::new(0),
         render_failure: Mutex::new(None),
         render_failure_logged: AtomicBool::new(false),
+        slow_render_count: AtomicU64::new(0),
+        slow_render_reported: AtomicBool::new(false),
     });
 
     let cache_dir = dirs_next::cache_dir()
@@ -826,7 +850,15 @@ fn render_worker_inner(
 
         match raw_result {
             Ok(raw) => {
-                if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > 2000 {
+                if render_ms > SLOW_RENDER_MS && shared.note_slow_render() {
+                    // One Sentry-visible event per process. The GPU scope tags
+                    // (render_device_software, gpu, vulkan_icds) travel with it, so
+                    // a "Turnout ORM is slow" report becomes diagnosable instead of
+                    // relying on the user to inspect their own GPU.
+                    tracing::error!(
+                        "ORM rendering is persistently slow: worker {id} tile '{style}' z{z} took {render_ms}ms ({render_count} rendered). Usually a software-GPU fallback (see the render_device_software tag and the Settings GPU picker)."
+                    );
+                } else if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > SLOW_RENDER_MS {
                     tracing::debug!(
                         "worker {id} rendered {render_count} tiles (last: {render_ms}ms)"
                     );
@@ -1034,6 +1066,8 @@ mod tests {
             bound_port: AtomicU16::new(0),
             render_failure: Mutex::new(None),
             render_failure_logged: AtomicBool::new(false),
+            slow_render_count: AtomicU64::new(0),
+            slow_render_reported: AtomicBool::new(false),
         }
     }
 
@@ -1049,5 +1083,19 @@ mod tests {
         // Every later failure (one per worker per pass) stays quiet.
         assert!(!shared.note_render_failure("ErrorInitializationFailed"));
         assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+    }
+
+    #[test]
+    fn slow_render_reports_once_after_streak() {
+        let shared = test_shared();
+        // Below the streak: a few slow renders don't fire (cold cache, one-off stall).
+        for _ in 0..SLOW_RENDER_STREAK - 1 {
+            assert!(!shared.note_slow_render());
+        }
+        // Crossing the streak fires exactly once.
+        assert!(shared.note_slow_render());
+        // Every later slow render stays quiet.
+        assert!(!shared.note_slow_render());
+        assert!(!shared.note_slow_render());
     }
 }
