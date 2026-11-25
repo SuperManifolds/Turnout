@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,13 @@ const MAX_NATIVE_ZOOM: u8 = 19;
 const PARENT_CACHE_CAPACITY: usize = 32;
 const RENDER_TIMEOUT_SECS: u64 = 30;
 const STATS_INTERVAL: u64 = 50;
+/// A render slower than this (ms) counts toward the sustained-slow signal. Healthy
+/// hardware renders a tile in tens of ms; seconds means a software fallback.
+const SLOW_RENDER_MS: u128 = 2000;
+/// How many slow renders a process takes before one Sentry event flags the install
+/// as slow (usually a software Vulkan fallback). High enough to ignore a cold cache
+/// or a one-off stall, low enough to catch a user who notices the lag.
+const SLOW_RENDER_STREAK: u64 = 20;
 const WORKER_RESTART_DELAY_SECS: u64 = 1;
 /// Cap on consecutive panic-restarts of a render worker. Past this it stays down
 /// rather than spinning forever (each restart burns a `WORKER_RESTART_DELAY_SECS`
@@ -186,6 +193,47 @@ struct OrmShared {
     base_url: RwLock<String>,
     generation: AtomicU64,
     bound_port: AtomicU16,
+    /// Why the render backend became unavailable after start-up: a worker
+    /// enumerated a Vulkan device at preflight but then failed logical-device
+    /// creation and exited. Surfaced to the UI via `orm_disabled_reason` so the
+    /// overlay's absence is explained instead of silent.
+    render_failure: Mutex<Option<String>>,
+    /// Set once the first worker reports a render failure, so the error is logged
+    /// (and captured by Sentry) a single time per process rather than once per
+    /// worker per idle warm-up pass.
+    render_failure_logged: AtomicBool,
+    /// Renders slower than [`SLOW_RENDER_MS`] seen this process, and whether the
+    /// sustained-slow signal has fired. A persistently slow install (usually a
+    /// software Vulkan fallback) is otherwise invisible: the overlay works, just
+    /// slowly, so nothing crashes and nothing reaches Sentry.
+    slow_render_count: AtomicU64,
+    slow_render_reported: AtomicBool,
+}
+
+impl OrmShared {
+    /// Records why the render backend could not initialize and returns `true` the
+    /// first time only, so the caller logs one Sentry-visible error and stays
+    /// quiet after. One unusable GPU otherwise emits an event per worker per pass.
+    fn note_render_failure(&self, detail: &str) -> bool {
+        let reason = format!(
+            "GPU Vulkan device initialization failed ({detail}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this."
+        );
+        *self.render_failure.lock().unpoison() = Some(reason);
+        !self.render_failure_logged.swap(true, Ordering::SeqCst)
+    }
+
+    fn render_failure(&self) -> Option<String> {
+        self.render_failure.lock().unpoison().clone()
+    }
+
+    /// Counts a slow render and returns true exactly once, when slow renders first
+    /// cross [`SLOW_RENDER_STREAK`] for this process, so the caller emits a single
+    /// Sentry event (carrying the GPU scope tags) for a persistently slow install
+    /// rather than staying silent or logging on every tile.
+    fn note_slow_render(&self) -> bool {
+        let n = self.slow_render_count.fetch_add(1, Ordering::Relaxed) + 1;
+        n >= SLOW_RENDER_STREAK && !self.slow_render_reported.swap(true, Ordering::SeqCst)
+    }
 }
 
 struct OrmTileState {
@@ -204,6 +252,14 @@ pub struct OrmHandle {
 }
 
 impl OrmHandle {
+    /// Why the render backend disabled itself after a runtime warm-up failure, or
+    /// `None` while rendering works. Distinct from the preflight reason in
+    /// [`OrmAvailability`]: this covers a device that passed preflight enumeration
+    /// but then failed logical-device creation inside a worker.
+    pub fn render_failure(&self) -> Option<String> {
+        self.shared.render_failure()
+    }
+
     /// Switches the renderer between offline (`Some`) and online (`None`) mode.
     ///
     /// Ordering is load-bearing: the directory is published first so any worker
@@ -258,7 +314,11 @@ impl OrmAvailability {
 #[allow(clippy::needless_pass_by_value)]
 pub fn orm_disabled_reason(app: tauri::AppHandle) -> Option<String> {
     use tauri::Manager;
-    app.try_state::<OrmAvailability>().and_then(|s| s.reason())
+    // The preflight reason (set before the handle exists) takes precedence; fall
+    // back to a runtime warm-up failure recorded on the handle's shared state.
+    app.try_state::<OrmAvailability>()
+        .and_then(|s| s.reason())
+        .or_else(|| app.try_state::<OrmHandle>().and_then(|h| h.render_failure()))
 }
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
@@ -271,14 +331,14 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
     let loader = crate::vulkan::probe_loader();
     if !loader.usable() {
         return Err(format!(
-            "Vulkan loader {} ({}); ORM tile rendering disabled",
+            "Vulkan loader {} ({}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this.",
             loader.tag(),
             loader.path.as_deref().unwrap_or("no path")
         )
         .into());
     }
     if !crate::gpu::render_backend_available() {
-        return Err("no Vulkan-capable GPU found; ORM tile rendering disabled".into());
+        return Err("no working Vulkan GPU found (device creation failed); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this.".into());
     }
 
     let dispatch = Arc::new(Dispatch {
@@ -292,6 +352,10 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
+        render_failure: Mutex::new(None),
+        render_failure_logged: AtomicBool::new(false),
+        slow_render_count: AtomicU64::new(0),
+        slow_render_reported: AtomicBool::new(false),
     });
 
     let cache_dir = dirs_next::cache_dir()
@@ -679,9 +743,15 @@ fn render_worker_inner(
                 Ok(false) => pop_key_blocking(dispatch),
                 Err(e) => {
                     // The graphics backend can't initialize; ORM can't render.
-                    // Exit cleanly (no crash, no restart spin) — the worker's
-                    // catch_unwind treats a normal return as a clean shutdown.
-                    tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    // Record why so the UI can tell the user, exit cleanly (no
+                    // crash, no restart spin — catch_unwind treats a normal return
+                    // as shutdown), and log the error only for the first worker so
+                    // one unusable GPU doesn't flood Sentry with an event each.
+                    if shared.note_render_failure(&e.to_string()) {
+                        tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    } else {
+                        tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
+                    }
                     return;
                 }
             }
@@ -727,7 +797,11 @@ fn render_worker_inner(
                     tracing::debug!("worker {id} style '{style}' loaded");
                 }
                 Err(e) => {
-                    tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    if shared.note_render_failure(&e.to_string()) {
+                        tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    } else {
+                        tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
+                    }
                     return;
                 }
             }
@@ -776,7 +850,15 @@ fn render_worker_inner(
 
         match raw_result {
             Ok(raw) => {
-                if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > 2000 {
+                if render_ms > SLOW_RENDER_MS && shared.note_slow_render() {
+                    // One Sentry-visible event per process. The GPU scope tags
+                    // (render_device_software, gpu, vulkan_icds) travel with it, so
+                    // a "Turnout ORM is slow" report becomes diagnosable instead of
+                    // relying on the user to inspect their own GPU.
+                    tracing::error!(
+                        "ORM rendering is persistently slow: worker {id} tile '{style}' z{z} took {render_ms}ms ({render_count} rendered). Usually a software-GPU fallback (see the render_device_software tag and the Settings GPU picker)."
+                    );
+                } else if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > SLOW_RENDER_MS {
                     tracing::debug!(
                         "worker {id} rendered {render_count} tiles (last: {render_ms}ms)"
                     );
@@ -974,5 +1056,46 @@ mod tests {
         let parent = RawImage::from_pixel(TILE_SIZE, TILE_SIZE, Rgba([1, 2, 3, 4]));
         let child = crop_and_upscale(&parent, MAX_NATIVE_ZOOM + 1, 21, 41);
         assert_eq!(child.dimensions(), (TILE_SIZE, TILE_SIZE));
+    }
+
+    fn test_shared() -> OrmShared {
+        OrmShared {
+            offline_dir: RwLock::new(None),
+            base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+            generation: AtomicU64::new(0),
+            bound_port: AtomicU16::new(0),
+            render_failure: Mutex::new(None),
+            render_failure_logged: AtomicBool::new(false),
+            slow_render_count: AtomicU64::new(0),
+            slow_render_reported: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn render_failure_is_recorded_and_logged_once() {
+        let shared = test_shared();
+        assert_eq!(shared.render_failure(), None);
+        // First failure logs (returns true) and records a user-facing reason.
+        assert!(shared.note_render_failure("ErrorInitializationFailed"));
+        let reason = shared.render_failure().expect("reason recorded");
+        assert!(reason.contains("ErrorInitializationFailed"));
+        assert!(reason.contains("graphics drivers"));
+        // Every later failure (one per worker per pass) stays quiet.
+        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+    }
+
+    #[test]
+    fn slow_render_reports_once_after_streak() {
+        let shared = test_shared();
+        // Below the streak: a few slow renders don't fire (cold cache, one-off stall).
+        for _ in 0..SLOW_RENDER_STREAK - 1 {
+            assert!(!shared.note_slow_render());
+        }
+        // Crossing the streak fires exactly once.
+        assert!(shared.note_slow_render());
+        // Every later slow render stays quiet.
+        assert!(!shared.note_slow_render());
+        assert!(!shared.note_slow_render());
     }
 }

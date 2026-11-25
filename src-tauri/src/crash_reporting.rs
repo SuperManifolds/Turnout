@@ -169,6 +169,17 @@ fn attach_gpu_scope(store: Option<&serde_json::Value>) {
         if let Some(backend) = &selected_backend {
             scope.set_tag("gpu_selected_backend", backend.as_str());
         }
+        // The adapter mbgl actually renders with: the pinned one, else the
+        // best-ranked (first). Whether it is a software rasterizer (lavapipe /
+        // WARP) is the decisive signal for "ORM is slow" reports, since a software
+        // fallback pegs the CPU and renders tiles at seconds each.
+        let render_device = selected
+            .and_then(|name| gpus.iter().find(|g| g.name == name))
+            .or(primary);
+        if let Some(g) = render_device {
+            scope.set_tag("render_device", g.name.as_str());
+            scope.set_tag("render_device_software", if g.is_software { "yes" } else { "no" });
+        }
         if let Some(g) = primary {
             scope.set_context(
                 "gpu",
