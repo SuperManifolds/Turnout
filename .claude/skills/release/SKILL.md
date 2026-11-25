@@ -324,6 +324,16 @@ The build made a **draft** release. Confirm it's whole before publishing.
   (Editing the body in the GitHub UI and clicking "Publish release" is equivalent
   — just ensure "Set as the latest release" is ticked and "pre-release" is not.)
 
+  **`gh release edit` can return `HTTP 504` and still have applied the publish**
+  (seen in the v0.4.2 release — the edit went through, draft flipped to published,
+  notes updated). Don't blind-retry or assume it failed: re-read the release state
+  first, and only re-run the edit if `isDraft` is still `true`.
+
+  ```sh
+  gh release view v0.3.0 --repo SuperManifolds/Turnout --json isDraft,isPrerelease \
+    --jq '"draft=\(.isDraft) prerelease=\(.isPrerelease)"'   # draft=false means it published
+  ```
+
 ### Phase 7: Post-publish verify
 
 - **Claude** confirms the release is live and *latest*, and that the updater will
