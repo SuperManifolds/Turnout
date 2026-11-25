@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -186,6 +186,32 @@ struct OrmShared {
     base_url: RwLock<String>,
     generation: AtomicU64,
     bound_port: AtomicU16,
+    /// Why the render backend became unavailable after start-up: a worker
+    /// enumerated a Vulkan device at preflight but then failed logical-device
+    /// creation and exited. Surfaced to the UI via `orm_disabled_reason` so the
+    /// overlay's absence is explained instead of silent.
+    render_failure: Mutex<Option<String>>,
+    /// Set once the first worker reports a render failure, so the error is logged
+    /// (and captured by Sentry) a single time per process rather than once per
+    /// worker per idle warm-up pass.
+    render_failure_logged: AtomicBool,
+}
+
+impl OrmShared {
+    /// Records why the render backend could not initialize and returns `true` the
+    /// first time only, so the caller logs one Sentry-visible error and stays
+    /// quiet after. One unusable GPU otherwise emits an event per worker per pass.
+    fn note_render_failure(&self, detail: &str) -> bool {
+        let reason = format!(
+            "GPU Vulkan device initialization failed ({detail}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this."
+        );
+        *self.render_failure.lock().unpoison() = Some(reason);
+        !self.render_failure_logged.swap(true, Ordering::SeqCst)
+    }
+
+    fn render_failure(&self) -> Option<String> {
+        self.render_failure.lock().unpoison().clone()
+    }
 }
 
 struct OrmTileState {
@@ -204,6 +230,14 @@ pub struct OrmHandle {
 }
 
 impl OrmHandle {
+    /// Why the render backend disabled itself after a runtime warm-up failure, or
+    /// `None` while rendering works. Distinct from the preflight reason in
+    /// [`OrmAvailability`]: this covers a device that passed preflight enumeration
+    /// but then failed logical-device creation inside a worker.
+    pub fn render_failure(&self) -> Option<String> {
+        self.shared.render_failure()
+    }
+
     /// Switches the renderer between offline (`Some`) and online (`None`) mode.
     ///
     /// Ordering is load-bearing: the directory is published first so any worker
@@ -258,7 +292,11 @@ impl OrmAvailability {
 #[allow(clippy::needless_pass_by_value)]
 pub fn orm_disabled_reason(app: tauri::AppHandle) -> Option<String> {
     use tauri::Manager;
-    app.try_state::<OrmAvailability>().and_then(|s| s.reason())
+    // The preflight reason (set before the handle exists) takes precedence; fall
+    // back to a runtime warm-up failure recorded on the handle's shared state.
+    app.try_state::<OrmAvailability>()
+        .and_then(|s| s.reason())
+        .or_else(|| app.try_state::<OrmHandle>().and_then(|h| h.render_failure()))
 }
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
@@ -271,14 +309,14 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
     let loader = crate::vulkan::probe_loader();
     if !loader.usable() {
         return Err(format!(
-            "Vulkan loader {} ({}); ORM tile rendering disabled",
+            "Vulkan loader {} ({}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this.",
             loader.tag(),
             loader.path.as_deref().unwrap_or("no path")
         )
         .into());
     }
     if !crate::gpu::render_backend_available() {
-        return Err("no Vulkan-capable GPU found; ORM tile rendering disabled".into());
+        return Err("no working Vulkan GPU found (device creation failed); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this.".into());
     }
 
     let dispatch = Arc::new(Dispatch {
@@ -292,6 +330,8 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
+        render_failure: Mutex::new(None),
+        render_failure_logged: AtomicBool::new(false),
     });
 
     let cache_dir = dirs_next::cache_dir()
@@ -679,9 +719,15 @@ fn render_worker_inner(
                 Ok(false) => pop_key_blocking(dispatch),
                 Err(e) => {
                     // The graphics backend can't initialize; ORM can't render.
-                    // Exit cleanly (no crash, no restart spin) — the worker's
-                    // catch_unwind treats a normal return as a clean shutdown.
-                    tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    // Record why so the UI can tell the user, exit cleanly (no
+                    // crash, no restart spin — catch_unwind treats a normal return
+                    // as shutdown), and log the error only for the first worker so
+                    // one unusable GPU doesn't flood Sentry with an event each.
+                    if shared.note_render_failure(&e.to_string()) {
+                        tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    } else {
+                        tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
+                    }
                     return;
                 }
             }
@@ -727,7 +773,11 @@ fn render_worker_inner(
                     tracing::debug!("worker {id} style '{style}' loaded");
                 }
                 Err(e) => {
-                    tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    if shared.note_render_failure(&e.to_string()) {
+                        tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    } else {
+                        tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
+                    }
                     return;
                 }
             }
@@ -974,5 +1024,30 @@ mod tests {
         let parent = RawImage::from_pixel(TILE_SIZE, TILE_SIZE, Rgba([1, 2, 3, 4]));
         let child = crop_and_upscale(&parent, MAX_NATIVE_ZOOM + 1, 21, 41);
         assert_eq!(child.dimensions(), (TILE_SIZE, TILE_SIZE));
+    }
+
+    fn test_shared() -> OrmShared {
+        OrmShared {
+            offline_dir: RwLock::new(None),
+            base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+            generation: AtomicU64::new(0),
+            bound_port: AtomicU16::new(0),
+            render_failure: Mutex::new(None),
+            render_failure_logged: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn render_failure_is_recorded_and_logged_once() {
+        let shared = test_shared();
+        assert_eq!(shared.render_failure(), None);
+        // First failure logs (returns true) and records a user-facing reason.
+        assert!(shared.note_render_failure("ErrorInitializationFailed"));
+        let reason = shared.render_failure().expect("reason recorded");
+        assert!(reason.contains("ErrorInitializationFailed"));
+        assert!(reason.contains("graphics drivers"));
+        // Every later failure (one per worker per pass) stays quiet.
+        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
     }
 }

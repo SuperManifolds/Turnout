@@ -112,10 +112,13 @@ fn backend_rank(b: wgpu::Backend) -> u8 {
 /// machine with no Vulkan-capable device, mbgl's Vulkan init dereferences a null
 /// loader (`vk::DispatchLoaderDynamic::init`) and takes the whole process down with
 /// an uncatchable C++ access violation — it offers no fallible path. `wgpu`, by
-/// contrast, enumerates the same devices and simply returns an empty list when
-/// Vulkan is unavailable, so we probe with it first and let the caller skip ORM
-/// rendering (rather than crash) when nothing turns up. A software Vulkan (lavapipe)
-/// still counts — mbgl runs on it, slowly, without crashing.
+/// contrast, probes the same devices fallibly, so we test with it first and let the
+/// caller skip ORM rendering (rather than crash) when none works. We go past
+/// enumeration to actually create a logical device, because a device can enumerate
+/// yet fail creation (a broken/absent ICD — the `vulkan_icds=none` case — where
+/// mbgl's `createDeviceUnique` aborts); enumeration alone would pass and every
+/// render worker would then fail. A software Vulkan (lavapipe) still counts — mbgl
+/// runs on it, slowly, without crashing.
 #[must_use]
 pub fn render_backend_available() -> bool {
     #[cfg(target_os = "macos")]
@@ -125,7 +128,23 @@ pub fn render_backend_available() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         let instance = instance(wgpu::Backends::VULKAN);
-        !block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN)).is_empty()
+        let adapters = block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
+        // Enumeration alone is an incomplete signal: an adapter can be listed yet
+        // fail *logical-device* creation — the `vulkan_icds=none` / broken-ICD case,
+        // where mbgl's `createDeviceUnique` aborts with `ErrorInitializationFailed`
+        // and every render worker then exits. Probe actual device creation (what
+        // mbgl does) so ORM is disabled cleanly up front instead. A device that
+        // only creates on a software Vulkan (lavapipe) still counts — mbgl runs on
+        // it, slowly. Request the adapter's own limits, not the defaults, so a weak
+        // but working GPU isn't rejected for missing a limit ORM never needs.
+        adapters.iter().any(|a| {
+            let desc = wgpu::DeviceDescriptor {
+                label: Some("orm-vulkan-preflight"),
+                required_limits: a.limits(),
+                ..Default::default()
+            };
+            block_on(a.request_device(&desc)).is_ok()
+        })
     }
 }
 
