@@ -22,6 +22,8 @@ const ORM_STYLES: &[(&str, &str)] = &[
     ("signals", "Signals"),
     ("electrification", "Electrification"),
     ("track", "Track"),
+    ("loading_gauge", "Loading gauge"),
+    ("axle_load", "Axle load"),
     ("operator", "Operator"),
     ("route", "Route"),
 ];

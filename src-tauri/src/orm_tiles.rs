@@ -89,6 +89,8 @@ pub(crate) const STYLES: &[(&str, &str)] = &[
     ("signals", include_str!("../resources/orm/signals.json")),
     ("electrification", include_str!("../resources/orm/electrification.json")),
     ("track", include_str!("../resources/orm/track.json")),
+    ("loading_gauge", include_str!("../resources/orm/loading_gauge.json")),
+    ("axle_load", include_str!("../resources/orm/axle_load.json")),
     ("operator", include_str!("../resources/orm/operator.json")),
     ("route", include_str!("../resources/orm/route.json")),
 ];
