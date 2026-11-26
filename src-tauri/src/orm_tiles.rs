@@ -195,6 +195,10 @@ struct OrmShared {
     /// The online styles' `glyphs` is rewritten to a `file://` URL under here because
     /// upstream stopped serving SDF glyph PBFs. `None` in tests, which skips the rewrite.
     glyphs_dir: Option<PathBuf>,
+    /// Current ORM option state (the new `OpenRailwayMap` UI's `state` block), substituted
+    /// into the embedded styles' `global-state` expressions at load. Changing an option
+    /// updates this and bumps `generation` so workers rebuild their renderers.
+    orm_state: RwLock<serde_json::Map<String, serde_json::Value>>,
     generation: AtomicU64,
     bound_port: AtomicU16,
     /// Why the render backend became unavailable after start-up: a worker
@@ -295,6 +299,27 @@ impl OrmHandle {
         self.shared.generation.fetch_add(1, Ordering::SeqCst);
         self.cache.clear();
     }
+
+    /// Sets one ORM display option (a `state` key the new `OpenRailwayMap` UI exposes:
+    /// `signals`, `pois`, `platforms`, lifecycle filters, ...). Like `set_base_url`,
+    /// bumps the render generation and clears the tile cache so tiles rendered with
+    /// the previous value are dropped. A no-op when the value is unchanged.
+    pub fn set_orm_option(&self, key: String, value: serde_json::Value) {
+        {
+            let mut state = self.shared.orm_state.write().unpoison();
+            if state.get(&key) == Some(&value) {
+                return;
+            }
+            state.insert(key, value);
+        }
+        self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        self.cache.clear();
+    }
+
+    /// The current ORM option state, for the UI to render its controls from.
+    pub fn orm_options(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.shared.orm_state.read().unpoison().clone()
+    }
 }
 
 /// Whether ORM tile rendering started, and if not, why — so the UI can tell the
@@ -372,6 +397,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         offline_dir: RwLock::new(None),
         base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
         glyphs_dir,
+        orm_state: RwLock::new(crate::orm_state::default_state()),
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
         render_failure: Mutex::new(None),
@@ -596,7 +622,9 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     let embedded = || {
         let base = shared.base_url.read().unpoison();
-        rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref())
+        let rebased = rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref());
+        let state = shared.orm_state.read().unpoison();
+        resolve_state(rebased, &state)
     };
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
@@ -629,6 +657,23 @@ fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) ->
         glyph_rewritten
     } else {
         glyph_rewritten.replace(default, base)
+    }
+}
+
+/// Substitutes the current ORM option values into the style's `global-state`
+/// expressions so maplibre-native (which cannot evaluate global-state) renders the
+/// detail layers and honours the per-option toggles. A no-op for styles without any
+/// global-state, and falls back to the unresolved style if it does not parse.
+fn resolve_state(style: String, state: &serde_json::Map<String, serde_json::Value>) -> String {
+    match serde_json::from_str::<serde_json::Value>(&style) {
+        Ok(mut value) => {
+            crate::orm_state::resolve(&mut value, state);
+            value.to_string()
+        }
+        Err(e) => {
+            tracing::warn!("ORM style did not parse for state resolution ({e}); using it unresolved");
+            style
+        }
     }
 }
 
@@ -1045,6 +1090,28 @@ pub async fn set_orm_offline(
 /// Returns the port the ORM tile server actually bound to. The server binds on a
 /// background runtime, so this polls the shared value (published at bind time)
 /// until it is set rather than assuming `PREFERRED_PORT`.
+/// Sets one ORM display option and persists it. The renderer rebuilds against the
+/// new value; the frontend reloads the ORM layer afterwards to pull fresh tiles.
+#[tauri::command]
+pub async fn set_orm_option(
+    app: tauri::AppHandle,
+    handle: tauri::State<'_, OrmHandle>,
+    key: String,
+    value: serde_json::Value,
+) -> CommandResult<()> {
+    handle.set_orm_option(key, value);
+    crate::settings::save_orm_options(&app, &handle.orm_options());
+    Ok(())
+}
+
+/// The current ORM option values, for the UI to initialize its controls.
+#[tauri::command]
+pub async fn get_orm_options(
+    handle: tauri::State<'_, OrmHandle>,
+) -> CommandResult<serde_json::Map<String, serde_json::Value>> {
+    Ok(handle.orm_options())
+}
+
 #[tauri::command]
 pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> CommandResult<u16> {
     for _ in 0..PORT_WAIT_ATTEMPTS {
@@ -1091,6 +1158,7 @@ mod tests {
             offline_dir: RwLock::new(None),
             base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
             glyphs_dir: None,
+            orm_state: RwLock::new(crate::orm_state::default_state()),
             generation: AtomicU64::new(0),
             bound_port: AtomicU16::new(0),
             render_failure: Mutex::new(None),
@@ -1098,6 +1166,18 @@ mod tests {
             slow_render_count: AtomicU64::new(0),
             slow_render_reported: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn resolve_state_resolves_platforms_toggle_in_real_style() {
+        let mut state = crate::orm_state::default_state();
+        state.insert("platforms".to_string(), serde_json::json!("none"));
+        let resolved = resolve_state(style_json("standard").to_string(), &state);
+        assert!(!resolved.contains("global-state"), "all global-state should be resolved");
+        assert!(
+            resolved.contains(r#"["!=","none","none"]"#),
+            "the platforms=none toggle should resolve to a false condition"
+        );
     }
 
     #[test]

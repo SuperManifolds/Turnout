@@ -13,6 +13,7 @@ mod nimby_launch;
 mod orm_glyphs;
 mod orm_net;
 mod orm_offline;
+mod orm_state;
 mod orm_tiles;
 mod overlay;
 mod overpass;
@@ -362,6 +363,9 @@ fn main() {
                     if base != settings::DEFAULT_ORM_BASE {
                         h.set_base_url(base);
                     }
+                    for (key, value) in settings::load_orm_options(app.handle()) {
+                        h.set_orm_option(key, value);
+                    }
                     app.manage(h);
                 }
                 Err(e) => {
@@ -447,6 +451,8 @@ fn main() {
             mbtiles::set_tile_download_paused,
             orm_offline::download_orm_tiles,
             orm_tiles::set_orm_offline,
+            orm_tiles::set_orm_option,
+            orm_tiles::get_orm_options,
             orm_tiles::get_orm_port,
             orm_tiles::orm_disabled_reason,
             vector_tiles::start_orm_vector_layers,

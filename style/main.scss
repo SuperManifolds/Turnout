@@ -388,6 +388,29 @@ button.link {
     }
 }
 
+#orm-options {
+    position: absolute;
+    top: calc(var(--spacing-lg) + 2.75rem);
+    right: var(--nav-control-offset);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm);
+    background: var(--color-bg-secondary);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    z-index: 10;
+    font-size: 0.85em;
+
+    label {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-xs);
+        white-space: nowrap;
+        cursor: pointer;
+    }
+}
+
 #overlay-toggle {
     position: absolute;
     bottom: var(--spacing-lg);

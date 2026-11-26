@@ -52,6 +52,28 @@ pub fn resolve_orm_base(base: Option<&str>) -> String {
     raw.trim_end_matches('/').to_string()
 }
 
+const ORM_OPTIONS_KEY: &str = "orm_options";
+
+/// Reads the persisted ORM display options (the new UI's `state` overrides). Empty
+/// means every option is at its upstream default.
+pub fn load_orm_options(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json::Value> {
+    app.store(SETTINGS_STORE)
+        .ok()
+        .and_then(|store| store.get(ORM_OPTIONS_KEY))
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// Persists the ORM display options so the user's toggles survive a restart.
+pub fn save_orm_options(app: &tauri::AppHandle, options: &serde_json::Map<String, serde_json::Value>) {
+    if let Ok(store) = app.store(SETTINGS_STORE) {
+        store.set(ORM_OPTIONS_KEY, serde_json::Value::Object(options.clone()));
+        if let Err(e) = store.save() {
+            tracing::warn!("could not persist ORM options ({e})");
+        }
+    }
+}
+
 /// Features that automatically contact external servers, each an independent
 /// opt-in/out flag. Grouped into their own struct to keep [`Settings`] legible.
 /// Persisted as flat top-level keys in the store (see [`load`]/[`set_settings`]);
