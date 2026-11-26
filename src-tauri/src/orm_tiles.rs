@@ -207,10 +207,10 @@ struct OrmShared {
     /// (and captured by Sentry) a single time per process rather than once per
     /// worker per idle warm-up pass.
     render_failure_logged: AtomicBool,
-    /// Renders slower than [`SLOW_RENDER_MS`] seen this process, and whether the
-    /// sustained-slow signal has fired. A persistently slow install (usually a
-    /// software Vulkan fallback) is otherwise invisible: the overlay works, just
-    /// slowly, so nothing crashes and nothing reaches Sentry.
+    /// Renders slower than [`SLOW_RENDER_MS`] with no slow or failed tile download
+    /// during them, and whether the sustained-slow signal has fired. A persistently
+    /// slow renderer (often a software Vulkan fallback) is otherwise invisible: the
+    /// overlay works, just slowly, so nothing crashes and nothing reaches Sentry.
     slow_render_count: AtomicU64,
     slow_render_reported: AtomicBool,
 }
@@ -910,6 +910,7 @@ fn render_worker_inner(
         };
 
         let start = Instant::now();
+        let fetches_before = crate::orm_net::fetch_stats();
         let raw_result = if let Some(parent) = cached_parent {
             Ok(crop_and_upscale(&parent, z, x, y))
         } else {
@@ -932,16 +933,21 @@ fn render_worker_inner(
         };
         let render_ms = start.elapsed().as_millis();
         render_count += 1;
+        // mbgl downloads a tile's sources inside the render, so a render is only
+        // GPU/CPU-bound when no download during it was slow or failed.
+        let render_bound = !fetches_before.degraded_since(crate::orm_net::fetch_stats());
 
         match raw_result {
             Ok(raw) => {
-                if render_ms > SLOW_RENDER_MS && shared.note_slow_render() {
+                if render_ms > SLOW_RENDER_MS && render_bound && shared.note_slow_render() {
                     // One Sentry-visible event per process. The GPU scope tags
-                    // (render_device_software, gpu, vulkan_icds) travel with it, so
-                    // a "Turnout ORM is slow" report becomes diagnosable instead of
-                    // relying on the user to inspect their own GPU.
+                    // (render_device, render_device_software, gpu, vulkan_icds)
+                    // travel with it, so a "Turnout ORM is slow" report becomes
+                    // diagnosable instead of relying on the user to inspect their GPU.
+                    let net = crate::orm_net::fetch_stats();
                     tracing::error!(
-                        "ORM rendering is persistently slow: worker {id} tile '{style}' z{z} took {render_ms}ms ({render_count} rendered). Usually a software-GPU fallback (see the render_device_software tag and the Settings GPU picker)."
+                        "ORM rendering is persistently slow: worker {id} tile '{style}' z{z} took {render_ms}ms ({render_count} rendered) with no slow tile downloads during it. Session downloads: {} total, {} slow, {} failed. Check the render_device and render_device_software tags.",
+                        net.total, net.slow, net.failed
                     );
                 } else if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > SLOW_RENDER_MS {
                     tracing::debug!(
