@@ -96,8 +96,9 @@ PR / release / run you name.
 | 8 · Improve the skill | ~10 min |
 
 The one hard number is the **tag-triggered build: ~30 min** (the from-source
-maplibre-native C++ core dominates) — longer, ~50 min, when the CI/release build
-caches are cold. Everything else is fast.
+maplibre-native C++ core dominates). With cold caches, such as after a
+maplibre-native rev change, Windows is the long pole: v0.5.0 took 66 min
+(Windows) against 28 to 37 min for the other four targets. Everything else is fast.
 
 ### Phase 0: Preflight & version
 
@@ -135,6 +136,21 @@ caches are cold. Everything else is fast.
       --jq '.[] | "\(.headSha[0:8]) \(.status)/\(.conclusion) \(.displayTitle)"'
     git rev-parse origin/main   # HEAD must match a green run above
     ```
+
+  - **The prerelease build is green on `main`'s HEAD too.** `ci.yml` runs
+    `cargo test`, which never runs `tauri build` and sets no deployment target,
+    so bundle-config failures only show in `prerelease.yml`. v0.5.0 hit one: the
+    maplibre-native core requires macOS 14.3, and the macOS release build failed
+    against Tauri's default 10.13 minimum while CI stayed green.
+
+    ```sh
+    gh run list --repo SuperManifolds/Turnout --workflow prerelease.yml --branch main --limit 3 \
+      --json headSha,status,conclusion \
+      --jq '.[] | "\(.headSha[0:8]) \(.status)/\(.conclusion)"'
+    ```
+
+    A failed macOS or Windows job here fails the tagged build the same way, so
+    fix it before tagging.
 
   - **A toolchain or target change means CI green is NOT enough.** If anything
     since the last tag touched `rust-toolchain.toml`, the CI toolchain setup, or
@@ -210,28 +226,31 @@ about features, fixes, and "it's faster now", not refactors or internals.
     *Offline maps* — the shape v0.2.0 used); a small release can use the plain
     **New Features / Improvements / Bug Fixes / Performance** buckets. Group by
     what the reader cares about, not by commit type.
-  - Each entry is a bullet: a short **bold lead-in**, an em dash, then one plain
-    sentence — what changed and why it matters. No `(#PR)` refs, no commit hashes,
-    no author handles.
+  - Each entry is a bullet: a short **bold lead-in sentence ending in a period**,
+    then one plain sentence on what changed and why it matters. No em dashes, no
+    `(#PR)` refs, no commit hashes, no author handles.
+  - A raised OS minimum or dropped platform goes first, in a `## Requirements`
+    section that names the version to stay on. Auto-update installs the new build
+    on machines that can't run it.
   - Scannable: a handful of bullets per section, most impactful first.
 
   Example shape:
 
   ```markdown
   ## New Features
-  - **ORM Layers** — Overlay live OpenRailwayMap data in NIMBY Rails, split into
+  - **ORM Layers.** Overlay live OpenRailwayMap data in NIMBY Rails, split into
     toggleable underground / ground / elevated levels.
-  - **Offline tile download** — Save map tiles for an area to use offline.
+  - **Offline tile download.** Save map tiles for an area to use offline.
 
   ## Improvements
-  - **Apple Maps just works** — Access tokens refresh automatically, so tiles no
+  - **Apple Maps just works.** Access tokens refresh automatically, so tiles no
     longer stop loading when the key expires.
 
   ## Performance
   - **~2× faster map rendering on Windows.**
 
   ## Bug Fixes
-  - **Area selection stays aligned** — The selection box now matches the map while
+  - **Area selection stays aligned.** The selection box now matches the map while
     you draw it.
   ```
 - **You** approve the wording. This becomes the release body in Phase 6; hold it.
