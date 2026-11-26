@@ -10,6 +10,7 @@ mod gpu;
 mod orm_import;
 mod mbtiles;
 mod nimby_launch;
+mod orm_glyphs;
 mod orm_net;
 mod orm_offline;
 mod orm_tiles;

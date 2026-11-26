@@ -191,6 +191,10 @@ struct OrmShared {
     /// embedded styles at load so a self-hosted `OpenRailwayMap` can replace the
     /// default `openrailwaymap.app`.
     base_url: RwLock<String>,
+    /// Directory holding the self-hosted SDF glyphs (`<dir>/<fontstack>/<range>.pbf`).
+    /// The online styles' `glyphs` is rewritten to a `file://` URL under here because
+    /// upstream stopped serving SDF glyph PBFs. `None` in tests, which skips the rewrite.
+    glyphs_dir: Option<PathBuf>,
     generation: AtomicU64,
     bound_port: AtomicU16,
     /// Why the render backend became unavailable after start-up: a worker
@@ -347,9 +351,27 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         cv: Condvar::new(),
     });
 
+    let cache_dir = dirs_next::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("turnout")
+        .join("orm_cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+
+    // Materialize the bundled SDF glyphs so the online styles can reference them via
+    // a local file:// URL (upstream no longer serves glyph PBFs). A failure here only
+    // costs text labels, so warn and carry on rather than failing the whole renderer.
+    let glyphs_dir = match crate::orm_glyphs::materialize(&cache_dir) {
+        Ok(dir) => Some(dir),
+        Err(e) => {
+            tracing::warn!("could not materialize ORM glyphs ({e}); map labels may not render");
+            None
+        }
+    };
+
     let shared = Arc::new(OrmShared {
         offline_dir: RwLock::new(None),
         base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+        glyphs_dir,
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
         render_failure: Mutex::new(None),
@@ -358,11 +380,6 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         slow_render_reported: AtomicBool::new(false),
     });
 
-    let cache_dir = dirs_next::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("turnout")
-        .join("orm_cache");
-    let _ = std::fs::create_dir_all(&cache_dir);
     let shared_cache_path = cache_dir.join("shared.db");
     enable_wal(&shared_cache_path);
 
@@ -579,7 +596,7 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     let embedded = || {
         let base = shared.base_url.read().unpoison();
-        rebase_style(style_json(style), &base)
+        rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref())
     };
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
@@ -594,13 +611,24 @@ fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     }
 }
 
-/// Substitutes the default ORM host in an embedded style with `base`. A no-op when
-/// `base` is the default, so the common case allocates only the base copy.
-fn rebase_style(json: &str, base: &str) -> String {
-    if base == crate::settings::DEFAULT_ORM_BASE {
-        json.to_string()
+/// Rewrites an embedded style for runtime use: glyphs always point at the local
+/// self-hosted SDF directory (upstream dropped the glyph-PBF endpoint), while tiles
+/// and sprites follow the configured `base` host so a self-hosted ORM can replace
+/// `openrailwaymap.app`. The glyph rewrite runs first so the host swap never touches
+/// the now-`file://` glyphs URL.
+fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) -> String {
+    let default = crate::settings::DEFAULT_ORM_BASE;
+    let glyph_rewritten = match glyphs_dir {
+        Some(dir) => json.replace(
+            &format!("{default}/font/"),
+            &format!("file://{}/", dir.display()),
+        ),
+        None => json.to_string(),
+    };
+    if base == default {
+        glyph_rewritten
     } else {
-        json.replace(crate::settings::DEFAULT_ORM_BASE, base)
+        glyph_rewritten.replace(default, base)
     }
 }
 
@@ -1062,6 +1090,7 @@ mod tests {
         OrmShared {
             offline_dir: RwLock::new(None),
             base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+            glyphs_dir: None,
             generation: AtomicU64::new(0),
             bound_port: AtomicU16::new(0),
             render_failure: Mutex::new(None),
@@ -1069,6 +1098,28 @@ mod tests {
             slow_render_count: AtomicU64::new(0),
             slow_render_reported: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn rebase_style_points_glyphs_at_local_dir() {
+        let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sprite":"https://openrailwaymap.app/sprite/symbols","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high,railway_text_km/{z}/{x}/{y}"]}}}"#;
+        let out = rebase_style(json, crate::settings::DEFAULT_ORM_BASE, Some(std::path::Path::new("/cache/glyphs")));
+        // Glyphs go local, with the fontstack/range placeholders preserved.
+        assert!(out.contains("\"glyphs\":\"file:///cache/glyphs/{fontstack}/{range}.pbf\""), "{out}");
+        // Tiles and sprite stay on the default host (no base override here).
+        assert!(out.contains("https://openrailwaymap.app/railway_line_high"));
+        assert!(out.contains("https://openrailwaymap.app/sprite/symbols"));
+        assert!(!out.contains("openrailwaymap.app/font/"));
+    }
+
+    #[test]
+    fn rebase_style_swaps_host_but_keeps_glyphs_local() {
+        let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high/{z}/{x}/{y}"]}}}"#;
+        let out = rebase_style(json, "https://orm.sorlie.io", Some(std::path::Path::new("/c/glyphs")));
+        // A self-hosted base moves tiles, but glyphs still come from the local dir.
+        assert!(out.contains("\"glyphs\":\"file:///c/glyphs/{fontstack}/{range}.pbf\""), "{out}");
+        assert!(out.contains("https://orm.sorlie.io/railway_line_high"));
+        assert!(!out.contains("openrailwaymap.app"));
     }
 
     #[test]
