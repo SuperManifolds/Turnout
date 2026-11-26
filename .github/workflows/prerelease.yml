@@ -19,9 +19,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # See ci.yml for the caching rationale: the build cache is keyed on the pinned
-  # maplibre rev (with a prefix restore-key), and `~/.cargo/git` is cached whole so
-  # the Windows vcpkg libs built into the checkout persist. sccache was 0% hit on
+  # See ci.yml for the caching rationale. The cache budget holds one lane per OS,
+  # which ci.yml's runs on main own, so this workflow restores that lane and never
+  # saves. It builds the release profile, so the lane's debug `target/` is unused,
+  # but its `~/.cargo/git` checkout (the maplibre-native clone and, on Windows, the
+  # vcpkg libs built into it) and cargo registry are reused. sccache was 0% hit on
   # Windows and rebuilt maplibre's C++ core (~50 min) every nightly.
   CARGO_INCREMENTAL: "0"
 
@@ -109,24 +111,19 @@ jobs:
         shell: bash
         run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
 
-      - name: Cache cargo + target
-        uses: actions/cache@v4
+      # ci.yml's lane for this OS. The paths must match ci.yml's CACHE_PATHS
+      # exactly, since the cache version is derived from them.
+      - name: Restore cargo + target (ci.yml lane)
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git
             target
-          # `-release-`: this builds the release profile (target/release), a
-          # separate maplibre build dir from ci.yml's debug `cargo test`, so it
-          # must not share ci's key or a cross-profile restore would rebuild the core.
-          # Keyed on matrix.platform (not runner.os) so it shares the cache with
-          # release.yml's host-native platforms (windows, linux-x86), which build
-          # the same target/release. release.yml's --target arches (macos, arm64)
-          # build into target/<triple>/ and keep their own lanes.
-          key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
 
       # Cache vcpkg's package source downloads on a rev-independent key so an mbgl
       # bump (which changes the cargo-cache key above) doesn't force a full
@@ -144,7 +141,10 @@ jobs:
           key: ${{ runner.os }}-vcpkg-downloads-v1
 
       - name: Install Trunk
-        run: which trunk || cargo install trunk --locked
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/install_trunk.sh
 
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
