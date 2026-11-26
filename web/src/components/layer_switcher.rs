@@ -23,6 +23,11 @@ const ORM_REASON_POLL_MS: i32 = 1500;
 /// Element id of the toolbar, used to tell clicks inside it from outside ones.
 const TOOLBAR_ID: &str = "orm-options";
 
+/// `orm_controls` setting values (see `app_settings::ORM_CONTROLS`).
+const CONTROLS_TOOLBAR: &str = "toolbar";
+const CONTROLS_PRESETS: &str = "presets";
+const CONTROLS_BOTH: &str = "both";
+
 /// Popover id of the display settings (the categories use their option key).
 const DISPLAY: &str = "display";
 const DISPLAY_ICON: &str = "fa-solid fa-sliders";
@@ -136,11 +141,12 @@ const CATEGORIES: &[Category] = &[
 /// Shared value set for catenaries, signal boxes and substations.
 const OWNABLE: &[Choice] = &[("plain", "Plain"), ("operator", "Operator"), ("owner", "Owner"), (NONE, "None")];
 
-/// A literal option value in a display setting.
+/// A literal option value set by a preset.
 #[derive(Clone, Copy)]
 enum Literal {
     Bool(bool),
     Str(&'static str),
+    List(&'static [&'static str]),
 }
 
 impl Literal {
@@ -148,11 +154,12 @@ impl Literal {
         match self {
             Self::Bool(b) => Value::Bool(b),
             Self::Str(s) => Value::from(s),
+            Self::List(items) => Value::from(items.to_vec()),
         }
     }
 }
 
-/// A display choice: its label and the option values it sets.
+/// A preset: its label and the option values it sets.
 type Preset = (&'static str, &'static [(&'static str, Literal)]);
 
 /// The display popover's sections: settings that set one or more options at once.
@@ -211,6 +218,76 @@ const DISPLAY_SETTINGS: &[(&str, &[Preset])] = &[
     ),
 ];
 
+/// The detail options with everything switched off. A classic preset starts from
+/// this, so picking one replaces the previous view instead of adding to it.
+const DETAILS_OFF: &[(&str, Literal)] = &[
+    ("stations", Literal::Str(NONE)),
+    ("platforms", Literal::Str(NONE)),
+    ("switches", Literal::Str(NONE)),
+    ("signals", Literal::List(&[])),
+    ("catenaries", Literal::Str(NONE)),
+    ("boxes", Literal::Str(NONE)),
+    ("substations", Literal::Str(NONE)),
+    ("pois", Literal::List(&[])),
+];
+
+/// The styles Turnout offered before the toolbar, as the track mode and details
+/// each one drew (on top of [`DETAILS_OFF`]).
+const CLASSIC_PRESETS: &[Preset] = &[
+    (
+        "Infrastructure",
+        &[
+            ("tracks", Literal::Str("usage")),
+            ("stations", Literal::Str("station")),
+            ("platforms", Literal::Str("plain")),
+            ("switches", Literal::Str("plain")),
+            ("pois", Literal::List(&["radio", "facility", "equipment", "level_crossing", "train_protection"])),
+        ],
+    ),
+    ("Speed", &[("tracks", Literal::Str("speed")), ("signals", Literal::List(&["speed"]))]),
+    (
+        "Signals",
+        &[
+            ("tracks", Literal::Str("train_protection")),
+            (
+                "signals",
+                Literal::List(&["main", "distant", "train_protection", "station", "radio", "shunting", "other"]),
+            ),
+            ("boxes", Literal::Str("plain")),
+            ("pois", Literal::List(&["train_protection"])),
+        ],
+    ),
+    (
+        "Electrification",
+        &[
+            ("tracks", Literal::Str("voltage_frequency")),
+            ("signals", Literal::List(&["electricity"])),
+            ("catenaries", Literal::Str("plain")),
+            ("substations", Literal::Str("plain")),
+        ],
+    ),
+    ("Track", &[("tracks", Literal::Str("gauge"))]),
+    (
+        "Operator",
+        &[
+            ("tracks", Literal::Str("operator")),
+            ("stations", Literal::Str("operator")),
+            ("boxes", Literal::Str("operator")),
+        ],
+    ),
+    ("Route", &[("tracks", Literal::Str("routes")), ("stations", Literal::Str("station"))]),
+];
+
+/// Every option value a classic preset sets: [`DETAILS_OFF`] with its overrides.
+fn classic_values(overrides: &[(&'static str, Literal)]) -> Vec<(&'static str, Value)> {
+    DETAILS_OFF
+        .iter()
+        .filter(|(key, _)| !overrides.iter().any(|(k, _)| k == key))
+        .chain(overrides)
+        .map(|(key, lit)| (*key, lit.to_value()))
+        .collect()
+}
+
 fn is_selected(options: &Options, key: &str, value: &str) -> bool {
     match options.get(key) {
         Some(Value::String(s)) => s == value,
@@ -230,6 +307,10 @@ fn is_off(options: &Options, key: &str) -> bool {
 
 fn preset_active(options: &Options, values: &[(&str, Literal)]) -> bool {
     values.iter().all(|(key, lit)| options.get(*key) == Some(&lit.to_value()))
+}
+
+fn classic_active(options: &Options, overrides: &[(&'static str, Literal)]) -> bool {
+    classic_values(overrides).iter().all(|(key, value)| options.get(*key) == Some(value))
 }
 
 /// `key`'s array with `value` added or removed.
@@ -296,6 +377,21 @@ fn is_inside_toolbar(event: &web_sys::MouseEvent) -> bool {
         .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
         .and_then(|element| element.closest(&format!("#{TOOLBAR_ID}")).ok().flatten())
         .is_some()
+}
+
+/// Tracks the rail overlay controls setting, live across settings saves.
+fn follow_controls_setting(set_controls: WriteSignal<String>) {
+    spawn_local(async move {
+        set_controls.set(crate::components::app_settings::load_settings().await.orm_controls);
+    });
+    crate::tauri::listen_to_events(&["settings-changed"], move |payload| {
+        if let Some(controls) = js_sys::Reflect::get(&payload, &"orm_controls".into())
+            .ok()
+            .and_then(|v| v.as_string())
+        {
+            set_controls.set(controls);
+        }
+    });
 }
 
 /// Records the runtime reason ORM rendering is unavailable, if any.
@@ -425,13 +521,60 @@ fn tool(
     }
 }
 
-/// The rail overlay toolbar: one button per `OpenRailwayMap` option category, each
-/// opening a popover of its values, like the openrailwaymap.app toolbar.
+/// The full toolbar: one button per option category plus the display settings.
+fn toolbar(options: RwSignal<Options>, open: RwSignal<Option<&'static str>>) -> impl IntoView {
+    view! {
+        <ul class="orm-toolbar">
+            {CATEGORIES.iter().map(|category| {
+                let key = category.key;
+                tool(
+                    key,
+                    category.label,
+                    category.icon,
+                    move || options.with(|o| is_off(o, key)),
+                    open,
+                    Some(category.label),
+                    choice_list(category, options, open),
+                )
+            }).collect_view()}
+            {tool(DISPLAY, DISPLAY_LABEL, DISPLAY_ICON, || false, open, None, display_sections(options))}
+        </ul>
+    }
+}
+
+/// The classic row of style presets.
+fn preset_bar(options: RwSignal<Options>) -> impl IntoView {
+    view! {
+        <ul class="orm-presets">
+            {CLASSIC_PRESETS.iter().map(|&(name, overrides)| {
+                let active = move || options.with(|o| classic_active(o, overrides));
+                view! {
+                    <li>
+                        <button
+                            aria-pressed=move || active().to_string()
+                            class:active=active
+                            on:click=move |_| apply(options, classic_values(overrides))
+                        >
+                            {name}
+                        </button>
+                    </li>
+                }
+            }).collect_view()}
+        </ul>
+    }
+}
+
+/// The rail overlay controls: the openrailwaymap.app-style toolbar, the classic
+/// style presets, or both, per the `orm_controls` setting.
 #[component]
 pub fn LayerSwitcher(set_orm_tracks: WriteSignal<String>) -> impl IntoView {
     let options = create_rw_signal(Options::new());
     let open = create_rw_signal::<Option<&'static str>>(None);
+    let (controls, set_controls) = create_signal(String::from(CONTROLS_TOOLBAR));
     load_options(options);
+    follow_controls_setting(set_controls);
+    let show_presets = move || controls.with(|c| c == CONTROLS_PRESETS || c == CONTROLS_BOTH);
+    let show_toolbar = move || controls.with(|c| c != CONTROLS_PRESETS);
 
     // The overlay drawer labels the layer with the current tracks mode.
     create_effect(move |_| {
@@ -459,26 +602,40 @@ pub fn LayerSwitcher(set_orm_tracks: WriteSignal<String>) -> impl IntoView {
 
     view! {
         <nav id=TOOLBAR_ID aria-label="Rail overlay options">
-            <ul class="orm-toolbar">
-                {CATEGORIES.iter().map(|category| {
-                    let key = category.key;
-                    tool(
-                        key,
-                        category.label,
-                        category.icon,
-                        move || options.with(|o| is_off(o, key)),
-                        open,
-                        Some(category.label),
-                        choice_list(category, options, open),
-                    )
-                }).collect_view()}
-                {tool(DISPLAY, DISPLAY_LABEL, DISPLAY_ICON, || false, open, None, display_sections(options))}
-            </ul>
+            <Show when=show_presets>{preset_bar(options)}</Show>
+            <Show when=show_toolbar>{toolbar(options, open)}</Show>
+            <Show when=move || disabled_reason.get().is_some()>
+                <p id="orm-unavailable" title=move || disabled_reason.get().unwrap_or_default()>
+                    {move || disabled_reason.get().unwrap_or_default()}
+                </p>
+            </Show>
         </nav>
-        <Show when=move || disabled_reason.get().is_some()>
-            <p id="orm-unavailable" title=move || disabled_reason.get().unwrap_or_default()>
-                {move || disabled_reason.get().unwrap_or_default()}
-            </p>
-        </Show>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classic_presets_set_every_detail_once() {
+        for &(name, overrides) in CLASSIC_PRESETS {
+            let values = classic_values(overrides);
+            let mut keys: Vec<&str> = values.iter().map(|(key, _)| *key).collect();
+            keys.sort_unstable();
+            let mut expected: Vec<&str> = DETAILS_OFF.iter().map(|(key, _)| *key).chain(["tracks"]).collect();
+            expected.sort_unstable();
+            assert_eq!(keys, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn classic_preset_overrides_win_over_details_off() {
+        let (_, speed) = CLASSIC_PRESETS.iter().find(|(name, _)| *name == "Speed").expect("Speed preset");
+        let values = classic_values(speed);
+        let signals = values.iter().find(|(key, _)| *key == "signals").map(|(_, v)| v.clone());
+        assert_eq!(signals, Some(serde_json::json!(["speed"])));
+        let options: Options = values.into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+        assert!(classic_active(&options, speed));
     }
 }

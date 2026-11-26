@@ -359,6 +359,10 @@ $orm-left-opening-from: 6;
     top: var(--spacing-lg);
     right: var(--nav-control-offset);
     z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--spacing-sm);
     font-size: var(--font-size-base);
 }
 
@@ -371,6 +375,37 @@ $orm-left-opening-from: 6;
     background: var(--color-border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md);
+}
+
+.orm-presets {
+    display: flex;
+    gap: 1px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    background: var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+
+    button {
+        height: $orm-tool-size;
+        padding: 0 var(--spacing-sm);
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+        background: var(--color-bg-secondary);
+        color: var(--color-text-primary);
+        white-space: nowrap;
+        cursor: pointer;
+        transition: background var(--transition-fast), color var(--transition-fast);
+
+        &:hover { background: var(--color-bg-hover); }
+        &.active {
+            background: var(--color-accent);
+            color: var(--color-bg-primary);
+        }
+    }
 }
 
 .orm-tool {
@@ -475,9 +510,6 @@ $orm-left-opening-from: 6;
 }
 
 #orm-unavailable {
-    position: absolute;
-    top: calc(var(--spacing-lg) + #{$orm-tool-size} + var(--spacing-sm));
-    right: var(--nav-control-offset);
     max-width: 320px;
     margin: 0;
     padding: var(--spacing-xs) var(--spacing-md);
@@ -926,6 +958,9 @@ button {
         color: var(--color-text-secondary);
         margin: 0;
     }
+
+    // A hint under a control gets room to breathe.
+    * + .hint { margin-top: var(--spacing-sm); }
 
     .path-display {
         word-break: break-all;
