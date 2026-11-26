@@ -151,7 +151,16 @@ function apply_preferred_style() {
     _applied_style = target;
     _map.setStyle(target, { transformStyle: preserve_custom_layers });
     _map.once("styledata", update_orm_paint);
+    _theme_listeners.forEach(function(cb) { cb(is_dark()); });
 }
+
+// Callbacks told whether the base map is dark, now and on every theme change, so
+// the ORM overlay can render its matching theme.
+let _theme_listeners = [];
+window.map_on_theme_change = function(callback) {
+    _theme_listeners.push(callback);
+    callback(is_dark());
+};
 
 window.map_set_theme = function(theme) {
     _theme_override = theme;

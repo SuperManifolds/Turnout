@@ -110,7 +110,7 @@ fn App() -> impl IntoView {
     let (show_vector_layers, set_show_vector_layers) = create_signal(false);
     // Shared ORM overlay state: the switcher owns the active mode, the overlay
     // drawer owns visibility, and each reads the other's signal.
-    let (orm_style, set_orm_style) = create_signal("standard".to_string());
+    let (orm_tracks, set_orm_tracks) = create_signal("usage".to_string());
     let (orm_visible, set_orm_visible) = create_signal(true);
 
     // First-launch guided tour: auto-opens until completed, and re-openable from
@@ -148,11 +148,7 @@ fn App() -> impl IntoView {
                         set_show_vector_layers=set_show_vector_layers
                     />
                     <components::Search />
-                    <components::LayerSwitcher
-                        orm_style=orm_style
-                        set_orm_style=set_orm_style
-                        orm_visible=orm_visible
-                    />
+                    <components::LayerSwitcher set_orm_tracks=set_orm_tracks />
                     <button id="overlay-toggle" on:click=move |_| set_overlay_open.set(!overlay_open.get()) title="Overlays">
                         <i class="fa-solid fa-layer-group"></i>
                     </button>
@@ -175,7 +171,7 @@ fn App() -> impl IntoView {
                     <components::OverlayDrawer
                         open=overlay_open
                         set_open=set_overlay_open
-                        orm_style=orm_style
+                        orm_tracks=orm_tracks
                         orm_visible=orm_visible
                         set_orm_visible=set_orm_visible
                     />

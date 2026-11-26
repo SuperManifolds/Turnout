@@ -2,7 +2,7 @@ use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, In
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-const ORM_DEFAULT_STYLE: &str = "standard";
+const ORM_DEFAULT_STYLE: &str = "orm";
 const MAX_BBOX_AREA_DEG2: f64 = 1.0;
 const BBOX_COLOR: &str = "#4a9eff";
 const BBOX_ERROR_COLOR: &str = "#d32f2f";
