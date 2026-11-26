@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use maplibre_native::file_source::{
@@ -211,11 +211,94 @@ fn is_transient(response: &MlnResponse) -> bool {
     })
 }
 
+/// Per-endpoint fetch-health telemetry. mbgl treats a 404 tile as an empty tile
+/// (see [`into_mln_response`]), so an ORM tile endpoint that disappears upstream
+/// degrades the overlay silently: tiles render blank and nothing errors. This
+/// surfaces that case. The tile server returns 204 for an in-range-but-empty tile
+/// and 404 only for an endpoint/zoom it does not serve, so a per-endpoint window
+/// that is almost entirely 404s means the endpoint is gone, not that the area is
+/// sparse. One Sentry issue fires per process when that threshold is crossed.
+const HEALTH_WINDOW: u32 = 40;
+const HEALTH_FAIL_RATE: f32 = 0.9;
+
+#[derive(Default)]
+struct FetchHealth {
+    /// endpoint key -> (requests, failures) within the current window.
+    windows: Mutex<HashMap<String, (u32, u32)>>,
+    reported: AtomicBool,
+}
+
+impl FetchHealth {
+    fn record(&self, endpoint: &str, failed: bool, sample_url: &str) {
+        if self.reported.load(Ordering::Relaxed) {
+            return;
+        }
+        let tripped = {
+            let mut windows = self.windows.lock().unpoison();
+            let entry = windows.entry(endpoint.to_owned()).or_insert((0, 0));
+            entry.0 += 1;
+            if failed {
+                entry.1 += 1;
+            }
+            if entry.0 >= HEALTH_WINDOW {
+                let counts = *entry;
+                *entry = (0, 0);
+                #[allow(clippy::cast_precision_loss)]
+                let rate = counts.1 as f32 / counts.0 as f32;
+                (rate >= HEALTH_FAIL_RATE).then_some(counts)
+            } else {
+                None
+            }
+        };
+        if let Some((requests, failures)) = tripped
+            && !self.reported.swap(true, Ordering::SeqCst)
+        {
+            tracing::error!(
+                "ORM tile endpoint '{endpoint}' failed {failures} of its last {requests} fetches; the OpenRailwayMap overlay is rendering blank or incomplete. An upstream tile-endpoint change is the usual cause. Sample: {sample_url}"
+            );
+        }
+    }
+}
+
+static FETCH_HEALTH: OnceLock<FetchHealth> = OnceLock::new();
+
+fn fetch_health() -> &'static FetchHealth {
+    FETCH_HEALTH.get_or_init(FetchHealth::default)
+}
+
+/// The health-tracking key for a request: the URL (minus query) with the trailing
+/// `/{z}/{x}/{y}` dropped for tile requests, so every tile of one source group
+/// shares a key. Non-tile resources (sprites) key on their full path.
+fn endpoint_key(request: &ResourceRequest) -> String {
+    endpoint_key_of(&request.url, request.tile.is_some())
+}
+
+fn endpoint_key_of(url: &str, is_tile: bool) -> String {
+    let url = url.split('?').next().unwrap_or(url);
+    if is_tile {
+        // Drop the trailing `/{z}/{x}/{y}` to leave the source path.
+        let mut end = url.len();
+        for _ in 0..3 {
+            match url[..end].rfind('/') {
+                Some(slash) => end = slash,
+                None => return url.to_owned(),
+            }
+        }
+        return url[..end].to_owned();
+    }
+    url.to_owned()
+}
+
 async fn into_mln_response(
     request: &ResourceRequest,
     response: reqwest::Response,
 ) -> MlnResponse {
     let status = response.status();
+    // A 429 is rate limiting, not an endpoint failure, so leave it out of the signal.
+    if status.as_u16() != 429 {
+        let failed = matches!(status.as_u16(), 404 | 500..=599);
+        fetch_health().record(&endpoint_key(request), failed, &request.url);
+    }
     match status.as_u16() {
         200..=203 | 205..=299 => {
             let (etag, expires, must_revalidate) = cache_metadata(response.headers());
@@ -325,6 +408,50 @@ mod tests {
             Some("http://192.168.1.2:8080/")
         );
         assert_eq!(referer_for("not a url"), None);
+    }
+
+    #[test]
+    fn endpoint_key_strips_tile_coords() {
+        assert_eq!(
+            endpoint_key_of("https://openrailwaymap.app/railway_line_high,railway_text_km/12/2046/1362", true),
+            "https://openrailwaymap.app/railway_line_high,railway_text_km"
+        );
+        // Non-tile resources (sprites) keep their full path.
+        assert_eq!(
+            endpoint_key_of("https://openrailwaymap.app/sprite/symbols.json", false),
+            "https://openrailwaymap.app/sprite/symbols.json"
+        );
+        // A query string is dropped so cache-busting params don't fragment the key.
+        assert_eq!(
+            endpoint_key_of("https://openrailwaymap.app/standard_railway_switch_ref/17/x/y?v=2", true),
+            "https://openrailwaymap.app/standard_railway_switch_ref"
+        );
+    }
+
+    #[test]
+    fn fetch_health_reports_a_dead_endpoint_once() {
+        let health = FetchHealth::default();
+        let ep = "https://openrailwaymap.app/standard_railway_text_stations";
+        // A full window of 404s trips the report exactly once.
+        for _ in 0..HEALTH_WINDOW {
+            health.record(ep, true, "https://openrailwaymap.app/standard_railway_text_stations/12/2046/1362");
+        }
+        assert!(health.reported.load(Ordering::Relaxed), "a predominantly-failing endpoint reports");
+        // Later records are no-ops once reported.
+        let before = health.windows.lock().unpoison().clone();
+        health.record(ep, true, "x");
+        assert_eq!(*health.windows.lock().unpoison(), before, "no more work after reporting");
+    }
+
+    #[test]
+    fn fetch_health_tolerates_sparse_failures() {
+        let health = FetchHealth::default();
+        let ep = "https://openrailwaymap.app/openrailwaymap_boxes";
+        // Mostly-successful fetches (the odd coverage-gap 404) never trip the report.
+        for i in 0..(HEALTH_WINDOW * 3) {
+            health.record(ep, i % 10 == 0, "url");
+        }
+        assert!(!health.reported.load(Ordering::Relaxed), "sparse 404s must not alarm");
     }
 
     #[test]
