@@ -15,8 +15,8 @@ use crate::mbtiles::{DownloadProgress, ProgressEvent};
 use crate::server_core::{USER_AGENT, UnpoisonExt};
 
 /// Union of every distinct MVT source layer referenced by the composite
-/// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs across all seven bundled
-/// styles. Downloaded together into a single combined-blob `MBTiles`.
+/// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs of the bundled styles.
+/// Downloaded together into a single combined-blob `MBTiles`.
 const ORM_LAYERS: &[&str] = &[
     "electrification_catenary",
     "electrification_railway_line_low",
@@ -842,4 +842,15 @@ pub async fn download_orm_tiles(
     }
 
     result.map(|p| p.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orm_layers_match_the_bundled_styles() {
+        // derive_layer_zoom_ranges asserts the derived set equals ORM_LAYERS.
+        assert_eq!(derive_layer_zoom_ranges().len(), ORM_LAYERS.len());
+    }
 }

@@ -148,3 +148,28 @@ pub fn materialize(cache_dir: &Path) -> std::io::Result<PathBuf> {
     }
     Ok(root)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `text-font` with no bundled glyphs leaves maplibre-native waiting forever on
+    /// the missing glyph file, so every tile with that label hangs.
+    #[test]
+    fn every_style_font_has_bundled_glyphs() {
+        for (name, json) in crate::orm_tiles::STYLES {
+            let style: serde_json::Value = serde_json::from_str(json).expect("embedded style parses");
+            for layer in style["layers"].as_array().expect("layers") {
+                let Some(fonts) = layer["layout"]["text-font"].as_array() else { continue };
+                for font in fonts {
+                    let font = font.as_str().expect("text-font is a literal list");
+                    assert!(
+                        BUNDLED.iter().any(|(stack, _, _)| *stack == font),
+                        "{name} layer {} uses unbundled font {font}",
+                        layer["id"]
+                    );
+                }
+            }
+        }
+    }
+}

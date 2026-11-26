@@ -83,16 +83,11 @@ const MAX_REQUEST_ZOOM: u8 = 22;
 /// requeue before its waiters get a hard failure.
 const FAILED_KEY_MEMORY: usize = 64;
 
+// One unified ORM overlay style. The view/coloring mode and every display option
+// are driven by `global-state` (the `tracks` key selects the mode), matching
+// openrailwaymap.app, which serves a single style and only changes global-state.
 pub(crate) const STYLES: &[(&str, &str)] = &[
-    ("standard", include_str!("../resources/orm/standard.json")),
-    ("speed", include_str!("../resources/orm/speed.json")),
-    ("signals", include_str!("../resources/orm/signals.json")),
-    ("electrification", include_str!("../resources/orm/electrification.json")),
-    ("track", include_str!("../resources/orm/track.json")),
-    ("loading_gauge", include_str!("../resources/orm/loading_gauge.json")),
-    ("axle_load", include_str!("../resources/orm/axle_load.json")),
-    ("operator", include_str!("../resources/orm/operator.json")),
-    ("route", include_str!("../resources/orm/route.json")),
+    ("orm", include_str!("../resources/orm/orm.json")),
 ];
 
 type Key = (Arc<str>, u8, u32, u32);
@@ -123,7 +118,7 @@ fn canonical_style(name: &str) -> Arc<str> {
     if STYLES.iter().any(|(n, _)| *n == name) {
         Arc::from(name)
     } else {
-        Arc::from("standard")
+        Arc::from("orm")
     }
 }
 
@@ -399,7 +394,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         offline_dir: RwLock::new(None),
         base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
         glyphs_dir,
-        orm_state: RwLock::new(crate::orm_state::default_state()),
+        orm_state: RwLock::new(crate::orm_state::default_state(STYLES[0].1)),
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
         render_failure: Mutex::new(None),
@@ -611,8 +606,40 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
         .with_size(tile_size, tile_size)
         .with_resource_options(resource_opts)
         .build_tile_renderer()?;
-    r.load_style_from_json_str(resolve_style_source(style, shared));
+    // global-state can only be set once the style has finished loading (mbgl throws
+    // otherwise), so wait for the load before pushing the ORM options in.
+    r.load_style_from_json_str(resolve_style_source(style, shared))
+        .wait()
+        .map_err(|e| format!("ORM style '{style}' failed to load: {e}"))?;
+    apply_global_state(&mut r, shared);
     Ok(r)
+}
+
+/// Pushes the current ORM option values into the renderer's style as native
+/// `global-state`, so the style's `global-state` expressions evaluate against the
+/// user's selections. maplibre-native evaluates these directly (core #4516), so no
+/// expression rewriting is needed.
+fn apply_global_state(
+    renderer: &mut maplibre_native::ImageRenderer<maplibre_native::Tile>,
+    shared: &OrmShared,
+) {
+    use maplibre_native::GlobalStateValue;
+    let state = shared.orm_state.read().unpoison();
+    let mut style = renderer.style();
+    for (key, value) in state.iter() {
+        let resolved = match value {
+            serde_json::Value::String(s) => GlobalStateValue::String(s.clone()),
+            serde_json::Value::Bool(b) => GlobalStateValue::Bool(*b),
+            serde_json::Value::Number(n) => GlobalStateValue::Number(n.as_f64().unwrap_or(0.0)),
+            serde_json::Value::Null => GlobalStateValue::Null,
+            serde_json::Value::Array(items) => GlobalStateValue::StringList(
+                items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+            ),
+            // ORM options are never object-valued.
+            serde_json::Value::Object(_) => continue,
+        };
+        style.set_global_state(key, resolved);
+    }
 }
 
 /// Returns the style JSON to load: the on-disk offline variant when offline mode is
@@ -624,9 +651,9 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     let embedded = || {
         let base = shared.base_url.read().unpoison();
-        let rebased = rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref());
-        let state = shared.orm_state.read().unpoison();
-        resolve_state(rebased, &state)
+        // Keep the style's `global-state` expressions intact; they are applied to the
+        // renderer natively via `apply_global_state` rather than rewritten here.
+        rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref())
     };
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
@@ -659,23 +686,6 @@ fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) ->
         glyph_rewritten
     } else {
         glyph_rewritten.replace(default, base)
-    }
-}
-
-/// Substitutes the current ORM option values into the style's `global-state`
-/// expressions so maplibre-native (which cannot evaluate global-state) renders the
-/// detail layers and honours the per-option toggles. A no-op for styles without any
-/// global-state, and falls back to the unresolved style if it does not parse.
-fn resolve_state(style: String, state: &serde_json::Map<String, serde_json::Value>) -> String {
-    match serde_json::from_str::<serde_json::Value>(&style) {
-        Ok(mut value) => {
-            crate::orm_state::resolve(&mut value, state);
-            value.to_string()
-        }
-        Err(e) => {
-            tracing::warn!("ORM style did not parse for state resolution ({e}); using it unresolved");
-            style
-        }
     }
 }
 
@@ -964,7 +974,7 @@ fn render_worker_inner(
 }
 
 async fn serve_tilejson(State(state): State<Arc<OrmTileState>>) -> impl IntoResponse {
-    serve_tilejson_for("standard", state.shared.bound_port.load(Ordering::SeqCst))
+    serve_tilejson_for("orm", state.shared.bound_port.load(Ordering::SeqCst))
 }
 
 async fn serve_style_tilejson(
@@ -1160,7 +1170,7 @@ mod tests {
             offline_dir: RwLock::new(None),
             base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
             glyphs_dir: None,
-            orm_state: RwLock::new(crate::orm_state::default_state()),
+            orm_state: RwLock::new(crate::orm_state::default_state(STYLES[0].1)),
             generation: AtomicU64::new(0),
             bound_port: AtomicU16::new(0),
             render_failure: Mutex::new(None),
@@ -1168,18 +1178,6 @@ mod tests {
             slow_render_count: AtomicU64::new(0),
             slow_render_reported: AtomicBool::new(false),
         }
-    }
-
-    #[test]
-    fn resolve_state_resolves_platforms_toggle_in_real_style() {
-        let mut state = crate::orm_state::default_state();
-        state.insert("platforms".to_string(), serde_json::json!("none"));
-        let resolved = resolve_state(style_json("standard").to_string(), &state);
-        assert!(!resolved.contains("global-state"), "all global-state should be resolved");
-        assert!(
-            resolved.contains(r#"["!=","none","none"]"#),
-            "the platforms=none toggle should resolve to a false condition"
-        );
     }
 
     #[test]
@@ -1192,6 +1190,27 @@ mod tests {
         assert!(out.contains("https://openrailwaymap.app/railway_line_high"));
         assert!(out.contains("https://openrailwaymap.app/sprite/symbols"));
         assert!(!out.contains("openrailwaymap.app/font/"));
+    }
+
+    /// maplibre-native takes `layout.visibility` only as a literal, and decodes every
+    /// vector source as MVT. The style build moves option gates into filters and drops
+    /// upstream's `encoding: mlt`; this guards both.
+    #[test]
+    fn embedded_styles_are_native_compatible() {
+        for (name, json) in STYLES {
+            let style: serde_json::Value = serde_json::from_str(json).expect("embedded style parses");
+            for layer in style["layers"].as_array().expect("layers") {
+                let visibility = &layer["layout"]["visibility"];
+                assert!(
+                    visibility.is_null() || visibility.is_string(),
+                    "{name} layer {} has an expression visibility",
+                    layer["id"]
+                );
+            }
+            for (source, def) in style["sources"].as_object().expect("sources") {
+                assert!(def.get("encoding").is_none(), "{name} source {source} sets an encoding");
+            }
+        }
     }
 
     #[test]
