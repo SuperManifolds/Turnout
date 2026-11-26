@@ -24,6 +24,8 @@ impl Default for NetworkSettings {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
+    #[serde(default)]
+    pub game_dir_override: Option<String>,
     pub map_theme: String,
     #[serde(default = "default_overpass_timeout")]
     pub overpass_timeout: u32,
@@ -59,6 +61,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mods_dir_override: None,
+            game_dir_override: None,
             map_theme: "system".to_string(),
             overpass_timeout: 60,
             type_speed_overrides: std::collections::HashMap::new(),
@@ -174,6 +177,8 @@ fn fit_window_to_content() {
 pub fn AppSettings() -> impl IntoView {
     let (mods_dir, set_mods_dir) = create_signal::<Option<String>>(None);
     let (detected_dir, set_detected_dir) = create_signal::<Option<String>>(None);
+    let (game_dir, set_game_dir) = create_signal::<Option<String>>(None);
+    let (game_detected, set_game_detected) = create_signal::<Option<String>>(None);
     let (check_updates, set_check_updates) = create_signal(true);
     let (theme, set_theme) = create_signal("system".to_string());
     let (timeout, set_timeout) = create_signal(60u32);
@@ -198,6 +203,7 @@ pub fn AppSettings() -> impl IntoView {
         spawn_local(async move {
             let settings = load_settings().await;
             set_mods_dir.set(settings.mods_dir_override);
+            set_game_dir.set(settings.game_dir_override);
             set_check_updates.set(settings.network.check_for_updates);
             set_theme.set(settings.map_theme);
             set_timeout.set(settings.overpass_timeout);
@@ -222,6 +228,10 @@ pub fn AppSettings() -> impl IntoView {
                 set_detected_dir.set(Some(dir));
             }
 
+            if let Some(dir) = crate::tauri::get_game_dir().await {
+                set_game_detected.set(Some(dir));
+            }
+
             set_app_version.set(crate::tauri::get_app_version().await);
         });
     });
@@ -230,6 +240,7 @@ pub fn AppSettings() -> impl IntoView {
     let save_timer = store_value::<Option<i32>>(None);
     create_effect(move |_| {
         let mods = mods_dir.get();
+        let game = game_dir.get();
         let updates = check_updates.get();
         let t = theme.get();
         let tout = timeout.get();
@@ -250,6 +261,7 @@ pub fn AppSettings() -> impl IntoView {
         let cb = Closure::once(move || {
             let settings = Settings {
                 mods_dir_override: mods,
+                game_dir_override: game,
                 map_theme: t,
                 overpass_timeout: tout,
                 type_speed_overrides: speeds,
@@ -340,6 +352,28 @@ pub fn AppSettings() -> impl IntoView {
         }
     };
 
+    let on_browse_game = move |_| {
+        spawn_local(async move {
+            if let Some(path) = crate::tauri::pick_folder().await {
+                set_game_dir.set(Some(path));
+            }
+        });
+    };
+
+    let on_auto_detect_game = move |_| {
+        set_game_dir.set(None);
+    };
+
+    let display_game_path = move || {
+        if let Some(path) = game_dir.get() {
+            path
+        } else if let Some(detected) = game_detected.get() {
+            format!("{detected} (auto-detected)")
+        } else {
+            "Not found — click Browse to set the game install folder".to_string()
+        }
+    };
+
     view! {
         <section id="app-settings">
             <h2>"Settings"</h2>
@@ -353,6 +387,22 @@ pub fn AppSettings() -> impl IntoView {
                         " Browse"
                     </button>
                     <button type="button" on:click=on_auto_detect>
+                        <i class="fa-solid fa-rotate"></i>
+                        " Auto-detect"
+                    </button>
+                </nav>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Game Install Folder"</legend>
+                <p class="setting-hint">"The Steam install (containing resources/), used for the population overlay."</p>
+                <p class="path-display">{display_game_path}</p>
+                <nav>
+                    <button type="button" on:click=on_browse_game>
+                        <i class="fa-solid fa-folder-open"></i>
+                        " Browse"
+                    </button>
+                    <button type="button" on:click=on_auto_detect_game>
                         <i class="fa-solid fa-rotate"></i>
                         " Auto-detect"
                     </button>

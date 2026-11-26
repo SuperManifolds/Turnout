@@ -8,6 +8,9 @@ const BBOX_COLOR: &str = "#4a9eff";
 const BBOX_ERROR_COLOR: &str = "#d32f2f";
 const HANDLE_COLOR: &str = "#4a9eff";
 const HANDLE_RADIUS: f64 = 6.0;
+/// Below this width/height (degrees), a population marquee drag counts as a click
+/// and deselects.
+const POP_SELECT_MIN_DEG: f64 = 1e-6;
 
 #[wasm_bindgen]
 extern "C" {
@@ -32,9 +35,17 @@ extern "C" {
     fn map_set_bbox_color(color: &str);
     fn map_set_orm_style(style_name: &str);
     fn map_set_orm_port(port: u16);
+    fn map_meters_per_pixel() -> f64;
+    fn map_refresh_population();
+    fn map_brush_preview_begin(erase: bool);
+    fn map_brush_preview_add(lng: f64, lat: f64, radius_px: f64);
+    fn map_brush_preview_end();
+    fn map_set_pop_marquee(west: f64, south: f64, east: f64, north: f64);
+    fn map_clear_pop_marquee();
 }
 
 use crate::geo::{Handle, apply_handle_drag, bbox_geojson, empty_geojson, format_bbox, handles_geojson};
+use super::population::PopTool;
 
 // Interaction modes
 #[derive(Clone, Copy, PartialEq)]
@@ -65,6 +76,12 @@ pub fn Map(
     set_drawer_open: WriteSignal<bool>,
     show_vector_layers: ReadSignal<bool>,
     set_show_vector_layers: WriteSignal<bool>,
+    pop_tool: ReadSignal<PopTool>,
+    pop_brush_radius: ReadSignal<f64>,
+    pop_brush_strength: ReadSignal<u32>,
+    pop_editor_open: ReadSignal<bool>,
+    set_pop_editor_open: WriteSignal<bool>,
+    set_selection_bbox: WriteSignal<Option<(f64, f64, f64, f64)>>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -77,8 +94,47 @@ pub fn Map(
         map_set_bbox_color(color);
     });
 
+    // Population marquee: a selection independent of the track-import `bbox`, so
+    // it never triggers blueprint/import behaviour. Stored as (s, w, n, e).
+    let (pop_selection, set_pop_selection) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
+    let pop_selecting = store_value(false);
+    let pop_sel_start = store_value::<Option<(f64, f64)>>(None);
+
+    // Mirror the population selection out to the app so the region tool can read it.
+    create_effect(move |_| set_selection_bbox.set(pop_selection.get()));
+
+    // Clear the marquee when the editor closes.
+    create_effect(move |_| {
+        if !pop_editor_open.get() {
+            set_pop_selection.set(None);
+            map_clear_pop_marquee();
+        }
+    });
+
     let mode = store_value(Mode::Idle);
     let draw_start = store_value::<Option<(f64, f64)>>(None);
+    // Population brush stroke in progress: whether painting, and the accumulated
+    // lon/lat points sent to the backend on release.
+    let painting = store_value(false);
+    let stroke = store_value::<Vec<(f64, f64)>>(Vec::new());
+
+    // The active population tool drives the map's interaction mode, cursor, and
+    // whether drag-pan is available.
+    create_effect(move |_| {
+        // Population tools are handled by their own flows (paint / marquee), not
+        // the track `Drawing`/`Resizing` modes, so this only sets cursor + drag-pan.
+        let t = pop_tool.get();
+        match t {
+            PopTool::Brush | PopTool::Erase | PopTool::Select => {
+                map_set_drag_pan(false);
+                map_set_cursor(t.cursor());
+            }
+            PopTool::None => {
+                map_set_drag_pan(true);
+                map_set_cursor("");
+            }
+        }
+    });
     let fetch_generation = store_value(0u32);
 
     // Listen for paste events on the window to handle ORM links
@@ -136,7 +192,32 @@ pub fn Map(
         map_on_load(&on_load);
         on_load.forget();
 
+        let paint_dab = move |lng: f64, lat: f64| {
+            stroke.update_value(|s| s.push((lng, lat)));
+            // Only preview dabs inside the selection, so the marquee constraint is
+            // visible while painting (the backend clips per-pixel exactly).
+            let inside = pop_selection
+                .get_untracked()
+                .is_none_or(|(s, w, n, e)| lng >= w && lng <= e && lat >= s && lat <= n);
+            if inside {
+                map_brush_preview_add(lng, lat, pop_brush_radius.get_untracked());
+            }
+        };
+
         let on_mousedown = Closure::new(move |lng: f64, lat: f64| {
+            if pop_tool.get_untracked().is_paint() {
+                painting.set_value(true);
+                stroke.set_value(Vec::new());
+                map_set_drag_pan(false);
+                map_brush_preview_begin(pop_tool.get_untracked() == PopTool::Erase);
+                paint_dab(lng, lat);
+                return;
+            }
+            if pop_tool.get_untracked() == PopTool::Select {
+                pop_selecting.set_value(true);
+                pop_sel_start.set_value(Some((lng, lat)));
+                return;
+            }
             match mode.get_value() {
                 Mode::Drawing => {
                     draw_start.set_value(Some((lng, lat)));
@@ -158,6 +239,20 @@ pub fn Map(
         on_mousedown.forget();
 
         let on_mousemove = Closure::new(move |lng: f64, lat: f64| {
+            if painting.get_value() {
+                paint_dab(lng, lat);
+                return;
+            }
+            if pop_selecting.get_value() {
+                if let Some((sx, sy)) = pop_sel_start.get_value() {
+                    map_set_pop_marquee(sx.min(lng), sy.min(lat), sx.max(lng), sy.max(lat));
+                }
+                return;
+            }
+            // Any active population tool owns the cursor; skip the idle handle logic.
+            if pop_tool.get_untracked() != PopTool::None {
+                return;
+            }
             match mode.get_value() {
                 Mode::Drawing => {
                     let Some((start_lng, start_lat)) = draw_start.get_value() else { return };
@@ -190,6 +285,42 @@ pub fn Map(
         on_mousemove.forget();
 
         let on_mouseup = Closure::new(move |lng: f64, lat: f64| {
+            if painting.get_value() {
+                paint_dab(lng, lat);
+                painting.set_value(false);
+                // Drag-pan stays off while a paint tool is active (the tool effect
+                // restores it when the tool is cleared).
+                let points = stroke.get_value();
+                let radius_m = pop_brush_radius.get_untracked() * map_meters_per_pixel();
+                let strength = pop_brush_strength.get_untracked();
+                let mode_str = if pop_tool.get_untracked() == PopTool::Erase { "remove" } else { "add" };
+                // Constrain the stroke to the active population marquee (west,
+                // south, east, north). No selection = paint anywhere.
+                let clip = pop_selection.get_untracked().map(|(s, w, n, e)| (w, s, e, n));
+                spawn_local(async move {
+                    crate::tauri::pop_brush(&points, radius_m, strength, mode_str, clip).await;
+                    map_refresh_population();
+                    map_brush_preview_end();
+                });
+                return;
+            }
+            if pop_selecting.get_value() {
+                pop_selecting.set_value(false);
+                let start = pop_sel_start.get_value();
+                pop_sel_start.set_value(None);
+                if let Some((sx, sy)) = start {
+                    let (w, s, e, n) = (sx.min(lng), sy.min(lat), sx.max(lng), sy.max(lat));
+                    // A click (no meaningful drag) deselects, like Photoshop.
+                    if e - w < POP_SELECT_MIN_DEG && n - s < POP_SELECT_MIN_DEG {
+                        set_pop_selection.set(None);
+                        map_clear_pop_marquee();
+                    } else {
+                        set_pop_selection.set(Some((s, w, n, e)));
+                        map_set_pop_marquee(w, s, e, n);
+                    }
+                }
+                return;
+            }
             match mode.get_value() {
                 Mode::Drawing => {
                     let Some((start_lng, start_lat)) = draw_start.get_value() else { return };
@@ -401,6 +532,11 @@ pub fn Map(
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
                 <button on:click=move |_| set_drawer_open.update(|v| *v = !*v)>"Blueprints"</button>
+                <button class:active=move || pop_editor_open.get()
+                    on:click=move |_| set_pop_editor_open.update(|v| *v = !*v)>
+                    <i class="fa-solid fa-people-group"></i>
+                    " Population"
+                </button>
             </nav>
             <Show when=move || show_tile_download.get()>
                 <super::tile_download::TileDownload

@@ -42,13 +42,29 @@ pub(super) struct SavedLayer {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum SavedSource {
-    Kmz { path: String },
-    Shp { path: String },
-    GeoJson { path: String },
-    Wms { wms_url: String, wms_layer: String },
-    ArcGis { arcgis_url: String, arcgis_service: String },
-    Xyz { xyz_url: String },
-    Wmts { xyz_url: String },
+    Kmz {
+        path: String,
+    },
+    Shp {
+        path: String,
+    },
+    GeoJson {
+        path: String,
+    },
+    Wms {
+        wms_url: String,
+        wms_layer: String,
+    },
+    ArcGis {
+        arcgis_url: String,
+        arcgis_service: String,
+    },
+    Xyz {
+        xyz_url: String,
+    },
+    Wmts {
+        xyz_url: String,
+    },
     Apple {
         /// Satellite (vs standard map) imagery. The short-lived Apple access token
         /// is deliberately NOT persisted — the URL is rebuilt from the stored Apple
@@ -60,8 +76,12 @@ enum SavedSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         xyz_url: Option<String>,
     },
-    Bing { xyz_url: String },
-    MbTiles { path: String },
+    Bing {
+        xyz_url: String,
+    },
+    MbTiles {
+        path: String,
+    },
 }
 
 /// Assign a concrete id to each restored group. A saved id is reused when it is
@@ -112,12 +132,20 @@ impl AppleCreds {
     /// version is missing.
     fn url(&self, sat: bool) -> Option<String> {
         let key = self.access_key.as_deref()?;
-        let ver = if sat { self.sat_version.as_deref() } else { self.map_version.as_deref() }?;
+        let ver = if sat {
+            self.sat_version.as_deref()
+        } else {
+            self.map_version.as_deref()
+        }?;
         Some(turnout_core::geo::apple_tile_url(key, ver, sat))
     }
 }
 
-pub(super) fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLayer, apple: &AppleCreds) {
+pub(super) fn restore_layer(
+    handle: &tile_server::ServerHandle,
+    layer: &SavedLayer,
+    apple: &AppleCreds,
+) {
     // Capture the id the add actually assigned so the follow-up name/visibility/
     // opacity apply to THIS layer. A `.last()` guess would silently target the
     // previous layer whenever an add no-ops (e.g. a file whose geometry vanished
@@ -142,11 +170,19 @@ pub(super) fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLay
         SavedSource::Wms { wms_url, wms_layer } => {
             handle.add_wms_layer(wms_url.clone(), wms_layer.clone(), layer.name.clone())
         }
-        SavedSource::ArcGis { arcgis_url, arcgis_service } => {
-            handle.add_arcgis_layer(arcgis_url.clone(), arcgis_service.clone(), layer.name.clone())
-        }
+        SavedSource::ArcGis {
+            arcgis_url,
+            arcgis_service,
+        } => handle.add_arcgis_layer(
+            arcgis_url.clone(),
+            arcgis_service.clone(),
+            layer.name.clone(),
+        ),
         SavedSource::Apple { sat, xyz_url } => {
-            let is_sat = *sat || xyz_url.as_deref().is_some_and(|u| u.contains(APPLE_SAT_MARKER));
+            let is_sat = *sat
+                || xyz_url
+                    .as_deref()
+                    .is_some_and(|u| u.contains(APPLE_SAT_MARKER));
             // Rebuild the URL from the stored credentials (the freshest known key);
             // the token refresher rewrites it again once it fetches a live token.
             // Fall back to a legacy saved URL, then to a token-less marker URL that
@@ -158,9 +194,15 @@ pub(super) fn restore_layer(handle: &tile_server::ServerHandle, layer: &SavedLay
                 .unwrap_or_else(|| turnout_core::geo::apple_tile_url("", "", is_sat));
             handle.add_xyz_layer_with_kind(url, layer.name.clone(), LayerKind::Apple)
         }
-        SavedSource::Xyz { xyz_url } | SavedSource::Wmts { xyz_url } | SavedSource::Bing { xyz_url } => {
+        SavedSource::Xyz { xyz_url }
+        | SavedSource::Wmts { xyz_url }
+        | SavedSource::Bing { xyz_url } => {
             // Preserve the specific kind so kind-specific behaviour still applies.
-            handle.add_xyz_layer_with_kind(xyz_url.clone(), layer.name.clone(), kind_for_saved_source(&layer.source))
+            handle.add_xyz_layer_with_kind(
+                xyz_url.clone(),
+                layer.name.clone(),
+                kind_for_saved_source(&layer.source),
+            )
         }
         SavedSource::MbTiles { path } => {
             match handle.add_mbtiles_layer(path.clone(), layer.name.clone()) {
@@ -184,40 +226,77 @@ pub(super) fn save_groups(app: &tauri::AppHandle) {
 
     let state = app.state::<OverlayState>();
     let groups = state.groups.lock().unpoison();
-    let saved: Vec<SavedGroup> = groups.iter().map(|g| {
-        let layers = g.handle.state.layers.read().unpoison();
-        SavedGroup {
-            id: Some(g.id),
-            name: g.name.clone(),
-            layers: layers.iter().filter_map(|l| {
-                // 1:1 map from the live source to its persisted form. File layers
-                // without a path can't be re-parsed on restore, so they're dropped.
-                let source = match &l.source {
-                    SourceDef::Kmz { path: Some(p) } => SavedSource::Kmz { path: p.clone() },
-                    SourceDef::Shp { path: Some(p) } => SavedSource::Shp { path: p.clone() },
-                    SourceDef::GeoJson { path: Some(p) } => SavedSource::GeoJson { path: p.clone() },
-                    SourceDef::Kmz { path: None } | SourceDef::Shp { path: None } | SourceDef::GeoJson { path: None } =>
-                        return None,
-                    SourceDef::Wms { base_url, layer_name } =>
-                        SavedSource::Wms { wms_url: base_url.clone(), wms_layer: layer_name.clone() },
-                    SourceDef::ArcGis { base_url, service_name } =>
-                        SavedSource::ArcGis { arcgis_url: base_url.clone(), arcgis_service: service_name.clone() },
-                    SourceDef::Xyz { url_template } => SavedSource::Xyz { xyz_url: url_template.clone() },
-                    SourceDef::Wmts { url_template } => SavedSource::Wmts { xyz_url: url_template.clone() },
-                    SourceDef::Bing { url_template } => SavedSource::Bing { xyz_url: url_template.clone() },
-                    // Persist only which imagery it is, never the tokenized URL.
-                    SourceDef::Apple { sat } => SavedSource::Apple { sat: *sat, xyz_url: None },
-                    SourceDef::MbTiles { path, .. } => SavedSource::MbTiles { path: path.clone() },
-                };
-                Some(SavedLayer {
-                    name: l.name.clone(),
-                    visible: l.visible,
-                    opacity: l.opacity,
-                    source,
-                })
-            }).collect(),
-        }
-    }).collect();
+    let saved: Vec<SavedGroup> = groups
+        .iter()
+        .map(|g| {
+            let layers = g.handle.state.layers.read().unpoison();
+            SavedGroup {
+                id: Some(g.id),
+                name: g.name.clone(),
+                layers: layers
+                    .iter()
+                    .filter_map(|l| {
+                        // 1:1 map from the live source to its persisted form.
+                        let source = match &l.source {
+                            SourceDef::Kmz { path: Some(p) } => {
+                                SavedSource::Kmz { path: p.clone() }
+                            }
+                            SourceDef::Shp { path: Some(p) } => {
+                                SavedSource::Shp { path: p.clone() }
+                            }
+                            SourceDef::GeoJson { path: Some(p) } => {
+                                SavedSource::GeoJson { path: p.clone() }
+                            }
+                            // File layers without a path can't be re-parsed on
+                            // restore; population is a built-in, non-persistent
+                            // layer served from its own handle. Both are skipped.
+                            SourceDef::Kmz { path: None }
+                            | SourceDef::Shp { path: None }
+                            | SourceDef::GeoJson { path: None }
+                            | SourceDef::Pop { .. } => return None,
+                            SourceDef::Wms {
+                                base_url,
+                                layer_name,
+                            } => SavedSource::Wms {
+                                wms_url: base_url.clone(),
+                                wms_layer: layer_name.clone(),
+                            },
+                            SourceDef::ArcGis {
+                                base_url,
+                                service_name,
+                            } => SavedSource::ArcGis {
+                                arcgis_url: base_url.clone(),
+                                arcgis_service: service_name.clone(),
+                            },
+                            SourceDef::Xyz { url_template } => SavedSource::Xyz {
+                                xyz_url: url_template.clone(),
+                            },
+                            SourceDef::Wmts { url_template } => SavedSource::Wmts {
+                                xyz_url: url_template.clone(),
+                            },
+                            SourceDef::Bing { url_template } => SavedSource::Bing {
+                                xyz_url: url_template.clone(),
+                            },
+                            // Persist only which imagery it is, never the tokenized URL.
+                            SourceDef::Apple { sat } => SavedSource::Apple {
+                                sat: *sat,
+                                xyz_url: None,
+                            },
+                            SourceDef::MbTiles { path, .. } => {
+                                SavedSource::MbTiles { path: path.clone() }
+                            }
+                        };
+                        Some(SavedLayer {
+                            name: l.name.clone(),
+                            visible: l.visible,
+                            opacity: l.opacity,
+                            source,
+                        })
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
     drop(groups);
 
     match app.store("settings.json") {
@@ -249,7 +328,10 @@ mod tests {
 
     #[test]
     fn contiguous_ids_are_preserved() {
-        assert_eq!(allocate_group_ids(&[Some(0), Some(1), Some(2)]), vec![0, 1, 2]);
+        assert_eq!(
+            allocate_group_ids(&[Some(0), Some(1), Some(2)]),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]
@@ -261,7 +343,10 @@ mod tests {
 
     #[test]
     fn reorder_keeps_each_groups_id() {
-        assert_eq!(allocate_group_ids(&[Some(2), Some(0), Some(1)]), vec![2, 0, 1]);
+        assert_eq!(
+            allocate_group_ids(&[Some(2), Some(0), Some(1)]),
+            vec![2, 0, 1]
+        );
     }
 
     #[test]
@@ -288,14 +373,40 @@ mod tests {
             id: Some(2),
             name: "Reference".to_string(),
             layers: vec![
-                SavedLayer { name: "kmz".into(), visible: true, opacity: 1.0,
-                    source: SavedSource::Kmz { path: "/a/b.kmz".into() } },
-                SavedLayer { name: "wms".into(), visible: false, opacity: 0.5,
-                    source: SavedSource::Wms { wms_url: "http://w".into(), wms_layer: "L".into() } },
-                SavedLayer { name: "sat".into(), visible: true, opacity: 0.8,
-                    source: SavedSource::Apple { sat: true, xyz_url: None } },
-                SavedLayer { name: "mb".into(), visible: true, opacity: 1.0,
-                    source: SavedSource::MbTiles { path: "/t.mbtiles".into() } },
+                SavedLayer {
+                    name: "kmz".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    source: SavedSource::Kmz {
+                        path: "/a/b.kmz".into(),
+                    },
+                },
+                SavedLayer {
+                    name: "wms".into(),
+                    visible: false,
+                    opacity: 0.5,
+                    source: SavedSource::Wms {
+                        wms_url: "http://w".into(),
+                        wms_layer: "L".into(),
+                    },
+                },
+                SavedLayer {
+                    name: "sat".into(),
+                    visible: true,
+                    opacity: 0.8,
+                    source: SavedSource::Apple {
+                        sat: true,
+                        xyz_url: None,
+                    },
+                },
+                SavedLayer {
+                    name: "mb".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    source: SavedSource::MbTiles {
+                        path: "/t.mbtiles".into(),
+                    },
+                },
             ],
         };
         let json = serde_json::to_string(&group).expect("serialize");
@@ -306,10 +417,25 @@ mod tests {
     #[test]
     fn restored_xyz_family_keeps_its_kind() {
         let url = || "https://example.test/{z}/{x}/{y}".to_string();
-        assert_eq!(kind_for_saved_source(&SavedSource::Apple { sat: false, xyz_url: None }), LayerKind::Apple);
-        assert_eq!(kind_for_saved_source(&SavedSource::Bing { xyz_url: url() }), LayerKind::Bing);
-        assert_eq!(kind_for_saved_source(&SavedSource::Wmts { xyz_url: url() }), LayerKind::Wmts);
-        assert_eq!(kind_for_saved_source(&SavedSource::Xyz { xyz_url: url() }), LayerKind::Xyz);
+        assert_eq!(
+            kind_for_saved_source(&SavedSource::Apple {
+                sat: false,
+                xyz_url: None
+            }),
+            LayerKind::Apple
+        );
+        assert_eq!(
+            kind_for_saved_source(&SavedSource::Bing { xyz_url: url() }),
+            LayerKind::Bing
+        );
+        assert_eq!(
+            kind_for_saved_source(&SavedSource::Wmts { xyz_url: url() }),
+            LayerKind::Wmts
+        );
+        assert_eq!(
+            kind_for_saved_source(&SavedSource::Xyz { xyz_url: url() }),
+            LayerKind::Xyz
+        );
     }
 
     #[test]
@@ -317,12 +443,15 @@ mod tests {
         // Old stores persisted the full tokenized URL under `xyz_url` (enum
         // rename_all renames variants, not their fields); it must still load
         // (sat defaults false, url retained for fallback / sat recovery).
-        let legacy = r#"{"kind":"apple","xyz_url":"https://sat-cdn.apple-mapkit.com/tile?accessKey=abc"}"#;
+        let legacy =
+            r#"{"kind":"apple","xyz_url":"https://sat-cdn.apple-mapkit.com/tile?accessKey=abc"}"#;
         let src: SavedSource = serde_json::from_str(legacy).expect("legacy apple loads");
         match src {
             SavedSource::Apple { sat, xyz_url } => {
                 assert!(!sat);
-                assert!(xyz_url.as_deref().is_some_and(|u| u.contains(APPLE_SAT_MARKER)));
+                assert!(xyz_url
+                    .as_deref()
+                    .is_some_and(|u| u.contains(APPLE_SAT_MARKER)));
             }
             _ => panic!("expected Apple"),
         }
@@ -337,7 +466,11 @@ mod tests {
         };
         assert!(creds.url(false).is_some_and(|u| u.contains("access")));
         assert!(creds.url(true).is_none(), "no sat version -> no sat url");
-        let none = AppleCreds { access_key: None, map_version: Some("9".into()), sat_version: None };
+        let none = AppleCreds {
+            access_key: None,
+            map_version: Some("9".into()),
+            sat_version: None,
+        };
         assert!(none.url(false).is_none(), "no key -> no url");
     }
 }

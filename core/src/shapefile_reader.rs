@@ -234,6 +234,64 @@ fn match_style(rules: &[StyleRule], record: &shapefile::dbase::Record) -> Style 
         .map_or(Style::default(), |r| r.style.clone())
 }
 
+/// Read polygon features paired with a numeric attribute — the shape for
+/// population import (TIGER/Line block/tract polygons + a count field such as the
+/// joined `P1_001N`). Reuses the same geometry projection as [`parse_shapefile`];
+/// non-polygon shapes and rows missing the field are skipped.
+pub fn read_valued_polygons(
+    shp_path: &Path,
+    field: &str,
+) -> Result<Vec<(Geometry, f64)>, CoreError> {
+    let dir = shp_path.parent().unwrap_or(Path::new("."));
+    let stem = shp_path
+        .file_stem()
+        .ok_or_else(|| CoreError::Parse { format: "shapefile", detail: "no file stem".into() })?
+        .to_string_lossy();
+    let crs = detect_crs(&dir.join(format!("{stem}.prj")));
+
+    let mut reader = shapefile::Reader::from_path(shp_path).map_err(|e| CoreError::Parse {
+        format: "shapefile",
+        detail: format!("failed to open {}: {e}", shp_path.display()),
+    })?;
+
+    let mut out = Vec::new();
+    for (i, result) in reader.iter_shapes_and_records().enumerate() {
+        let (shape, record) = result
+            .map_err(|e| CoreError::Parse { format: "shapefile", detail: format!("record {i}: {e}") })?;
+        let (Some(geometry), Some(value)) =
+            (shape_to_geometry(&shape, &crs), record_field_as_f64(&record, field))
+        else {
+            continue;
+        };
+        out.push((geometry, value));
+    }
+    Ok(out)
+}
+
+/// The DBF field names of a shapefile, so the UI can offer the user a numeric
+/// attribute to import. Reads the sibling `.dbf` directly.
+pub fn field_names(shp_path: &Path) -> Result<Vec<String>, CoreError> {
+    let dbf_path = shp_path.with_extension("dbf");
+    let reader = shapefile::dbase::Reader::from_path(&dbf_path).map_err(|e| CoreError::Parse {
+        format: "shapefile",
+        detail: format!("failed to open {}: {e}", dbf_path.display()),
+    })?;
+    Ok(reader.fields().iter().map(|f| f.name().to_string()).collect())
+}
+
+fn record_field_as_f64(record: &shapefile::dbase::Record, field_name: &str) -> Option<f64> {
+    match record.get(field_name)? {
+        shapefile::dbase::FieldValue::Numeric(n) => *n,
+        shapefile::dbase::FieldValue::Float(n) => n.map(f64::from),
+        shapefile::dbase::FieldValue::Integer(n) => Some(f64::from(*n)),
+        shapefile::dbase::FieldValue::Double(n) | shapefile::dbase::FieldValue::Currency(n) => {
+            Some(*n)
+        }
+        shapefile::dbase::FieldValue::Character(Some(s)) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
 fn record_field_as_string(record: &shapefile::dbase::Record, field_name: &str) -> Option<String> {
     let value = record.get(field_name)?;
     match value {

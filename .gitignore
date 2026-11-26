@@ -7,3 +7,8 @@ target/
 !src-tauri/icons/*.png
 dist/
 scratch/
+
+# Local population data artifacts (baked outputs + downloaded/test datasets).
+# Regenerable via the bake_pop CLI; too large to track.
+*.pmtiles
+us_county_pop.*
