@@ -9,9 +9,9 @@
 //! need the same vector tile trigger a single upstream request.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use maplibre_native::file_source::{
     ErrorReason, FileSourceType, ResourceRequest, Response as MlnResponse, TokioFileSource,
@@ -44,6 +44,57 @@ const H2_STALL_TIMEOUT_SECS: u64 = 10;
 /// Consecutive HTTP/2 stalls before the source downgrades to HTTP/1.1 for the
 /// rest of the session (one-way — no flapping back to HTTP/2).
 const H2_STALL_DOWNGRADE: u32 = 3;
+
+/// A fetch (retries included) slower than this counts as slow in [`FetchStats`].
+const SLOW_FETCH: Duration = Duration::from_secs(1);
+
+/// Process-wide upstream fetch counts, so the render workers can tell slow tile
+/// downloads from slow rendering (mbgl fetches a tile's sources inside its render).
+static FETCHES: FetchCounters = FetchCounters {
+    total: AtomicU64::new(0),
+    slow: AtomicU64::new(0),
+    failed: AtomicU64::new(0),
+};
+
+struct FetchCounters {
+    total: AtomicU64,
+    slow: AtomicU64,
+    failed: AtomicU64,
+}
+
+/// A snapshot of the process-wide fetch counts (see [`fetch_stats`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FetchStats {
+    pub total: u64,
+    pub slow: u64,
+    pub failed: u64,
+}
+
+impl FetchStats {
+    /// Whether a fetch was slow or failed between `self` and the later `after`.
+    pub fn degraded_since(self, after: Self) -> bool {
+        after.slow > self.slow || after.failed > self.failed
+    }
+}
+
+/// The upstream fetch counts so far this process.
+pub(crate) fn fetch_stats() -> FetchStats {
+    FetchStats {
+        total: FETCHES.total.load(Ordering::Relaxed),
+        slow: FETCHES.slow.load(Ordering::Relaxed),
+        failed: FETCHES.failed.load(Ordering::Relaxed),
+    }
+}
+
+fn record_fetch(elapsed: Duration, response: &MlnResponse) {
+    FETCHES.total.fetch_add(1, Ordering::Relaxed);
+    if elapsed > SLOW_FETCH {
+        FETCHES.slow.fetch_add(1, Ordering::Relaxed);
+    }
+    if is_failure(response) {
+        FETCHES.failed.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 struct OrmNetworkSource {
     /// Preferred client: negotiates HTTP/2 over ALPN where the host offers it
@@ -134,6 +185,13 @@ impl OrmNetworkSource {
     /// tile's composite sources fails the whole tile render — in Tile mode
     /// mbgl aborts the render, and the client shows a blank tile.
     async fn fetch(&self, request: &ResourceRequest) -> MlnResponse {
+        let start = Instant::now();
+        let response = self.fetch_with_retries(request).await;
+        record_fetch(start.elapsed(), &response);
+        response
+    }
+
+    async fn fetch_with_retries(&self, request: &ResourceRequest) -> MlnResponse {
         let mut response = self.fetch_once(request).await;
         for delay_ms in RETRY_BACKOFF_MS {
             if !is_transient(&response) {
@@ -202,6 +260,15 @@ pub(crate) fn referer_for(url: &str) -> Option<String> {
 /// Whether a response represents a failure worth retrying: rate limiting,
 /// server errors, and transport failures. Not-found and other client errors
 /// are final.
+/// Whether a fetch failed to deliver the resource. A 404 is a normal empty tile
+/// on ORM's endpoints, so only transport, server and other errors count.
+fn is_failure(response: &MlnResponse) -> bool {
+    response
+        .error
+        .as_ref()
+        .is_some_and(|e| !matches!(e.reason, ErrorReason::NotFound | ErrorReason::Success))
+}
+
 fn is_transient(response: &MlnResponse) -> bool {
     response.error.as_ref().is_some_and(|e| {
         matches!(
@@ -395,6 +462,21 @@ pub(crate) fn register(handle: tokio::runtime::Handle) -> Result<(), reqwest::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_tiles_are_not_failures() {
+        assert!(!is_failure(&MlnResponse::error(ErrorReason::NotFound, "404")));
+        assert!(is_failure(&MlnResponse::error(ErrorReason::Connection, "reset")));
+        assert!(is_failure(&MlnResponse::error(ErrorReason::Server, "502")));
+    }
+
+    #[test]
+    fn degraded_only_when_slow_or_failed_downloads_grew() {
+        let before = FetchStats { total: 10, slow: 1, failed: 0 };
+        assert!(!before.degraded_since(FetchStats { total: 25, slow: 1, failed: 0 }));
+        assert!(before.degraded_since(FetchStats { total: 11, slow: 2, failed: 0 }));
+        assert!(before.degraded_since(FetchStats { total: 11, slow: 1, failed: 1 }));
+    }
 
     #[test]
     fn referer_matches_request_origin() {
