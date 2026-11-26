@@ -1,12 +1,14 @@
 //! Automatic crash reporting via Sentry.
 //!
-//! Captures three classes of failure and uploads them:
+//! Captures four classes of failure and uploads them:
 //! - **Native crashes** (segfaults, aborts — e.g. an FFI blow-up in the ORM
 //!   renderer during startup) via `sentry-rust-minidump`, which re-execs this
 //!   binary as a separate crash-reporter process so it outlives the crash.
 //! - **Rust panics**, via Sentry's default panic integration.
 //! - **Frontend/webview errors**, from the `@sentry/browser` bundle that
 //!   `tauri-plugin-sentry` injects into every webview (see [`main`]).
+//! - **`WebView2` process crashes** (Windows), uploaded on the next launch from
+//!   the minidumps the `WebView2` runtime writes (see `webview_dumps`).
 //!
 //! The DSN is baked at build time from `TURNOUT_SENTRY_DSN`. Without it — every
 //! local dev build — reporting is a no-op. Users can opt out in Settings; that
@@ -400,7 +402,8 @@ fn sweep_stale_reporter_sockets() {
 /// tell a machine where native capture is silently unavailable from one that
 /// simply never crashed. Only covers the **main** process — a `WebView2` (Windows)
 /// or `WKWebView` renderer crash is a separate process and is not caught here (see
-/// the macOS-only `on_web_content_process_terminate` hook in `main`).
+/// the macOS-only `on_web_content_process_terminate` hook in `main`, and
+/// `webview_dumps` for Windows).
 pub fn arm_minidump_reporter(
     client: Option<&sentry::ClientInitGuard>,
 ) -> Option<tauri_plugin_sentry::minidump::Handle> {

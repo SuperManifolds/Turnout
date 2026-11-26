@@ -20,6 +20,8 @@ mod settings;
 mod tile_server;
 mod vector_tiles;
 mod vulkan;
+#[cfg(any(windows, test))]
+mod webview_dumps;
 mod wms;
 mod wmts;
 
@@ -324,8 +326,8 @@ fn main() {
     // goes blank with no Rust panic and no minidump (the minidump handler covers
     // only the main process, and `@sentry/browser` only sees JS errors, not a
     // renderer crash). Capture it as an error so it surfaces in Sentry. Tauri only
-    // exposes this on macos/ios — a WebView2 renderer crash on Windows has no
-    // equivalent hook, so that blind spot remains (tracked separately).
+    // exposes this on macos/ios. On Windows, WebView2 crashes are picked up from
+    // their minidumps on the next launch instead (see `webview_dumps`).
     #[cfg(target_os = "macos")]
     {
         builder = builder.on_web_content_process_terminate(|webview| {
@@ -343,6 +345,10 @@ fn main() {
             // Persist this launch's version + run count for the next startup's
             // install/update fingerprint (see crash_reporting::attach_release_scope).
             crash_reporting::record_launch(app.handle());
+            // WebView2 child-process crashes bypass every in-process capture path,
+            // so upload the minidumps its Crashpad handler left from earlier runs.
+            #[cfg(windows)]
+            webview_dumps::spawn_upload(app.handle());
             blueprint::start_watcher(app.handle());
             app.manage(overlay::OverlayState::new());
             // Restore persisted overlays synchronously here, before the Apple-token
