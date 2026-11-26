@@ -83,14 +83,11 @@ const MAX_REQUEST_ZOOM: u8 = 22;
 /// requeue before its waiters get a hard failure.
 const FAILED_KEY_MEMORY: usize = 64;
 
+// One unified ORM overlay style. The view/coloring mode and every display option
+// are driven by `global-state` (the `tracks` key selects the mode), matching
+// openrailwaymap.app, which serves a single style and only changes global-state.
 pub(crate) const STYLES: &[(&str, &str)] = &[
-    ("standard", include_str!("../resources/orm/standard.json")),
-    ("speed", include_str!("../resources/orm/speed.json")),
-    ("signals", include_str!("../resources/orm/signals.json")),
-    ("electrification", include_str!("../resources/orm/electrification.json")),
-    ("track", include_str!("../resources/orm/track.json")),
-    ("operator", include_str!("../resources/orm/operator.json")),
-    ("route", include_str!("../resources/orm/route.json")),
+    ("orm", include_str!("../resources/orm/orm.json")),
 ];
 
 type Key = (Arc<str>, u8, u32, u32);
@@ -121,7 +118,7 @@ fn canonical_style(name: &str) -> Arc<str> {
     if STYLES.iter().any(|(n, _)| *n == name) {
         Arc::from(name)
     } else {
-        Arc::from("standard")
+        Arc::from("orm")
     }
 }
 
@@ -191,6 +188,14 @@ struct OrmShared {
     /// embedded styles at load so a self-hosted `OpenRailwayMap` can replace the
     /// default `openrailwaymap.app`.
     base_url: RwLock<String>,
+    /// Directory holding the self-hosted SDF glyphs (`<dir>/<fontstack>/<range>.pbf`).
+    /// The online styles' `glyphs` is rewritten to a `file://` URL under here because
+    /// upstream stopped serving SDF glyph PBFs. `None` in tests, which skips the rewrite.
+    glyphs_dir: Option<PathBuf>,
+    /// Current ORM option state (the new `OpenRailwayMap` UI's `state` block), substituted
+    /// into the embedded styles' `global-state` expressions at load. Changing an option
+    /// updates this and bumps `generation` so workers rebuild their renderers.
+    orm_state: RwLock<serde_json::Map<String, serde_json::Value>>,
     generation: AtomicU64,
     bound_port: AtomicU16,
     /// Why the render backend became unavailable after start-up: a worker
@@ -291,6 +296,27 @@ impl OrmHandle {
         self.shared.generation.fetch_add(1, Ordering::SeqCst);
         self.cache.clear();
     }
+
+    /// Sets one ORM display option (a `state` key the new `OpenRailwayMap` UI exposes:
+    /// `signals`, `pois`, `platforms`, lifecycle filters, ...). Like `set_base_url`,
+    /// bumps the render generation and clears the tile cache so tiles rendered with
+    /// the previous value are dropped. A no-op when the value is unchanged.
+    pub fn set_orm_option(&self, key: String, value: serde_json::Value) {
+        {
+            let mut state = self.shared.orm_state.write().unpoison();
+            if state.get(&key) == Some(&value) {
+                return;
+            }
+            state.insert(key, value);
+        }
+        self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        self.cache.clear();
+    }
+
+    /// The current ORM option state, for the UI to render its controls from.
+    pub fn orm_options(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.shared.orm_state.read().unpoison().clone()
+    }
 }
 
 /// Whether ORM tile rendering started, and if not, why — so the UI can tell the
@@ -347,9 +373,28 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         cv: Condvar::new(),
     });
 
+    let cache_dir = dirs_next::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("turnout")
+        .join("orm_cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+
+    // Materialize the bundled SDF glyphs so the online styles can reference them via
+    // a local file:// URL (upstream no longer serves glyph PBFs). A failure here only
+    // costs text labels, so warn and carry on rather than failing the whole renderer.
+    let glyphs_dir = match crate::orm_glyphs::materialize(&cache_dir) {
+        Ok(dir) => Some(dir),
+        Err(e) => {
+            tracing::warn!("could not materialize ORM glyphs ({e}); map labels may not render");
+            None
+        }
+    };
+
     let shared = Arc::new(OrmShared {
         offline_dir: RwLock::new(None),
         base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+        glyphs_dir,
+        orm_state: RwLock::new(crate::orm_state::default_state(STYLES[0].1)),
         generation: AtomicU64::new(0),
         bound_port: AtomicU16::new(0),
         render_failure: Mutex::new(None),
@@ -358,11 +403,6 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         slow_render_reported: AtomicBool::new(false),
     });
 
-    let cache_dir = dirs_next::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("turnout")
-        .join("orm_cache");
-    let _ = std::fs::create_dir_all(&cache_dir);
     let shared_cache_path = cache_dir.join("shared.db");
     enable_wal(&shared_cache_path);
 
@@ -566,8 +606,40 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
         .with_size(tile_size, tile_size)
         .with_resource_options(resource_opts)
         .build_tile_renderer()?;
-    r.load_style_from_json_str(resolve_style_source(style, shared));
+    // global-state can only be set once the style has finished loading (mbgl throws
+    // otherwise), so wait for the load before pushing the ORM options in.
+    r.load_style_from_json_str(resolve_style_source(style, shared))
+        .wait()
+        .map_err(|e| format!("ORM style '{style}' failed to load: {e}"))?;
+    apply_global_state(&mut r, shared);
     Ok(r)
+}
+
+/// Pushes the current ORM option values into the renderer's style as native
+/// `global-state`, so the style's `global-state` expressions evaluate against the
+/// user's selections. maplibre-native evaluates these directly (core #4516), so no
+/// expression rewriting is needed.
+fn apply_global_state(
+    renderer: &mut maplibre_native::ImageRenderer<maplibre_native::Tile>,
+    shared: &OrmShared,
+) {
+    use maplibre_native::GlobalStateValue;
+    let state = shared.orm_state.read().unpoison();
+    let mut style = renderer.style();
+    for (key, value) in state.iter() {
+        let resolved = match value {
+            serde_json::Value::String(s) => GlobalStateValue::String(s.clone()),
+            serde_json::Value::Bool(b) => GlobalStateValue::Bool(*b),
+            serde_json::Value::Number(n) => GlobalStateValue::Number(n.as_f64().unwrap_or(0.0)),
+            serde_json::Value::Null => GlobalStateValue::Null,
+            serde_json::Value::Array(items) => GlobalStateValue::StringList(
+                items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+            ),
+            // ORM options are never object-valued.
+            serde_json::Value::Object(_) => continue,
+        };
+        style.set_global_state(key, resolved);
+    }
 }
 
 /// Returns the style JSON to load: the on-disk offline variant when offline mode is
@@ -579,7 +651,9 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     let embedded = || {
         let base = shared.base_url.read().unpoison();
-        rebase_style(style_json(style), &base)
+        // Keep the style's `global-state` expressions intact; they are applied to the
+        // renderer natively via `apply_global_state` rather than rewritten here.
+        rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref())
     };
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
@@ -594,13 +668,24 @@ fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     }
 }
 
-/// Substitutes the default ORM host in an embedded style with `base`. A no-op when
-/// `base` is the default, so the common case allocates only the base copy.
-fn rebase_style(json: &str, base: &str) -> String {
-    if base == crate::settings::DEFAULT_ORM_BASE {
-        json.to_string()
+/// Rewrites an embedded style for runtime use: glyphs always point at the local
+/// self-hosted SDF directory (upstream dropped the glyph-PBF endpoint), while tiles
+/// and sprites follow the configured `base` host so a self-hosted ORM can replace
+/// `openrailwaymap.app`. The glyph rewrite runs first so the host swap never touches
+/// the now-`file://` glyphs URL.
+fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) -> String {
+    let default = crate::settings::DEFAULT_ORM_BASE;
+    let glyph_rewritten = match glyphs_dir {
+        Some(dir) => json.replace(
+            &format!("{default}/font/"),
+            &format!("file://{}/", dir.display()),
+        ),
+        None => json.to_string(),
+    };
+    if base == default {
+        glyph_rewritten
     } else {
-        json.replace(crate::settings::DEFAULT_ORM_BASE, base)
+        glyph_rewritten.replace(default, base)
     }
 }
 
@@ -889,7 +974,7 @@ fn render_worker_inner(
 }
 
 async fn serve_tilejson(State(state): State<Arc<OrmTileState>>) -> impl IntoResponse {
-    serve_tilejson_for("standard", state.shared.bound_port.load(Ordering::SeqCst))
+    serve_tilejson_for("orm", state.shared.bound_port.load(Ordering::SeqCst))
 }
 
 async fn serve_style_tilejson(
@@ -1017,6 +1102,28 @@ pub async fn set_orm_offline(
 /// Returns the port the ORM tile server actually bound to. The server binds on a
 /// background runtime, so this polls the shared value (published at bind time)
 /// until it is set rather than assuming `PREFERRED_PORT`.
+/// Sets one ORM display option and persists it. The renderer rebuilds against the
+/// new value; the frontend reloads the ORM layer afterwards to pull fresh tiles.
+#[tauri::command]
+pub async fn set_orm_option(
+    app: tauri::AppHandle,
+    handle: tauri::State<'_, OrmHandle>,
+    key: String,
+    value: serde_json::Value,
+) -> CommandResult<()> {
+    handle.set_orm_option(key, value);
+    crate::settings::save_orm_options(&app, &handle.orm_options());
+    Ok(())
+}
+
+/// The current ORM option values, for the UI to initialize its controls.
+#[tauri::command]
+pub async fn get_orm_options(
+    handle: tauri::State<'_, OrmHandle>,
+) -> CommandResult<serde_json::Map<String, serde_json::Value>> {
+    Ok(handle.orm_options())
+}
+
 #[tauri::command]
 pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> CommandResult<u16> {
     for _ in 0..PORT_WAIT_ATTEMPTS {
@@ -1062,6 +1169,8 @@ mod tests {
         OrmShared {
             offline_dir: RwLock::new(None),
             base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+            glyphs_dir: None,
+            orm_state: RwLock::new(crate::orm_state::default_state(STYLES[0].1)),
             generation: AtomicU64::new(0),
             bound_port: AtomicU16::new(0),
             render_failure: Mutex::new(None),
@@ -1069,6 +1178,49 @@ mod tests {
             slow_render_count: AtomicU64::new(0),
             slow_render_reported: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn rebase_style_points_glyphs_at_local_dir() {
+        let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sprite":"https://openrailwaymap.app/sprite/symbols","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high,railway_text_km/{z}/{x}/{y}"]}}}"#;
+        let out = rebase_style(json, crate::settings::DEFAULT_ORM_BASE, Some(std::path::Path::new("/cache/glyphs")));
+        // Glyphs go local, with the fontstack/range placeholders preserved.
+        assert!(out.contains("\"glyphs\":\"file:///cache/glyphs/{fontstack}/{range}.pbf\""), "{out}");
+        // Tiles and sprite stay on the default host (no base override here).
+        assert!(out.contains("https://openrailwaymap.app/railway_line_high"));
+        assert!(out.contains("https://openrailwaymap.app/sprite/symbols"));
+        assert!(!out.contains("openrailwaymap.app/font/"));
+    }
+
+    /// maplibre-native takes `layout.visibility` only as a literal, and decodes every
+    /// vector source as MVT. The style build moves option gates into filters and drops
+    /// upstream's `encoding: mlt`; this guards both.
+    #[test]
+    fn embedded_styles_are_native_compatible() {
+        for (name, json) in STYLES {
+            let style: serde_json::Value = serde_json::from_str(json).expect("embedded style parses");
+            for layer in style["layers"].as_array().expect("layers") {
+                let visibility = &layer["layout"]["visibility"];
+                assert!(
+                    visibility.is_null() || visibility.is_string(),
+                    "{name} layer {} has an expression visibility",
+                    layer["id"]
+                );
+            }
+            for (source, def) in style["sources"].as_object().expect("sources") {
+                assert!(def.get("encoding").is_none(), "{name} source {source} sets an encoding");
+            }
+        }
+    }
+
+    #[test]
+    fn rebase_style_swaps_host_but_keeps_glyphs_local() {
+        let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high/{z}/{x}/{y}"]}}}"#;
+        let out = rebase_style(json, "https://orm.sorlie.io", Some(std::path::Path::new("/c/glyphs")));
+        // A self-hosted base moves tiles, but glyphs still come from the local dir.
+        assert!(out.contains("\"glyphs\":\"file:///c/glyphs/{fontstack}/{range}.pbf\""), "{out}");
+        assert!(out.contains("https://orm.sorlie.io/railway_line_high"));
+        assert!(!out.contains("openrailwaymap.app"));
     }
 
     #[test]

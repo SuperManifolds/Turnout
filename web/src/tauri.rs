@@ -169,6 +169,21 @@ pub async fn get_settings() -> Result<JsValue, String> {
     invoke("get_settings", &JsValue::NULL).await
 }
 
+/// Sets one ORM display option (e.g. `platforms` = "plain"/"none", `pois` = a list).
+/// The backend re-renders against it; the caller reloads the ORM layer afterwards.
+pub async fn set_orm_option(key: &str, value: JsValue) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    set(&args, "key", key);
+    let _ = js_sys::Reflect::set(&args, &JsValue::from_str("value"), &value);
+    invoke_obj("set_orm_option", args).await?;
+    Ok(())
+}
+
+/// The current ORM option values, for the UI to initialize its toggles.
+pub async fn get_orm_options() -> Result<JsValue, String> {
+    invoke("get_orm_options", &JsValue::NULL).await
+}
+
 pub async fn list_gpu_adapters() -> Result<JsValue, String> {
     invoke("list_gpu_adapters", &JsValue::NULL).await
 }

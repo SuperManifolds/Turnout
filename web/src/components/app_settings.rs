@@ -41,12 +41,19 @@ pub struct Settings {
     pub gpu_adapter: Option<String>,
     #[serde(default)]
     pub tutorial_completed: bool,
+    #[serde(default = "default_orm_controls")]
+    pub orm_controls: String,
     #[serde(default)]
     pub network: NetworkSettings,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
 fn default_true() -> bool { true }
+fn default_orm_controls() -> String { ORM_CONTROLS[0].0.to_string() }
+
+/// Rail overlay control layouts `(id, label)`; the first is the default.
+pub const ORM_CONTROLS: &[(&str, &str)] =
+    &[("toolbar", "Toolbar"), ("presets", "Presets"), ("both", "Presets and toolbar")];
 
 impl Default for Settings {
     fn default() -> Self {
@@ -61,6 +68,7 @@ impl Default for Settings {
             orm_base_url: None,
             gpu_adapter: None,
             tutorial_completed: false,
+            orm_controls: default_orm_controls(),
             network: NetworkSettings::default(),
         }
     }
@@ -177,6 +185,7 @@ pub fn AppSettings() -> impl IntoView {
     let (orm_base, set_orm_base) = create_signal::<Option<String>>(None);
     let (gpu_adapter, set_gpu_adapter) = create_signal::<Option<String>>(None);
     let (crash_reports, set_crash_reports) = create_signal(true);
+    let (orm_controls, set_orm_controls) = create_signal(default_orm_controls());
     let (gpus, set_gpus) = create_signal::<Vec<GpuInfo>>(Vec::new());
     let (apple_refresh_status, set_apple_refresh_status) = create_signal(String::new());
     let (status, set_status) = create_signal(String::new());
@@ -200,6 +209,7 @@ pub fn AppSettings() -> impl IntoView {
             set_orm_base.set(settings.orm_base_url);
             set_gpu_adapter.set(settings.gpu_adapter);
             set_crash_reports.set(settings.network.crash_reporting);
+            set_orm_controls.set(settings.orm_controls);
             if let Ok(js) = crate::tauri::list_gpu_adapters().await
                 && let Ok(list) = serde_wasm_bindgen::from_value::<Vec<GpuInfo>>(js)
             {
@@ -231,6 +241,7 @@ pub fn AppSettings() -> impl IntoView {
         let orm = orm_base.get();
         let gpu = gpu_adapter.get();
         let crash = crash_reports.get();
+        let controls = orm_controls.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -250,6 +261,7 @@ pub fn AppSettings() -> impl IntoView {
                 // The settings window never completes the tutorial; the backend
                 // preserves a stored `true`, so this can't un-complete it.
                 tutorial_completed: false,
+                orm_controls: controls,
                 network: NetworkSettings {
                     check_for_updates: updates,
                     apple_auto_refresh: auto,
@@ -364,6 +376,22 @@ pub fn AppSettings() -> impl IntoView {
                         }
                     }).collect_view()}
                 </nav>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Rail Overlay Controls"</legend>
+                <nav class="theme-options">
+                    {ORM_CONTROLS.iter().map(|&(id, label)| view! {
+                        <button
+                            type="button"
+                            class:active=move || orm_controls.get() == id
+                            on:click=move |_| set_orm_controls.set(id.to_string())
+                        >
+                            {label}
+                        </button>
+                    }).collect_view()}
+                </nav>
+                <p class="hint">"The toolbar sets each overlay option separately. Presets are the original one-click styles, such as Speed and Electrification."</p>
             </fieldset>
 
             <fieldset>

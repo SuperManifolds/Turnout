@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use maplibre_native::{ImageRendererBuilder, ResourceOptions};
 
-const STYLE: &str = include_str!("../../src-tauri/resources/orm/standard.json");
+const STYLE: &str = include_str!("../../src-tauri/resources/orm/orm.json");
 const TILE_SIZE: u32 = 512;
 const CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const WARMUP_PASSES: usize = 2;

@@ -83,14 +83,14 @@ const STEPS: &[Step] = &[
         ],
     },
     Step {
-        target: Some("#layer-switcher"),
+        target: Some("#orm-options"),
         panel: Panel::None,
         placement: Placement::Left,
         icon: "fa-solid fa-layer-group",
         title: "Live rail overlay",
         body: &[
-            "These buttons switch the OpenRailwayMap overlay style on the map — Infrastructure, Speed, Signals, Electrification and more.",
-            "It's a reference layer to plan against. It isn't imported into the game; it just helps you see what's really there.",
+            "These buttons control the OpenRailwayMap overlay, as on openrailwaymap.app. Color tracks by usage, speed, electrification, gauge and more, and pick which stations, platforms, signals and other details to show.",
+            "The same overlay works in NIMBY Rails: copy its TileJSON URL from the overlays list and add it as a custom map source in the game. Your choices here apply there too.",
         ],
     },
     Step {

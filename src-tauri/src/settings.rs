@@ -10,6 +10,7 @@ pub(crate) const SETTINGS_STORE: &str = "settings.json";
 /// existing user's stale key is ignored, re-showing the tour once. `_v2` added
 /// the "auto-launch with NIMBY Rails" step.
 const TUTORIAL_COMPLETED_KEY: &str = "tutorial_completed_v2";
+const ORM_CONTROLS_KEY: &str = "orm_controls";
 
 /// Bundle identifier (from `tauri.conf.json`). Locates the on-disk settings store
 /// before the Tauri store plugin is initialised.
@@ -50,6 +51,28 @@ pub const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
 pub fn resolve_orm_base(base: Option<&str>) -> String {
     let raw = base.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(DEFAULT_ORM_BASE);
     raw.trim_end_matches('/').to_string()
+}
+
+const ORM_OPTIONS_KEY: &str = "orm_options";
+
+/// Reads the persisted ORM display options (the new UI's `state` overrides). Empty
+/// means every option is at its upstream default.
+pub fn load_orm_options(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json::Value> {
+    app.store(SETTINGS_STORE)
+        .ok()
+        .and_then(|store| store.get(ORM_OPTIONS_KEY))
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// Persists the ORM display options so the user's toggles survive a restart.
+pub fn save_orm_options(app: &tauri::AppHandle, options: &serde_json::Map<String, serde_json::Value>) {
+    if let Ok(store) = app.store(SETTINGS_STORE) {
+        store.set(ORM_OPTIONS_KEY, serde_json::Value::Object(options.clone()));
+        if let Err(e) = store.save() {
+            tracing::warn!("could not persist ORM options ({e})");
+        }
+    }
 }
 
 /// Features that automatically contact external servers, each an independent
@@ -101,12 +124,23 @@ pub struct Settings {
     /// guided tour auto-opens on startup; the tour can still be replayed manually.
     #[serde(default)]
     pub tutorial_completed: bool,
+    /// Which rail overlay controls the map shows: one of [`ORM_CONTROLS`].
+    #[serde(default = "default_orm_controls")]
+    pub orm_controls: String,
     #[serde(default)]
     pub network: NetworkSettings,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Rail overlay control layouts: the per-option toolbar, the classic style
+/// presets, or both. The first is the default.
+const ORM_CONTROLS: &[&str] = &["toolbar", "presets", "both"];
+
+fn default_orm_controls() -> String {
+    ORM_CONTROLS[0].to_string()
 }
 
 fn default_overpass_timeout() -> u32 {
@@ -131,6 +165,7 @@ impl Default for Settings {
             orm_base_url: None,
             gpu_adapter: None,
             tutorial_completed: false,
+            orm_controls: default_orm_controls(),
             network: NetworkSettings::default(),
         }
     }
@@ -166,6 +201,10 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
         tutorial_completed: store.get(TUTORIAL_COMPLETED_KEY)
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        orm_controls: store.get(ORM_CONTROLS_KEY)
+            .and_then(|v| v.as_str().map(String::from))
+            .filter(|v| ORM_CONTROLS.contains(&v.as_str()))
+            .unwrap_or_else(default_orm_controls),
         network: NetworkSettings {
             check_for_updates: store.get("check_for_updates")
                 .and_then(|v| v.as_bool())
@@ -217,6 +256,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> CommandResult<
     store.set("orm_base_url", serde_json::json!(settings.orm_base_url));
     store.set("gpu_adapter", serde_json::json!(settings.gpu_adapter));
     store.set("crash_reporting", serde_json::json!(settings.network.crash_reporting));
+    store.set(ORM_CONTROLS_KEY, serde_json::json!(settings.orm_controls));
     // Completion only ever goes false→true (the tour finishing). OR against the
     // stored value so a save from a settings window that loaded a stale `false`
     // can't un-complete the tutorial.

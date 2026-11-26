@@ -15,16 +15,26 @@ extern "C" {
     fn map_hide_orm();
 }
 
-/// Human-readable name for an ORM style id, for the built-in layer label.
-fn orm_mode_label(style: &str) -> &'static str {
-    match style {
+/// Label for a `tracks` view mode, shown in the overlay's name field.
+fn orm_mode_label(tracks: &str) -> &'static str {
+    match tracks {
         "speed" => "Speed",
-        "signals" => "Signals",
-        "electrification" => "Electrification",
-        "track" => "Track",
+        "train_protection" => "Train protection",
+        "voltage_frequency" => "Voltage & frequency",
+        "maximum_current" => "Maximum current",
+        "power" => "Electrical power",
+        "gauge" => "Track gauge",
+        "loading_gauge" => "Loading gauge",
+        "track_class" => "Track class",
+        "axle_load" => "Axle load",
+        "metre_load" => "Metre load",
         "operator" => "Operator",
-        "route" => "Route",
-        _ => "Infrastructure",
+        "owner" => "Owner",
+        "routes" => "Routes",
+        "passenger_lines" => "Number of tracks",
+        "radio" => "Radio",
+        "plain" => "Plain",
+        _ => "Usage",
     }
 }
 
@@ -82,7 +92,7 @@ struct ServiceEntry {
 pub fn OverlayDrawer(
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
-    orm_style: ReadSignal<String>,
+    orm_tracks: ReadSignal<String>,
     orm_visible: ReadSignal<bool>,
     set_orm_visible: WriteSignal<bool>,
 ) -> impl IntoView {
@@ -301,7 +311,7 @@ pub fn OverlayDrawer(
         // toggle is prime context for a render/GPU crash report.
         tauri::breadcrumb("ui", if visible { "ORM overlay shown" } else { "ORM overlay hidden" });
         if visible {
-            map_set_orm_style(&orm_style.get());
+            map_set_orm_style("orm");
         } else {
             map_hide_orm();
         }
@@ -309,7 +319,7 @@ pub fn OverlayDrawer(
 
     let on_copy_orm = move |_| {
         let Some(port) = orm_port.get() else { return };
-        let url = format!("http://127.0.0.1:{port}/{}/tilejson.json", orm_style.get());
+        let url = format!("http://127.0.0.1:{port}/orm/tilejson.json");
         spawn_local(async move {
             let Some(window) = web_sys::window() else { return };
             let _ = wasm_bindgen_futures::JsFuture::from(
@@ -589,7 +599,7 @@ pub fn OverlayDrawer(
                                 </button>
                                 <i class="fa-solid fa-train-tram overlay-icon"></i>
                                 <input class="layer-name" type="text" readonly=true
-                                    prop:value=move || format!("OpenRailwayMap \u{00b7} {}", orm_mode_label(&orm_style.get()))
+                                    prop:value=move || format!("OpenRailwayMap \u{00b7} {}", orm_mode_label(&orm_tracks.get()))
                                 />
                                 <button class="icon-btn" title="Copy TileJSON URL" on:click=on_copy_orm>
                                     <i class=move || if orm_copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>

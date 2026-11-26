@@ -151,7 +151,16 @@ function apply_preferred_style() {
     _applied_style = target;
     _map.setStyle(target, { transformStyle: preserve_custom_layers });
     _map.once("styledata", update_orm_paint);
+    _theme_listeners.forEach(function(cb) { cb(is_dark()); });
 }
+
+// Callbacks told whether the base map is dark, now and on every theme change, so
+// the ORM overlay can render its matching theme.
+let _theme_listeners = [];
+window.map_on_theme_change = function(callback) {
+    _theme_listeners.push(callback);
+    callback(is_dark());
+};
 
 window.map_set_theme = function(theme) {
     _theme_override = theme;
@@ -179,6 +188,9 @@ var _orm_source_ids = [];
 var _orm_layer_ids = [];
 var _orm_current_style = null;
 var _orm_port = null;
+// Bumped to cache-bust the ORM raster tiles after an option change, so the map
+// re-fetches the freshly re-rendered tiles (same style, different render).
+var _orm_nonce = 0;
 
 // Publish the ORM tile server's actual bound port before any ORM source is added.
 window.map_set_orm_port = function(port) {
@@ -198,7 +210,7 @@ window.map_set_orm_style = function(style_name, attempt) {
     try {
         _map.addSource("orm", {
             type: "raster",
-            tiles: ["http://127.0.0.1:" + _orm_port + "/" + style_name + "/{z}/{y}/{x}.png"],
+            tiles: ["http://127.0.0.1:" + _orm_port + "/" + style_name + "/{z}/{y}/{x}.png?v=" + _orm_nonce],
             tileSize: 512,
             maxzoom: 19,
             attribution: "&copy; OpenRailwayMap",
@@ -242,6 +254,17 @@ window.map_hide_orm = function() {
     if (_map.getSource("orm")) _map.removeSource("orm");
     _orm_source_ids = [];
     _orm_layer_ids = [];
+};
+
+// Re-fetches the ORM tiles after a display-option change. The backend has already
+// re-rendered against the new option; bumping the nonce busts the raster cache so
+// the map pulls the fresh tiles. A no-op when the overlay is hidden.
+window.map_refresh_orm = function() {
+    if (!_map || _orm_current_style === null) return;
+    _orm_nonce++;
+    if (_map.getLayer("orm-layer")) {
+        map_set_orm_style(_orm_current_style);
+    }
 };
 
 // Keeps the ORM overlay above every other layer. Called after any layer is

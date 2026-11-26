@@ -15,25 +15,26 @@ use crate::mbtiles::{DownloadProgress, ProgressEvent};
 use crate::server_core::{USER_AGENT, UnpoisonExt};
 
 /// Union of every distinct MVT source layer referenced by the composite
-/// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs across all seven bundled
-/// styles. Downloaded together into a single combined-blob `MBTiles`.
+/// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs of the bundled styles.
+/// Downloaded together into a single combined-blob `MBTiles`.
 const ORM_LAYERS: &[&str] = &[
     "electrification_catenary",
     "electrification_railway_line_low",
-    "electrification_railway_symbols",
-    "electrification_signals",
     "electrification_substation",
+    "level_crossings_grouped",
+    "level_crossings_grouped_buffered",
     "operator_railway_line_low",
-    "operator_railway_symbols",
+    "points_of_interest",
+    "points_of_interest_areas",
     "railway_line_high",
+    "railway_signals",
     "railway_text_km",
     "route_railway_line_low",
     "signals_railway_line_low",
-    "signals_railway_line_low_construction",
-    "signals_railway_signals",
     "signals_signal_boxes",
     "speed_railway_line_low",
-    "speed_railway_signals",
+    "standard_interlocking",
+    "standard_interlocking_text",
     "standard_railway_grouped_station_areas",
     "standard_railway_grouped_stations",
     "standard_railway_line_low",
@@ -41,11 +42,9 @@ const ORM_LAYERS: &[&str] = &[
     "standard_railway_platforms",
     "standard_railway_stop_positions",
     "standard_railway_switch_ref",
-    "standard_railway_symbols",
     "standard_railway_text_stations",
     "standard_railway_text_stations_low",
     "standard_railway_text_stations_med",
-    "standard_railway_turntables",
     "standard_station_entrances",
     "track_railway_line_low",
 ];
@@ -843,4 +842,15 @@ pub async fn download_orm_tiles(
     }
 
     result.map(|p| p.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orm_layers_match_the_bundled_styles() {
+        // derive_layer_zoom_ranges asserts the derived set equals ORM_LAYERS.
+        assert_eq!(derive_layer_zoom_ranges().len(), ORM_LAYERS.len());
+    }
 }
