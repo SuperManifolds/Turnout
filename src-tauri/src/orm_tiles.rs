@@ -261,10 +261,14 @@ impl OrmShared {
     /// Records why the render backend could not initialize and returns `true` the
     /// first time only, so the caller logs one Sentry-visible error and stays
     /// quiet after. One unusable GPU otherwise emits an event per worker per pass.
-    fn note_render_failure(&self, detail: &str) -> bool {
-        let reason = format!(
-            "GPU Vulkan device initialization failed ({detail}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this."
-        );
+    fn note_render_failure(&self, error: &(dyn std::error::Error + 'static)) -> bool {
+        let reason = if error.is::<StyleLoadError>() {
+            format!("{error}; the OpenRailwayMap overlay can't render. This is a Turnout bug, please report it.")
+        } else {
+            format!(
+                "GPU Vulkan device initialization failed ({error}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this."
+            )
+        };
         *self.render_failure.lock().unpoison() = Some(reason);
         !self.render_failure_logged.swap(true, Ordering::SeqCst)
     }
@@ -634,6 +638,19 @@ fn enable_wal(path: &std::path::Path) {
 type RendererResult =
     Result<maplibre_native::ImageRenderer<maplibre_native::Tile>, Box<dyn std::error::Error + Send + Sync>>;
 
+/// A bundled style that failed to parse or load. Unlike a renderer that can't
+/// start, it says nothing about the user's GPU.
+#[derive(Debug)]
+struct StyleLoadError(String);
+
+impl std::fmt::Display for StyleLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StyleLoadError {}
+
 fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared) -> RendererResult {
     use maplibre_native::{ImageRendererBuilder, ResourceOptions};
     use std::num::NonZeroU32;
@@ -652,7 +669,7 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
     // otherwise), so wait for the load before pushing the ORM options in.
     r.load_style_from_json_str(resolve_style_source(style, shared))
         .wait()
-        .map_err(|e| format!("ORM style '{style}' failed to load: {e}"))?;
+        .map_err(|e| StyleLoadError(format!("ORM style '{style}' failed to load: {e}")))?;
     apply_global_state(&mut r, shared, style);
     Ok(r)
 }
@@ -723,7 +740,7 @@ fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) ->
     let glyph_rewritten = match glyphs_dir {
         Some(dir) => json.replace(
             &format!("{source}/font/"),
-            &format!("file://{}/", dir.display()),
+            &json_string_body(&format!("file://{}/", dir.display())),
         ),
         None => json.to_string(),
     };
@@ -732,6 +749,13 @@ fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) ->
     } else {
         glyph_rewritten.replace(source, base)
     }
+}
+
+/// `text` escaped for use inside a JSON string literal, without the surrounding
+/// quotes. Windows paths carry backslashes, which are escapes in JSON.
+fn json_string_body(text: &str) -> String {
+    let quoted = serde_json::Value::String(text.to_owned()).to_string();
+    quoted[1..quoted.len() - 1].to_owned()
 }
 
 /// Reads `<dir>/styles/{source}_offline.json`, where `source` is `style`'s
@@ -878,7 +902,7 @@ fn render_worker_inner(
                     // crash, no restart spin — catch_unwind treats a normal return
                     // as shutdown), and log the error only for the first worker so
                     // one unusable GPU doesn't flood Sentry with an event each.
-                    if shared.note_render_failure(&e.to_string()) {
+                    if shared.note_render_failure(&*e) {
                         tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
                     } else {
                         tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
@@ -928,7 +952,7 @@ fn render_worker_inner(
                     tracing::debug!("worker {id} style '{style}' loaded");
                 }
                 Err(e) => {
-                    if shared.note_render_failure(&e.to_string()) {
+                    if shared.note_render_failure(&*e) {
                         tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
                     } else {
                         tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
@@ -1467,14 +1491,38 @@ mod tests {
     fn render_failure_is_recorded_and_logged_once() {
         let shared = test_shared();
         assert_eq!(shared.render_failure(), None);
+        let gpu: Box<dyn std::error::Error + Send + Sync> = "ErrorInitializationFailed".into();
         // First failure logs (returns true) and records a user-facing reason.
-        assert!(shared.note_render_failure("ErrorInitializationFailed"));
+        assert!(shared.note_render_failure(&*gpu));
         let reason = shared.render_failure().expect("reason recorded");
         assert!(reason.contains("ErrorInitializationFailed"));
         assert!(reason.contains("graphics drivers"));
         // Every later failure (one per worker per pass) stays quiet.
-        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
-        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+        assert!(!shared.note_render_failure(&*gpu));
+        assert!(!shared.note_render_failure(&*gpu));
+    }
+
+    #[test]
+    fn style_load_failure_does_not_blame_the_gpu() {
+        let shared = test_shared();
+        let style: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(StyleLoadError("ORM style 'orm' failed to load: bad escape".into()));
+        assert!(shared.note_render_failure(&*style));
+        let reason = shared.render_failure().expect("reason recorded");
+        assert!(reason.contains("ORM style 'orm' failed to load: bad escape"));
+        assert!(!reason.contains("graphics drivers"));
+        assert!(!reason.contains("Vulkan"));
+    }
+
+    #[test]
+    fn rebase_style_escapes_a_windows_glyph_dir() {
+        let dir = std::path::Path::new(r"C:\Users\Ari\AppData\Local\turnout\orm_cache\glyphs");
+        let out = rebase_style(style_json("orm"), crate::settings::DEFAULT_ORM_BASE, Some(dir));
+        let style: serde_json::Value = serde_json::from_str(&out).expect("rebased style is valid JSON");
+        assert_eq!(
+            style["glyphs"],
+            r"file://C:\Users\Ari\AppData\Local\turnout\orm_cache\glyphs/{fontstack}/{range}.pbf"
+        );
     }
 
     #[test]
