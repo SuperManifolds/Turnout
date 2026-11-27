@@ -15,3 +15,10 @@ pub const LEVEL_LAYERS: [&str; 11] = [
     "Elevated4",
     "Elevated5",
 ];
+
+/// The level bands the ORM overlay's Levels option selects from: a line or
+/// platform below ground level, at it, or above it.
+pub const LEVEL_BANDS: [&str; 3] = ["underground", "ground", "elevated"];
+
+/// The ORM style `global-state` key holding the selected [`LEVEL_BANDS`].
+pub const LEVELS_KEY: &str = "levels";

@@ -16,6 +16,9 @@ without reloading the style. Everything native cannot handle is rewritten:
 - font-face stacks → the bundled SDF glyph fontstacks
 - relative source URLs → absolute tile URLs (MVT, see `encoding` below)
 
+Turnout adds one option of its own: `levels`, the vertical level bands that line
+and platform layers draw from zoom 8 (see `with_level_filter`).
+
 The basemap (background, hillshade, landuse/transport), OpenHistoricalMap and the
 website's search/route UI sources are dropped: Turnout overlays its own base map.
 
@@ -52,6 +55,49 @@ BUNDLED_FONTS = {
 STATE_OVERRIDES = {"openHistoricalMap": False, "hillshade": False}
 
 VISIBILITY_BOOL = {"visible": True, "none": False}
+
+# The Levels option: the `levels` global-state key lists the bands drawn. Keep
+# in sync with LEVEL_BANDS / LEVELS_KEY in core/src/orm_levels.rs.
+LEVEL_BANDS = ["underground", "ground", "elevated"]
+LEVELS_KEY = "levels"
+# Below this zoom the Levels filter passes everything (low-zoom lines carry no
+# tunnel, bridge or layer data).
+LEVELS_MIN_ZOOM = 8
+LINE_LEVEL_SOURCE_LAYERS = {"railway_line_high"}
+PLATFORM_LEVEL_SOURCE_LAYERS = {"standard_railway_platforms", "standard_railway_platform_edges"}
+
+
+def band_by_layer(fallback):
+    """The level band from a feature's numeric `layer` (<0 underground, 0 ground,
+    >0 elevated), or `fallback` when the feature has none."""
+    layer = ["number", ["get", "layer"], 0]
+    return ["case",
+            ["has", "layer"], ["case", ["<", layer, 0], "underground",
+                               [">", layer, 0], "elevated", "ground"],
+            *fallback]
+
+
+# Lines without a `layer` fall back to their tunnel / bridge flags.
+LINE_BAND = band_by_layer([["==", ["get", "tunnel"], True], "underground",
+                           ["==", ["get", "bridge"], True], "elevated", "ground"])
+PLATFORM_BAND = band_by_layer(["ground"])
+
+
+def with_level_filter(layer):
+    """AND the Levels clause into a line or platform layer's filter: from
+    LEVELS_MIN_ZOOM a feature draws only when its band is selected."""
+    source_layer = layer.get("source-layer")
+    if source_layer in LINE_LEVEL_SOURCE_LAYERS:
+        band = LINE_BAND
+    elif source_layer in PLATFORM_LEVEL_SOURCE_LAYERS:
+        band = PLATFORM_BAND
+    else:
+        return layer
+    clause = ["any", ["<", ["zoom"], LEVELS_MIN_ZOOM],
+              ["in", copy.deepcopy(band), ["global-state", LEVELS_KEY]]]
+    existing = layer.get("filter")
+    layer["filter"] = clause if existing is None else ["all", existing, clause]
+    return layer
 
 _tilejson_cache: dict = {}
 
@@ -575,12 +621,14 @@ def main():
     resolve_sources(style)
     resolve_sprites(style)
     style["glyphs"] = GLYPHS_URL
-    state = style.get("state", {})
+    state = style.setdefault("state", {})
     for key, value in STATE_OVERRIDES.items():
         if key in state:
             state[key]["default"] = value
+    state[LEVELS_KEY] = {"default": LEVEL_BANDS}
     layers = (resolve_layer(layer) for layer in style["layers"])
-    style["layers"] = [layer for layer in layers if is_overlay_layer(layer, style["sources"])]
+    style["layers"] = [with_level_filter(layer) for layer in layers
+                       if is_overlay_layer(layer, style["sources"])]
     apply_native_compat(style)
 
     s = json.dumps(style, separators=(",", ":"))

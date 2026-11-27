@@ -5,6 +5,7 @@ use leptos::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use turnout_core::orm_levels::{LEVELS_KEY, LEVEL_BANDS};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -137,6 +138,17 @@ const CATEGORIES: &[Category] = &[
         ]),
     },
 ];
+
+/// The vertical levels lines and platforms draw at. A Turnout option (not on
+/// openrailwaymap.app), so it sits apart from [`CATEGORIES`].
+const LEVELS: Category = Category {
+    key: LEVELS_KEY,
+    label: "Levels",
+    icon: "fa-solid fa-layer-group",
+    pick: Pick::Many(&[(LEVEL_BANDS[0], "Underground"), (LEVEL_BANDS[1], "Ground"), (LEVEL_BANDS[2], "Elevated")]),
+};
+/// The style filters by level from zoom 8 only; lower zooms draw every level.
+const LEVELS_HINT: &str = "Applies from zoom 8";
 
 /// Shared value set for catenaries, signal boxes and substations.
 const OWNABLE: &[Choice] = &[("plain", "Plain"), ("operator", "Operator"), ("owner", "Owner"), (NONE, "None")];
@@ -489,10 +501,11 @@ fn display_sections(options: RwSignal<Options>) -> impl IntoView {
 }
 
 /// One toolbar button plus its popover, titled by `header` when its content has no
-/// headings of its own.
+/// headings of its own. The button's tooltip is its label, with `hint` below it.
 fn tool(
     id: &'static str,
     label: &'static str,
+    hint: Option<&'static str>,
     icon: &'static str,
     off: impl Fn() -> bool + 'static,
     open: RwSignal<Option<&'static str>>,
@@ -500,10 +513,11 @@ fn tool(
     popover: impl IntoView + 'static,
 ) -> impl IntoView {
     let is_open = move || open.get() == Some(id);
+    let title = hint.map_or_else(|| label.to_owned(), |hint| format!("{label}\n{hint}"));
     view! {
         <li class="orm-tool">
             <button
-                title=label
+                title=title
                 aria-label=label
                 aria-haspopup="menu"
                 aria-expanded=move || is_open().to_string()
@@ -521,23 +535,34 @@ fn tool(
     }
 }
 
-/// The full toolbar: one button per option category plus the display settings.
+/// A category's toolbar button and its choices.
+fn category_tool(
+    category: &'static Category,
+    hint: Option<&'static str>,
+    options: RwSignal<Options>,
+    open: RwSignal<Option<&'static str>>,
+) -> impl IntoView {
+    let key = category.key;
+    tool(
+        key,
+        category.label,
+        hint,
+        category.icon,
+        move || options.with(|o| is_off(o, key)),
+        open,
+        Some(category.label),
+        choice_list(category, options, open),
+    )
+}
+
+/// The full toolbar: one button per option category, the levels and the display
+/// settings.
 fn toolbar(options: RwSignal<Options>, open: RwSignal<Option<&'static str>>) -> impl IntoView {
     view! {
         <ul class="orm-toolbar">
-            {CATEGORIES.iter().map(|category| {
-                let key = category.key;
-                tool(
-                    key,
-                    category.label,
-                    category.icon,
-                    move || options.with(|o| is_off(o, key)),
-                    open,
-                    Some(category.label),
-                    choice_list(category, options, open),
-                )
-            }).collect_view()}
-            {tool(DISPLAY, DISPLAY_LABEL, DISPLAY_ICON, || false, open, None, display_sections(options))}
+            {CATEGORIES.iter().map(|category| category_tool(category, None, options, open)).collect_view()}
+            {category_tool(&LEVELS, Some(LEVELS_HINT), options, open)}
+            {tool(DISPLAY, DISPLAY_LABEL, None, DISPLAY_ICON, || false, open, None, display_sections(options))}
         </ul>
     }
 }

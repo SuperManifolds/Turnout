@@ -49,6 +49,13 @@ mod tests {
     }
 
     #[test]
+    fn embedded_style_draws_every_level_by_default() {
+        use turnout_core::orm_levels::{LEVELS_KEY, LEVEL_BANDS};
+        let state = default_state(crate::orm_tiles::STYLES[0].1);
+        assert_eq!(state.get(LEVELS_KEY), Some(&json!(LEVEL_BANDS)));
+    }
+
+    #[test]
     fn reads_each_declared_default() {
         let state =
             default_state(r#"{"state":{"tracks":{"default":"speed"},"date":{"default":1990}}}"#);
