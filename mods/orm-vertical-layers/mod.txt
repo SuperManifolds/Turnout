@@ -4,7 +4,7 @@
 schema = 1
 name = ORM Vertical Layers
 author = SuperManifolds
-desc = Railway map styled by type (ORM colours) and OSM vertical layer; toggle heights via the source's vector layers.
+desc = Styles the OpenRailwayMap levels source https://orm.sorlie.io/levels.json by track type (ORM colours) and vertical level. Add it in Map options > Sources (format Auto), reload the game, and toggle each level on the source. Turnout is not required.
 version = 1.0.0
 
 [StyleMesh]
