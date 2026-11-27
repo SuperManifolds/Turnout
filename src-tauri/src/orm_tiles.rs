@@ -1221,6 +1221,33 @@ mod tests {
         }
     }
 
+    fn mentions(expr: &serde_json::Value, needle: &serde_json::Value) -> bool {
+        expr == needle || expr.as_array().is_some_and(|items| items.iter().any(|e| mentions(e, needle)))
+    }
+
+    /// The Levels option gates every line and platform layer on the `levels`
+    /// global-state. Low-zoom line layers carry no level data, so they stay ungated.
+    #[test]
+    fn level_filter_gates_line_and_platform_layers() {
+        const LEVEL_SOURCE_LAYERS: [&str; 3] =
+            ["railway_line_high", "standard_railway_platforms", "standard_railway_platform_edges"];
+        let gate = serde_json::json!(["global-state", turnout_core::orm_levels::LEVELS_KEY]);
+        let style: serde_json::Value = serde_json::from_str(STYLES[0].1).expect("embedded style parses");
+        let (mut gated, mut low) = (0, 0);
+        for layer in style["layers"].as_array().expect("layers") {
+            let source_layer = layer["source-layer"].as_str().unwrap_or_default();
+            let has_gate = mentions(&layer["filter"], &gate);
+            if LEVEL_SOURCE_LAYERS.contains(&source_layer) {
+                assert!(has_gate, "layer {} has no levels filter", layer["id"]);
+                gated += 1;
+            } else if source_layer.ends_with("_railway_line_low") {
+                assert!(!has_gate, "low-zoom layer {} has a levels filter", layer["id"]);
+                low += 1;
+            }
+        }
+        assert!(gated > 0 && low > 0, "{gated} gated, {low} low-zoom layers");
+    }
+
     #[test]
     fn rebase_style_swaps_host_but_keeps_glyphs_local() {
         let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high/{z}/{x}/{y}"]}}}"#;
