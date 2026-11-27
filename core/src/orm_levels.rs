@@ -1,5 +1,9 @@
 //! Vertical levels of the `OpenRailwayMap` levels source.
 
+/// `TileJSON` of the live levels source on orm.sorlie.io. NIMBY Rails players add
+/// it as a map source and style it with the "ORM Vertical Layers" Workshop mod.
+pub const LEVELS_TILEJSON_URL: &str = "https://orm.sorlie.io/levels.json";
+
 /// The MVT layer names served by orm.sorlie.io `railway_levels` and styled by
 /// the "ORM Vertical Layers" Workshop mod, from the lowest level to the highest.
 pub const LEVEL_LAYERS: [&str; 11] = [

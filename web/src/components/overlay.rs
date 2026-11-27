@@ -2,9 +2,14 @@ use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, c
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use turnout_core::orm_levels::LEVELS_TILEJSON_URL;
+
 use crate::tauri;
 
 const TOAST_DURATION_MS: i32 = 4000;
+/// How long a copy button shows its check mark after copying.
+const COPY_FLASH_MS: i32 = 2000;
+const LEVELS_ROW_LABEL: &str = "OpenRailwayMap levels";
 
 #[wasm_bindgen]
 extern "C" {
@@ -36,6 +41,24 @@ fn orm_mode_label(tracks: &str) -> &'static str {
         "plain" => "Plain",
         _ => "Usage",
     }
+}
+
+/// Copies `text` to the clipboard, then raises `set_copied` for [`COPY_FLASH_MS`]
+/// so the copy button can show a check mark.
+fn copy_with_flash(text: String, set_copied: WriteSignal<bool>) {
+    spawn_local(async move {
+        let Some(window) = web_sys::window() else { return };
+        let _ = wasm_bindgen_futures::JsFuture::from(
+            window.navigator().clipboard().write_text(&text),
+        ).await;
+        set_copied.set(true);
+        let _ = wasm_bindgen_futures::JsFuture::from(
+            js_sys::Promise::new(&mut |resolve, _| {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, COPY_FLASH_MS);
+            }),
+        ).await;
+        set_copied.set(false);
+    });
 }
 
 fn source_id(group_id: u32) -> String {
@@ -101,6 +124,7 @@ pub fn OverlayDrawer(
     let (toast, set_toast) = create_signal::<Option<String>>(None);
     let (copied_group, set_copied_group) = create_signal::<Option<u32>>(None);
     let (orm_copied, set_orm_copied) = create_signal(false);
+    let (levels_copied, set_levels_copied) = create_signal(false);
     let (orm_port, set_orm_port) = create_signal::<Option<u16>>(None);
 
     let (active_form, set_active_form) = create_signal(ServiceForm::None);
@@ -319,19 +343,16 @@ pub fn OverlayDrawer(
 
     let on_copy_orm = move |_| {
         let Some(port) = orm_port.get() else { return };
-        let url = format!("http://127.0.0.1:{port}/orm/tilejson.json");
+        copy_with_flash(format!("http://127.0.0.1:{port}/orm/tilejson.json"), set_orm_copied);
+    };
+
+    let on_copy_levels = move |_| copy_with_flash(LEVELS_TILEJSON_URL.to_string(), set_levels_copied);
+
+    let on_open_style_mod = move |_| {
         spawn_local(async move {
-            let Some(window) = web_sys::window() else { return };
-            let _ = wasm_bindgen_futures::JsFuture::from(
-                window.navigator().clipboard().write_text(&url),
-            ).await;
-            set_orm_copied.set(true);
-            let _ = wasm_bindgen_futures::JsFuture::from(
-                js_sys::Promise::new(&mut |resolve, _| {
-                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 2000);
-                }),
-            ).await;
-            set_orm_copied.set(false);
+            if let Err(e) = tauri::open_workshop_mod().await {
+                show_toast(e);
+            }
         });
     };
 
@@ -603,6 +624,16 @@ pub fn OverlayDrawer(
                                 />
                                 <button class="icon-btn" title="Copy TileJSON URL" on:click=on_copy_orm>
                                     <i class=move || if orm_copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
+                                </button>
+                            </li>
+                            <li class="overlay-item">
+                                <i class="fa-solid fa-layer-group overlay-icon"></i>
+                                <span class="overlay-name" title=LEVELS_ROW_LABEL>{LEVELS_ROW_LABEL}</span>
+                                <button class="icon-btn" title="Style mod" on:click=on_open_style_mod>
+                                    <i class="fa-brands fa-steam"></i>
+                                </button>
+                                <button class="icon-btn" title="Copy levels TileJSON URL" on:click=on_copy_levels>
+                                    <i class=move || if levels_copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
                                 </button>
                             </li>
                         </ul>

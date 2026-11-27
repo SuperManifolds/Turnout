@@ -27,6 +27,15 @@ current.
   default, served through Cloudflare from the developer's own server. To use
   `openrailwaymap.app` or your own OpenRailwayMap server instead, set its URL in
   Settings.
+- **Vertical levels**: Live railway data from `orm.sorlie.io` split into 11
+  levels, from **underground** through **ground** to **elevated**, each
+  toggleable in the game. Turnout doesn't need to be running for this: in NIMBY
+  Rails add `https://orm.sorlie.io/levels.json` as a map source (Map options →
+  Sources → New source, format Auto) and subscribe to the
+  [ORM Vertical Layers](https://steamcommunity.com/sharedfiles/filedetails/?id=3763998309)
+  Workshop mod, which styles it. On Turnout's own map, the Levels tool in the ORM
+  toolbar filters the overlay by level from zoom 8. Offline bundles saved before
+  Turnout had the Levels tool need re-downloading for it to filter them.
 - **Bring your own maps** — Load **KMZ/KML** (ground overlays and vector geometry
   with styling), **Shapefiles** (automatic SLD/QML styling), and **GeoJSON**.
 - **Online tile sources** — Add **WMS**, **WMTS**, **ArcGIS MapServer**, and any
