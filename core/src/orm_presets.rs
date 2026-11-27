@@ -1,6 +1,6 @@
-//! Presets of the ORM overlay's `global-state` options: the classic styles Turnout
-//! offered before the toolbar, shared by the toolbar and the tile server's legacy
-//! per-style URLs.
+//! Presets of the ORM overlay's `global-state` options: the classic per-mode
+//! presets the preset bar offers and the tile server's legacy per-mode URLs
+//! render.
 
 use serde_json::{Map, Value};
 
@@ -42,8 +42,9 @@ pub const DETAILS_OFF: &[(&str, Literal)] = &[
     ("pois", Literal::List(&[])),
 ];
 
-/// The styles Turnout offered before the toolbar, as the track mode and details
-/// each one drew (on top of [`DETAILS_OFF`]).
+/// The classic per-mode presets the preset bar offers and the tile server's
+/// legacy per-mode URLs render, as the track mode and details each one
+/// draws (on top of [`DETAILS_OFF`]).
 pub const CLASSIC_PRESETS: &[Preset] = &[
     (
         "Infrastructure",

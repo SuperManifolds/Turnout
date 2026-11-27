@@ -18,6 +18,8 @@ const REPORT_ISSUES_URL: &str = "https://github.com/SuperManifolds/Turnout/issue
 /// Discord DM link for the developer (@supermanifolds, "Alex" in the NIMBY Rails
 /// Discord). Discord deep-links by numeric user ID, not username.
 const REPORT_DISCORD_URL: &str = "https://discord.com/users/385879184276193290";
+/// Vertical levels in NIMBY Rails, shown on the auto-launch step for every platform.
+const LEVELS_SOURCE_HINT: &str = "For vertical levels in-game, copy the OpenRailwayMap levels URL from the overlays drawer, add it as a NIMBY Rails map source, reload the game so the level toggles appear, and subscribe to the \"ORM Vertical Layers\" Workshop mod.";
 
 /// Breathing room around a spotlighted element, and the gap between the element
 /// and its callout, in CSS pixels.
@@ -345,6 +347,7 @@ pub fn Tutorial(
                     },
                     None => view! { <p class="tour-hint">"Preparing\u{2026}"</p> }.into_any(),
                 }}
+                <p>{LEVELS_SOURCE_HINT}</p>
             </Show>
 
             <Show when=move || step.get() == last>

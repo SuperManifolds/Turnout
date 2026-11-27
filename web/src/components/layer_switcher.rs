@@ -5,7 +5,7 @@ use leptos::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
-use turnout_core::orm_levels::{LEVELS_KEY, LEVEL_BANDS};
+use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM, LEVEL_BANDS};
 use turnout_core::orm_presets::{classic_values, Literal, Preset, CLASSIC_PRESETS, NONE};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -145,8 +145,11 @@ const LEVELS: Category = Category {
     icon: "fa-solid fa-layer-group",
     pick: Pick::Many(&[(LEVEL_BANDS[0], "Underground"), (LEVEL_BANDS[1], "Ground"), (LEVEL_BANDS[2], "Elevated")]),
 };
-/// The style filters by level from zoom 8 only; lower zooms draw every level.
-const LEVELS_HINT: &str = "Applies from zoom 8";
+/// The Levels tooltip hint: the style filters by level from [`LEVELS_MIN_ZOOM`]
+/// only, and lower zooms draw every level.
+fn levels_zoom_hint() -> String {
+    format!("Applies from zoom {LEVELS_MIN_ZOOM}")
+}
 
 /// Shared value set for catenaries, signal boxes and substations.
 const OWNABLE: &[Choice] = &[("plain", "Plain"), ("operator", "Operator"), ("owner", "Owner"), (NONE, "None")];
@@ -412,7 +415,7 @@ fn display_sections(options: RwSignal<Options>) -> impl IntoView {
 fn tool(
     id: &'static str,
     label: &'static str,
-    hint: Option<&'static str>,
+    hint: Option<String>,
     icon: &'static str,
     off: impl Fn() -> bool + 'static,
     open: RwSignal<Option<&'static str>>,
@@ -445,7 +448,7 @@ fn tool(
 /// A category's toolbar button and its choices.
 fn category_tool(
     category: &'static Category,
-    hint: Option<&'static str>,
+    hint: Option<String>,
     options: RwSignal<Options>,
     open: RwSignal<Option<&'static str>>,
 ) -> impl IntoView {
@@ -468,7 +471,7 @@ fn toolbar(options: RwSignal<Options>, open: RwSignal<Option<&'static str>>) -> 
     view! {
         <ul class="orm-toolbar">
             {CATEGORIES.iter().map(|category| category_tool(category, None, options, open)).collect_view()}
-            {category_tool(&LEVELS, Some(LEVELS_HINT), options, open)}
+            {category_tool(&LEVELS, Some(levels_zoom_hint()), options, open)}
             {tool(DISPLAY, DISPLAY_LABEL, None, DISPLAY_ICON, || false, open, None, display_sections(options))}
         </ul>
     }

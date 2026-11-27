@@ -659,6 +659,10 @@ pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
     invoke_obj("set_tile_download_paused", args).await.map(|_| ())
 }
 
+pub async fn open_workshop_mod() -> Result<(), String> {
+    invoke("open_workshop_mod", &JsValue::NULL).await.map(|_| ())
+}
+
 pub async fn download_orm_tiles(
     south: f64, west: f64, north: f64, east: f64,
     z_min: u8, z_max: u8,

@@ -138,13 +138,18 @@ fn canonical_style(name: &str) -> Arc<str> {
 
 /// The [`STYLES`] entry a style or view renders from. Views and unknown names
 /// render from `orm`, so views need no style files of their own.
-fn source_style(name: &str) -> &'static str {
-    STYLES.iter().find(|(n, _)| *n == name).map_or(STYLES[0].0, |(n, _)| n)
+fn source_entry(name: &str) -> &'static (&'static str, &'static str) {
+    STYLES.iter().find(|(n, _)| *n == name).unwrap_or(&STYLES[0])
 }
 
+/// The name of `name`'s [`source_entry`].
+fn source_style(name: &str) -> &'static str {
+    source_entry(name).0
+}
+
+/// The style JSON of `name`'s [`source_entry`].
 fn style_json(name: &str) -> &'static str {
-    let source = source_style(name);
-    STYLES.iter().find(|(n, _)| *n == source).map_or(STYLES[0].1, |(_, s)| s)
+    source_entry(name).1
 }
 
 /// The option state `style` renders with: the shared state, with a view's preset
@@ -652,17 +657,17 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
     Ok(r)
 }
 
-/// Pushes `style`'s ORM option values ([`view_state`]) into the renderer's style as
+/// Pushes `name`'s ORM option values ([`view_state`]) into the renderer's style as
 /// native `global-state`, so the style's `global-state` expressions evaluate against
 /// the user's selections. maplibre-native evaluates these directly (core #4516), so
 /// no expression rewriting is needed.
 fn apply_global_state(
     renderer: &mut maplibre_native::ImageRenderer<maplibre_native::Tile>,
     shared: &OrmShared,
-    style: &str,
+    name: &str,
 ) {
     use maplibre_native::GlobalStateValue;
-    let state = view_state(&shared.orm_state.read().unpoison(), style);
+    let state = view_state(&shared.orm_state.read().unpoison(), name);
     let mut style = renderer.style();
     for (key, value) in &state {
         let resolved = match value {
@@ -1260,31 +1265,93 @@ mod tests {
         }
     }
 
+    /// Whether `needle` occurs anywhere in `expr`, including inside objects such as
+    /// a whole layer.
     fn mentions(expr: &serde_json::Value, needle: &serde_json::Value) -> bool {
-        expr == needle || expr.as_array().is_some_and(|items| items.iter().any(|e| mentions(e, needle)))
+        expr == needle
+            || expr.as_array().is_some_and(|items| items.iter().any(|e| mentions(e, needle)))
+            || expr.as_object().is_some_and(|fields| fields.values().any(|e| mentions(e, needle)))
+    }
+
+    /// The expressions `filter` ANDs together: its `all` arguments, flattened.
+    fn conjuncts(filter: &serde_json::Value) -> Vec<&serde_json::Value> {
+        match filter.as_array().map(Vec::as_slice) {
+            Some([all, rest @ ..]) if all == "all" => rest.iter().flat_map(conjuncts).collect(),
+            _ => vec![filter],
+        }
+    }
+
+    /// Whether `expr` is the Levels clause
+    /// `["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", band, ["global-state", LEVELS_KEY]]]`.
+    fn is_level_clause(expr: &serde_json::Value, band: &serde_json::Value) -> bool {
+        use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM};
+        *expr == serde_json::json!(["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", band, ["global-state", LEVELS_KEY]]])
+    }
+
+    /// Whether `filter` ANDs in the Levels clause with `band` exactly once: alone,
+    /// or as an argument of `all` (nested `all`s too, since the dasharray split
+    /// wraps filters after the clause is added).
+    fn is_level_gated(filter: &serde_json::Value, band: &serde_json::Value) -> bool {
+        conjuncts(filter).into_iter().filter(|e| is_level_clause(e, band)).count() == 1
+    }
+
+    /// The band expressions the style build gives line layers and platform (and
+    /// platform edge) layers: the band from a numeric `layer` when the feature has
+    /// one, else lines fall back to their tunnel / bridge flags and platforms to
+    /// ground.
+    fn level_bands() -> (serde_json::Value, serde_json::Value) {
+        use serde_json::json;
+        let [underground, ground, elevated] = turnout_core::orm_levels::LEVEL_BANDS;
+        let by_layer = json!([
+            "case",
+            ["<", ["number", ["get", "layer"], 0], 0], underground,
+            [">", ["number", ["get", "layer"], 0], 0], elevated,
+            ground
+        ]);
+        let line = json!([
+            "case",
+            ["has", "layer"], by_layer,
+            ["==", ["get", "tunnel"], true], underground,
+            ["==", ["get", "bridge"], true], elevated,
+            ground
+        ]);
+        let platform = json!(["case", ["has", "layer"], by_layer, ground]);
+        (line, platform)
     }
 
     /// The Levels option gates every line and platform layer on the `levels`
-    /// global-state. Low-zoom line layers carry no level data, so they stay ungated.
+    /// global-state with its source layer's band. Every other layer, including the
+    /// low-zoom lines and the kilometre labels (which carry no level data), stays
+    /// ungated.
     #[test]
     fn level_filter_gates_line_and_platform_layers() {
         const LEVEL_SOURCE_LAYERS: [&str; 3] =
             ["railway_line_high", "standard_railway_platforms", "standard_railway_platform_edges"];
+        let (line_band, platform_band) = level_bands();
+        let bands = [&line_band, &platform_band, &platform_band];
         let gate = serde_json::json!(["global-state", turnout_core::orm_levels::LEVELS_KEY]);
         let style: serde_json::Value = serde_json::from_str(STYLES[0].1).expect("embedded style parses");
-        let (mut gated, mut low) = (0, 0);
+        let (mut gated, mut km, mut low_zoom) = ([0; LEVEL_SOURCE_LAYERS.len()], 0, 0);
         for layer in style["layers"].as_array().expect("layers") {
             let source_layer = layer["source-layer"].as_str().unwrap_or_default();
-            let has_gate = mentions(&layer["filter"], &gate);
-            if LEVEL_SOURCE_LAYERS.contains(&source_layer) {
-                assert!(has_gate, "layer {} has no levels filter", layer["id"]);
-                gated += 1;
-            } else if source_layer.ends_with("_railway_line_low") {
-                assert!(!has_gate, "low-zoom layer {} has a levels filter", layer["id"]);
-                low += 1;
+            if let Some(i) = LEVEL_SOURCE_LAYERS.iter().position(|s| *s == source_layer) {
+                assert!(
+                    is_level_gated(&layer["filter"], bands[i]),
+                    "layer {} has no {source_layer} levels clause: {}",
+                    layer["id"],
+                    layer["filter"]
+                );
+                gated[i] += 1;
+                continue;
             }
+            assert!(!mentions(layer, &gate), "ungated layer {} mentions the levels state", layer["id"]);
+            km += usize::from(source_layer == "railway_text_km");
+            low_zoom += usize::from(source_layer.ends_with("_railway_line_low"));
         }
-        assert!(gated > 0 && low > 0, "{gated} gated, {low} low-zoom layers");
+        assert!(
+            gated.iter().all(|n| *n > 0) && km > 0 && low_zoom > 0,
+            "{gated:?} gated per {LEVEL_SOURCE_LAYERS:?}, {km} km, {low_zoom} low-zoom"
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@
 //! actual geometry drawn.
 //!
 //! `orm-bench levels` instead checks the Levels option: it renders one London
-//! tile with every level band and with only the underground band, and exits
-//! non-zero unless the underground render draws something, and less.
+//! tile with no level band, with only the underground band and with every band,
+//! and exits non-zero unless each render draws more than the one before.
 
 use std::num::NonZeroU32;
 use std::time::Instant;
@@ -149,19 +149,22 @@ fn render_levels(
     renderer.render_tile(z, x, y).map(|img| drawn_pixels(&img))
 }
 
-/// The drawn pixels of `LEVELS_TILE` with every band, then with only the underground band.
+/// The drawn pixels of `LEVELS_TILE` with no band, with only the underground
+/// band and with every band.
 fn level_counts(
     renderer: &mut ImageRenderer<Tile>,
     all_bands: &[String],
-) -> Result<(usize, usize), RenderingError> {
-    let all = render_levels(renderer, all_bands)?;
+) -> Result<(usize, usize, usize), RenderingError> {
+    let none = render_levels(renderer, &[])?;
     let underground = render_levels(renderer, &[UNDERGROUND.to_owned()])?;
-    Ok((all, underground))
+    let all = render_levels(renderer, all_bands)?;
+    Ok((none, underground, all))
 }
 
 /// Whether the Levels option filters the render: `LEVELS_TILE` with only the
-/// underground band draws some pixels, and fewer than with every band (the
-/// style's `levels` default).
+/// underground band draws more than with no band (which still draws the layers
+/// the option doesn't gate), and less than with every band (the style's
+/// `levels` default).
 fn levels_check() -> bool {
     let style: serde_json::Value = serde_json::from_str(STYLE).expect("valid style json");
     let Some(all_bands) = style["state"][LEVELS_KEY]["default"].as_array() else {
@@ -178,7 +181,7 @@ fn levels_check() -> bool {
         eprintln!("style failed to load: {e}");
         return false;
     }
-    let (all, underground) = match level_counts(&mut renderer, &all_bands) {
+    let (none, underground, all) = match level_counts(&mut renderer, &all_bands) {
         Ok(counts) => counts,
         Err(e) => {
             eprintln!("render failed: {e:?}");
@@ -186,8 +189,8 @@ fn levels_check() -> bool {
         }
     };
     let (z, x, y) = LEVELS_TILE;
-    let ok = underground > 0 && underground < all;
-    println!("{{\"tile\":\"{z}/{x}/{y}\",\"all_bands_px\":{all},\"underground_px\":{underground},\"ok\":{ok}}}");
+    let ok = none < underground && underground < all;
+    println!("{{\"tile\":\"{z}/{x}/{y}\",\"no_bands_px\":{none},\"underground_px\":{underground},\"all_bands_px\":{all},\"ok\":{ok}}}");
     ok
 }
 

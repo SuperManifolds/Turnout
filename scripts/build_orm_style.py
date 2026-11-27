@@ -57,7 +57,8 @@ STATE_OVERRIDES = {"openHistoricalMap": False, "hillshade": False}
 VISIBILITY_BOOL = {"visible": True, "none": False}
 
 # The Levels option: the `levels` global-state key lists the bands drawn. Keep
-# in sync with LEVEL_BANDS / LEVELS_KEY in core/src/orm_levels.rs.
+# in sync with LEVEL_BANDS / LEVELS_KEY / LEVELS_MIN_ZOOM in
+# core/src/orm_levels.rs.
 LEVEL_BANDS = ["underground", "ground", "elevated"]
 LEVELS_KEY = "levels"
 # Below this zoom the Levels filter passes everything (low-zoom lines carry no
