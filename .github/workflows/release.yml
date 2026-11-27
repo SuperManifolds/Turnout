@@ -53,7 +53,9 @@ jobs:
             args: ""
             rust_target: ""
           - platform: windows
-            runner: windows-latest
+            # Pinned off windows-latest: its VS18/CMake 4.4 image breaks mbgl's
+            # vendored-vcpkg bootstrap. See the note in ci.yml.
+            runner: windows-2022
             args: ""
             rust_target: ""
 
@@ -71,21 +73,40 @@ jobs:
         shell: bash
         run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
 
-      # Rev-scoped release-profile cache, matching prerelease.yml's key and paths.
-      # The host-native platforms (windows, linux-x86) build target/release and so
-      # share their cache with the same-named prerelease lanes; the --target arches
-      # (macos-*, linux-arm64) build target/<triple>/ and keep their own lanes.
-      - name: Cache cargo + target
-        uses: actions/cache@v4
+      # Restores ci.yml's lane for this OS and never saves: a cache saved on a tag
+      # is visible only to that tag, so it would never be reused. The lane's debug
+      # `target/` is unused by this release build, but its maplibre-native clone
+      # (with the Windows vcpkg libs built into it) and cargo registry are reused.
+      # Linux arm64 skips it, since ci.yml's Linux lane is x86. The paths must
+      # match ci.yml's CACHE_PATHS exactly, since the cache version is derived
+      # from them.
+      - name: Restore cargo + target (ci.yml lane)
+        if: runner.os != 'Linux' || runner.arch == 'X64'
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git
             target
-          key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
+
+      # Cache vcpkg's package source downloads on a rev-independent key so an mbgl
+      # bump (which changes the cargo-cache key above) doesn't force a full
+      # re-download through the flaky vendored-vcpkg path. See ci.yml.
+      - name: Set vcpkg downloads dir (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: echo "VCPKG_DOWNLOADS=$GITHUB_WORKSPACE/vcpkg-downloads" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg downloads (Windows)
+        if: matrix.platform == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-downloads
+          key: ${{ runner.os }}-vcpkg-downloads-v1
 
       - name: Install system dependencies (Linux)
         if: startsWith(matrix.platform, 'linux')
@@ -117,7 +138,10 @@ jobs:
           if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
       - name: Install Trunk
-        run: which trunk || cargo install trunk --locked
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/install_trunk.sh
 
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
@@ -134,10 +158,77 @@ jobs:
           # Tauri updater signing
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Crash reporting: baked into the binary at build time via option_env!.
+          # Unset secret → empty → crash reporting compiles out.
+          TURNOUT_SENTRY_DSN: ${{ secrets.TURNOUT_SENTRY_DSN }}
+          TURNOUT_SENTRY_ENVIRONMENT: production
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
           assetNamePattern: "[name]_[arch][_setup][ext]"
+
+      # Upload native debug symbols so Sentry can symbolicate crash minidumps
+      # (function + file:line) instead of showing raw addresses. Runs per matrix
+      # lane — each builds a different arch with its own debug-id. No-ops when
+      # SENTRY_AUTH_TOKEN is unset. Best-effort: continue-on-error so a flaky
+      # upload never fails the build job (which would skip the harden/latest.json
+      # step and ship broken Linux auto-update).
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping debug symbol upload"
+            exit 0
+          fi
+          npm install -g @sentry/cli
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            DIR="target/${{ matrix.rust_target }}/release"
+          else
+            DIR="target/release"
+          fi
+          sentry-cli debug-files upload --include-sources "$DIR"
+
+      # Symbolicate the frontend for Sentry, from `dist/` (Trunk's output,
+      # tauri.conf.json frontendDist = "../dist"), which the Tauri step above
+      # built and bundled verbatim:
+      #   1. JS source context — ship the hand-written bridges + wasm-bindgen glue
+      #      (both UNMINIFIED) as artifacts of the release the browser SDK reports
+      #      (turnout-tauri@<version>, matching sentry::release_name!()), so
+      #      @sentry/browser JS frames render with source. sentry-cli only picks up
+      #      JS/map files here; no .map files exist because the JS isn't minified.
+      #   2. Wasm frames — upload the wasm as a debug file. It carries DWARF line
+      #      tables (profile.release = line-tables-only, retained via index.html
+      #      data-keep-debug) and a build_id custom section (beforeBuildCommand runs
+      #      scripts/inject-wasm-build-id.mjs). The build_id gives it the same
+      #      debug_id the vendored @sentry/wasm derives at runtime (see
+      #      static/sentry_wasm.min.js), so Sentry resolves wasm frames to Rust
+      #      function + file:line. We ship and upload the same file, so code offsets
+      #      match without wasm-split.
+      # Best-effort, token-gated, per-matrix (re-upload is idempotent) — never
+      # fails the job.
+      - name: Upload frontend JS + wasm debug info to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping frontend upload"
+            exit 0
+          fi
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          REL="turnout-tauri@${VERSION}"
+          sentry-cli sourcemaps upload --release "$REL" dist
+          sentry-cli debug-files upload --include-sources dist
 
   # The bundled AppImage carries Ubuntu-22.04 libxcb*/libwayland*, which shadow
   # the host's newer copies at runtime and break the host Vulkan driver (Arch
@@ -181,3 +272,39 @@ jobs:
 
           gh release upload "$TAG" --repo "$REPO" --clobber latest.json
           echo "hardened, re-signed, and repointed both Linux AppImages"
+
+  # Create the Sentry release matching the SDK's `turnout-tauri@<version>` name and
+  # associate it with the commits since the last release, so Sentry can attribute a
+  # crash to a suspect commit. Symbolication itself doesn't need this (debug files
+  # match by debug-id); this adds the commit/blame layer. No-ops without the token.
+  sentry-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # set-commits --auto walks history for the commit range
+
+      - name: Create Sentry release + set commits
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping Sentry release"
+            exit 0
+          fi
+          npm install -g @sentry/cli
+          # Derive the release name from the crate version — the same source
+          # `sentry::release_name!()` uses (turnout-tauri@$CARGO_PKG_VERSION) — so
+          # it always matches what the SDK reports, even if the tag drifts.
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          REL="turnout-tauri@${VERSION}"
+          sentry-cli releases new "$REL"
+          sentry-cli releases set-commits "$REL" --auto
+          sentry-cli releases finalize "$REL"
+          sentry-cli releases deploys "$REL" new -e production

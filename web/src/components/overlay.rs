@@ -2,9 +2,14 @@ use leptos::{wasm_bindgen, component, view, IntoView, ReadSignal, WriteSignal, c
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use turnout_core::orm_levels::LEVELS_TILEJSON_URL;
+
 use crate::tauri;
 
 const TOAST_DURATION_MS: i32 = 4000;
+/// How long a copy button shows its check mark after copying.
+const COPY_FLASH_MS: i32 = 2000;
+const LEVELS_ROW_LABEL: &str = "OpenRailwayMap levels";
 
 #[wasm_bindgen]
 extern "C" {
@@ -15,17 +20,45 @@ extern "C" {
     fn map_hide_orm();
 }
 
-/// Human-readable name for an ORM style id, for the built-in layer label.
-fn orm_mode_label(style: &str) -> &'static str {
-    match style {
+/// Label for a `tracks` view mode, shown in the overlay's name field.
+fn orm_mode_label(tracks: &str) -> &'static str {
+    match tracks {
         "speed" => "Speed",
-        "signals" => "Signals",
-        "electrification" => "Electrification",
-        "track" => "Track",
+        "train_protection" => "Train protection",
+        "voltage_frequency" => "Voltage & frequency",
+        "maximum_current" => "Maximum current",
+        "power" => "Electrical power",
+        "gauge" => "Track gauge",
+        "loading_gauge" => "Loading gauge",
+        "track_class" => "Track class",
+        "axle_load" => "Axle load",
+        "metre_load" => "Metre load",
         "operator" => "Operator",
-        "route" => "Route",
-        _ => "Infrastructure",
+        "owner" => "Owner",
+        "routes" => "Routes",
+        "passenger_lines" => "Number of tracks",
+        "radio" => "Radio",
+        "plain" => "Plain",
+        _ => "Usage",
     }
+}
+
+/// Copies `text` to the clipboard, then raises `set_copied` for [`COPY_FLASH_MS`]
+/// so the copy button can show a check mark.
+fn copy_with_flash(text: String, set_copied: WriteSignal<bool>) {
+    spawn_local(async move {
+        let Some(window) = web_sys::window() else { return };
+        let _ = wasm_bindgen_futures::JsFuture::from(
+            window.navigator().clipboard().write_text(&text),
+        ).await;
+        set_copied.set(true);
+        let _ = wasm_bindgen_futures::JsFuture::from(
+            js_sys::Promise::new(&mut |resolve, _| {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, COPY_FLASH_MS);
+            }),
+        ).await;
+        set_copied.set(false);
+    });
 }
 
 fn source_id(group_id: u32) -> String {
@@ -82,7 +115,7 @@ struct ServiceEntry {
 pub fn OverlayDrawer(
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
-    orm_style: ReadSignal<String>,
+    orm_tracks: ReadSignal<String>,
     orm_visible: ReadSignal<bool>,
     set_orm_visible: WriteSignal<bool>,
 ) -> impl IntoView {
@@ -91,6 +124,7 @@ pub fn OverlayDrawer(
     let (toast, set_toast) = create_signal::<Option<String>>(None);
     let (copied_group, set_copied_group) = create_signal::<Option<u32>>(None);
     let (orm_copied, set_orm_copied) = create_signal(false);
+    let (levels_copied, set_levels_copied) = create_signal(false);
     let (orm_port, set_orm_port) = create_signal::<Option<u16>>(None);
 
     let (active_form, set_active_form) = create_signal(ServiceForm::None);
@@ -110,6 +144,18 @@ pub fn OverlayDrawer(
                 && !key.is_empty()
                 && (settings.apple_map_version.is_some() || settings.apple_sat_version.is_some())
             {
+                let new_creds = (
+                    key.clone(),
+                    settings.apple_map_version.clone(),
+                    settings.apple_sat_version.clone(),
+                );
+                // `settings-changed` fires on every settings save (theme, timeout,
+                // …), not just credential changes. Re-applying and re-syncing the
+                // Apple overlay re-adds its raster layers and flickers the map, so
+                // skip when the credentials are unchanged.
+                if apple_creds.get_untracked().as_ref() == Some(&new_creds) {
+                    return;
+                }
                 let s = tauri::update_apple_urls(
                     key,
                     settings.apple_map_version.as_deref(),
@@ -120,11 +166,7 @@ pub fn OverlayDrawer(
                     sync_map_layers(&s, &prev, true);
                     set_status.set(s);
                 }
-                set_apple_creds.set(Some((
-                    key.clone(),
-                    settings.apple_map_version,
-                    settings.apple_sat_version,
-                )));
+                set_apple_creds.set(Some(new_creds));
             } else {
                 set_apple_creds.set(None);
             }
@@ -289,8 +331,11 @@ pub fn OverlayDrawer(
     let on_toggle_orm = move |_| {
         let visible = !orm_visible.get();
         set_orm_visible.set(visible);
+        // Breadcrumb: the rail overlay drives the maplibre GPU renderer, so its
+        // toggle is prime context for a render/GPU crash report.
+        tauri::breadcrumb("ui", if visible { "ORM overlay shown" } else { "ORM overlay hidden" });
         if visible {
-            map_set_orm_style(&orm_style.get());
+            map_set_orm_style("orm");
         } else {
             map_hide_orm();
         }
@@ -298,19 +343,16 @@ pub fn OverlayDrawer(
 
     let on_copy_orm = move |_| {
         let Some(port) = orm_port.get() else { return };
-        let url = format!("http://127.0.0.1:{port}/{}/tilejson.json", orm_style.get());
+        copy_with_flash(format!("http://127.0.0.1:{port}/orm/tilejson.json"), set_orm_copied);
+    };
+
+    let on_copy_levels = move |_| copy_with_flash(LEVELS_TILEJSON_URL.to_string(), set_levels_copied);
+
+    let on_open_style_mod = move |_| {
         spawn_local(async move {
-            let Some(window) = web_sys::window() else { return };
-            let _ = wasm_bindgen_futures::JsFuture::from(
-                window.navigator().clipboard().write_text(&url),
-            ).await;
-            set_orm_copied.set(true);
-            let _ = wasm_bindgen_futures::JsFuture::from(
-                js_sys::Promise::new(&mut |resolve, _| {
-                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 2000);
-                }),
-            ).await;
-            set_orm_copied.set(false);
+            if let Err(e) = tauri::open_workshop_mod().await {
+                show_toast(e);
+            }
         });
     };
 
@@ -578,10 +620,20 @@ pub fn OverlayDrawer(
                                 </button>
                                 <i class="fa-solid fa-train-tram overlay-icon"></i>
                                 <input class="layer-name" type="text" readonly=true
-                                    prop:value=move || format!("OpenRailwayMap \u{00b7} {}", orm_mode_label(&orm_style.get()))
+                                    prop:value=move || format!("OpenRailwayMap \u{00b7} {}", orm_mode_label(&orm_tracks.get()))
                                 />
                                 <button class="icon-btn" title="Copy TileJSON URL" on:click=on_copy_orm>
                                     <i class=move || if orm_copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
+                                </button>
+                            </li>
+                            <li class="overlay-item">
+                                <i class="fa-solid fa-layer-group overlay-icon"></i>
+                                <span class="overlay-name" title=LEVELS_ROW_LABEL>{LEVELS_ROW_LABEL}</span>
+                                <button class="icon-btn" title="Style mod" on:click=on_open_style_mod>
+                                    <i class="fa-brands fa-steam"></i>
+                                </button>
+                                <button class="icon-btn" title="Copy levels TileJSON URL" on:click=on_copy_levels>
+                                    <i class=move || if levels_copied.get() { "fa-solid fa-check" } else { "fa-solid fa-copy" }></i>
                                 </button>
                             </li>
                         </ul>

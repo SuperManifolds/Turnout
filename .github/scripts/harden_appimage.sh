@@ -25,6 +25,8 @@ python3 "$SCRIPTS/appimage_split.py" "$asset" runtime.bin fs.squashfs
 rm -rf squashfs-root
 unsquashfs -d squashfs-root fs.squashfs >/dev/null
 rm -fv squashfs-root/usr/lib/libxcb*.so* squashfs-root/usr/lib/libwayland*.so*
+# appimagetool rejects an AppDir that other users cannot read; the bundler's dirs are 0700.
+chmod -R a+rX squashfs-root
 
 ARCH="$arch" "$APPIMAGETOOL" --appimage-extract-and-run squashfs-root "$asset"
 chmod +x "$asset"

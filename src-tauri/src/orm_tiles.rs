@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -25,8 +25,16 @@ const PREFERRED_PORT: u16 = 17854;
 const BIND_ATTEMPTS: u32 = 10;
 const BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
 const TILE_CACHE_CAPACITY: usize = 4096;
-const WORKER_COUNT: usize = 6;
-const ENCODER_COUNT: usize = 2;
+/// Render worker threads, sized from the CPU at startup (half the logical cores,
+/// clamped). The floor is the historical default so typical 8-core machines never
+/// regress; the ceiling bounds per-worker GPU renderer memory on many-core hosts.
+const WORKER_COUNT_MIN: usize = 6;
+const WORKER_COUNT_MAX: usize = 12;
+/// PNG encoder threads, sized from the CPU at startup. Encoding a tile is cheap
+/// (~1-2ms) next to a render, so a small pool keeps encode off the render path's
+/// critical path without oversubscribing.
+const ENCODER_COUNT_MIN: usize = 2;
+const ENCODER_COUNT_MAX: usize = 4;
 /// HTTP request-handling threads. Kept modest — handlers are lightweight (lock,
 /// enqueue, await); rendering happens on the dedicated worker threads.
 const HTTP_WORKER_THREADS: usize = 4;
@@ -41,8 +49,19 @@ const PREFETCH_QUEUE_CAP: usize = 128;
 const MBGL_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const TILE_SIZE: u32 = 512;
 const MAX_NATIVE_ZOOM: u8 = 19;
+/// Rendered z19 parents kept for overzoom reuse. All children of one parent (4 at
+/// z20, 16 at z21, 64 at z22) crop from a single render instead of each triggering
+/// their own. A handful of parents cover a deep-zoom viewport plus panning slack.
+const PARENT_CACHE_CAPACITY: usize = 32;
 const RENDER_TIMEOUT_SECS: u64 = 30;
 const STATS_INTERVAL: u64 = 50;
+/// A render slower than this (ms) counts toward the sustained-slow signal. Healthy
+/// hardware renders a tile in tens of ms; seconds means a software fallback.
+const SLOW_RENDER_MS: u128 = 2000;
+/// How many slow renders a process takes before one Sentry event flags the install
+/// as slow (usually a software Vulkan fallback). High enough to ignore a cold cache
+/// or a one-off stall, low enough to catch a user who notices the lag.
+const SLOW_RENDER_STREAK: u64 = 20;
 const WORKER_RESTART_DELAY_SECS: u64 = 1;
 /// Cap on consecutive panic-restarts of a render worker. Past this it stays down
 /// rather than spinning forever (each restart burns a `WORKER_RESTART_DELAY_SECS`
@@ -64,19 +83,22 @@ const MAX_REQUEST_ZOOM: u8 = 22;
 /// requeue before its waiters get a hard failure.
 const FAILED_KEY_MEMORY: usize = 64;
 
+// One unified ORM overlay style. The view/coloring mode and every display option
+// are driven by `global-state` (the `tracks` key selects the mode), matching
+// openrailwaymap.app, which serves a single style and only changes global-state.
 pub(crate) const STYLES: &[(&str, &str)] = &[
-    ("standard", include_str!("../resources/orm/standard.json")),
-    ("speed", include_str!("../resources/orm/speed.json")),
-    ("signals", include_str!("../resources/orm/signals.json")),
-    ("electrification", include_str!("../resources/orm/electrification.json")),
-    ("track", include_str!("../resources/orm/track.json")),
-    ("operator", include_str!("../resources/orm/operator.json")),
-    ("route", include_str!("../resources/orm/route.json")),
+    ("orm", include_str!("../resources/orm/orm.json")),
 ];
 
 type Key = (Arc<str>, u8, u32, u32);
 type RawImage = ImageBuffer<Rgba<u8>, Vec<u8>>;
 type Waiters = HashMap<Key, Vec<oneshot::Sender<TileResult>>>;
+/// Shared cache of rendered z19 parent images for overzoom reuse, keyed by
+/// `(style, parent_x, parent_y)`. Each entry carries the render generation so a
+/// parent left over from before an offline/base-URL change is treated as a miss
+/// rather than cropped into a stale child (the same guard the encoder applies).
+type ParentKey = (Arc<str>, u32, u32);
+type ParentCache = Mutex<LruCache<ParentKey, (u64, Arc<RawImage>)>>;
 
 /// Outcome delivered to a tile request's waiters. `Evicted` is distinct from
 /// `Failed` so the HTTP layer can answer 204 (revisit re-requests) rather than
@@ -92,16 +114,58 @@ enum TileResult {
 /// `(style, z, x, y)`, sized to `TILE_CACHE_CAPACITY` across `CACHE_STRIPES` shards.
 type TileCache = server_core::TileCache<Key>;
 
+/// The per-mode URLs saved NIMBY Rails sources still use, each a view: the `orm`
+/// style with the named [`CLASSIC_PRESETS`] entry over the shared option state.
+///
+/// [`CLASSIC_PRESETS`]: turnout_core::orm_presets::CLASSIC_PRESETS
+const VIEWS: &[(&str, &str)] = &[
+    ("standard", "Infrastructure"),
+    ("speed", "Speed"),
+    ("signals", "Signals"),
+    ("electrification", "Electrification"),
+    ("track", "Track"),
+    ("operator", "Operator"),
+    ("route", "Route"),
+];
+
 fn canonical_style(name: &str) -> Arc<str> {
-    if STYLES.iter().any(|(n, _)| *n == name) {
+    if STYLES.iter().chain(VIEWS).any(|(n, _)| *n == name) {
         Arc::from(name)
     } else {
-        Arc::from("standard")
+        Arc::from("orm")
     }
 }
 
+/// The [`STYLES`] entry a style or view renders from. Views and unknown names
+/// render from `orm`, so views need no style files of their own.
+fn source_entry(name: &str) -> &'static (&'static str, &'static str) {
+    STYLES.iter().find(|(n, _)| *n == name).unwrap_or(&STYLES[0])
+}
+
+/// The name of `name`'s [`source_entry`].
+fn source_style(name: &str) -> &'static str {
+    source_entry(name).0
+}
+
+/// The style JSON of `name`'s [`source_entry`].
 fn style_json(name: &str) -> &'static str {
-    STYLES.iter().find(|(n, _)| *n == name).map_or(STYLES[0].1, |(_, s)| s)
+    source_entry(name).1
+}
+
+/// The option state `style` renders with: the shared state, with a view's preset
+/// keys (`tracks` and the details) replaced by its preset's values. Every other
+/// key (`levels`, `theme`, `date`, `show*`) follows the shared state.
+fn view_state(
+    shared: &serde_json::Map<String, serde_json::Value>,
+    style: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut state = shared.clone();
+    let preset = VIEWS
+        .iter()
+        .find(|(name, _)| *name == style)
+        .and_then(|(_, preset)| turnout_core::orm_presets::classic_state(preset));
+    state.extend(preset.into_iter().flatten());
+    state
 }
 
 /// Computes the z19 ancestor tile coordinates for a given tile.
@@ -131,7 +195,7 @@ fn crop_and_upscale(img: &RawImage, z: u8, x: u32, y: u32) -> RawImage {
     image::imageops::resize(&*cropped, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle)
 }
 
-fn extract_panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn extract_panic_message(e: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = e.downcast_ref::<&str>() {
         return (*s).to_string();
     }
@@ -163,17 +227,69 @@ struct Dispatch {
 struct OrmShared {
     offline_dir: RwLock<Option<PathBuf>>,
     /// Base URL for online tile/glyph/sprite requests. Substituted into the
-    /// embedded styles at load so a self-hosted `OpenRailwayMap` can replace the
-    /// default `openrailwaymap.app`.
+    /// embedded styles at load, so the default host or a self-hosted
+    /// `OpenRailwayMap` serves them.
     base_url: RwLock<String>,
+    /// Directory holding the self-hosted SDF glyphs (`<dir>/<fontstack>/<range>.pbf`).
+    /// The online styles' `glyphs` is rewritten to a `file://` URL under here because
+    /// upstream stopped serving SDF glyph PBFs. `None` in tests, which skips the rewrite.
+    glyphs_dir: Option<PathBuf>,
+    /// Current ORM option state (the new `OpenRailwayMap` UI's `state` block), substituted
+    /// into the embedded styles' `global-state` expressions at load. Changing an option
+    /// updates this and bumps `generation` so workers rebuild their renderers.
+    orm_state: RwLock<serde_json::Map<String, serde_json::Value>>,
     generation: AtomicU64,
     bound_port: AtomicU16,
+    /// Why the render backend became unavailable after start-up: a worker
+    /// enumerated a Vulkan device at preflight but then failed logical-device
+    /// creation and exited. Surfaced to the UI via `orm_disabled_reason` so the
+    /// overlay's absence is explained instead of silent.
+    render_failure: Mutex<Option<String>>,
+    /// Set once the first worker reports a render failure, so the error is logged
+    /// (and captured by Sentry) a single time per process rather than once per
+    /// worker per idle warm-up pass.
+    render_failure_logged: AtomicBool,
+    /// Renders slower than [`SLOW_RENDER_MS`] with no slow or failed tile download
+    /// during them, and whether the sustained-slow signal has fired. A persistently
+    /// slow renderer (often a software Vulkan fallback) is otherwise invisible: the
+    /// overlay works, just slowly, so nothing crashes and nothing reaches Sentry.
+    slow_render_count: AtomicU64,
+    slow_render_reported: AtomicBool,
+}
+
+impl OrmShared {
+    /// Records why the render backend could not initialize and returns `true` the
+    /// first time only, so the caller logs one Sentry-visible error and stays
+    /// quiet after. One unusable GPU otherwise emits an event per worker per pass.
+    fn note_render_failure(&self, detail: &str) -> bool {
+        let reason = format!(
+            "GPU Vulkan device initialization failed ({detail}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this."
+        );
+        *self.render_failure.lock().unpoison() = Some(reason);
+        !self.render_failure_logged.swap(true, Ordering::SeqCst)
+    }
+
+    fn render_failure(&self) -> Option<String> {
+        self.render_failure.lock().unpoison().clone()
+    }
+
+    /// Counts a slow render and returns true exactly once, when slow renders first
+    /// cross [`SLOW_RENDER_STREAK`] for this process, so the caller emits a single
+    /// Sentry event (carrying the GPU scope tags) for a persistently slow install
+    /// rather than staying silent or logging on every tile.
+    fn note_slow_render(&self) -> bool {
+        let n = self.slow_render_count.fetch_add(1, Ordering::Relaxed) + 1;
+        n >= SLOW_RENDER_STREAK && !self.slow_render_reported.swap(true, Ordering::SeqCst)
+    }
 }
 
 struct OrmTileState {
     cache: Arc<TileCache>,
     dispatch: Arc<Dispatch>,
     shared: Arc<OrmShared>,
+    /// Number of render workers; the prefetch/wake heuristics in `serve_tile`
+    /// scale their thresholds off it.
+    worker_count: usize,
 }
 
 pub struct OrmHandle {
@@ -183,6 +299,14 @@ pub struct OrmHandle {
 }
 
 impl OrmHandle {
+    /// Why the render backend disabled itself after a runtime warm-up failure, or
+    /// `None` while rendering works. Distinct from the preflight reason in
+    /// [`OrmAvailability`]: this covers a device that passed preflight enumeration
+    /// but then failed logical-device creation inside a worker.
+    pub fn render_failure(&self) -> Option<String> {
+        self.shared.render_failure()
+    }
+
     /// Switches the renderer between offline (`Some`) and online (`None`) mode.
     ///
     /// Ordering is load-bearing: the directory is published first so any worker
@@ -214,20 +338,81 @@ impl OrmHandle {
         self.shared.generation.fetch_add(1, Ordering::SeqCst);
         self.cache.clear();
     }
+
+    /// Sets one ORM display option (a `state` key the new `OpenRailwayMap` UI exposes:
+    /// `signals`, `pois`, `platforms`, lifecycle filters, ...). Like `set_base_url`,
+    /// bumps the render generation and clears the tile cache so tiles rendered with
+    /// the previous value are dropped. A no-op when the value is unchanged.
+    pub fn set_orm_option(&self, key: String, value: serde_json::Value) {
+        {
+            let mut state = self.shared.orm_state.write().unpoison();
+            if state.get(&key) == Some(&value) {
+                return;
+            }
+            state.insert(key, value);
+        }
+        self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        self.cache.clear();
+    }
+
+    /// The current ORM option state, for the UI to render its controls from.
+    pub fn orm_options(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.shared.orm_state.read().unpoison().clone()
+    }
+}
+
+/// Whether ORM tile rendering started, and if not, why — so the UI can tell the
+/// user the rail overlay is unavailable (e.g. no working Vulkan runtime) instead
+/// of it silently never appearing.
+#[derive(Default)]
+pub struct OrmAvailability(std::sync::Mutex<Option<String>>);
+
+impl OrmAvailability {
+    pub fn set_disabled(&self, reason: String) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+    }
+
+    fn reason(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+}
+
+/// The reason ORM rendering is disabled, or `None` when it is running.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn orm_disabled_reason(app: tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    // The preflight reason (set before the handle exists) takes precedence; fall
+    // back to a runtime warm-up failure recorded on the handle's shared state.
+    app.try_state::<OrmAvailability>()
+        .and_then(|s| s.reason())
+        .or_else(|| app.try_state::<OrmHandle>().and_then(|h| h.render_failure()))
 }
 
 pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + Sync>> {
+    // mbgl's Vulkan backend crashes the whole process (an uncatchable C++ access
+    // violation in `vk::DispatchLoaderDynamic::init`) when the Vulkan loader is
+    // missing/broken or no Vulkan device exists. Predict both failures safely and
+    // bail out so the app runs without ORM rendering instead of crashing a worker:
+    //   1. Replicate mbgl's exact loader load and check it exposes the entry point.
+    //   2. Confirm wgpu can enumerate a Vulkan adapter (a usable device).
+    let loader = crate::vulkan::probe_loader();
+    if !loader.usable() {
+        return Err(format!(
+            "Vulkan loader {} ({}); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this.",
+            loader.tag(),
+            loader.path.as_deref().unwrap_or("no path")
+        )
+        .into());
+    }
+    if !crate::gpu::render_backend_available() {
+        return Err("no working Vulkan GPU found (device creation failed); the OpenRailwayMap overlay can't render. Updating your graphics drivers usually fixes this.".into());
+    }
+
     let dispatch = Arc::new(Dispatch {
         queues: Mutex::new(Queues { main: VecDeque::new(), prefetch: VecDeque::new() }),
         waiters: Mutex::new(HashMap::new()),
         cv: Condvar::new(),
-    });
-
-    let shared = Arc::new(OrmShared {
-        offline_dir: RwLock::new(None),
-        base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
-        generation: AtomicU64::new(0),
-        bound_port: AtomicU16::new(0),
     });
 
     let cache_dir = dirs_next::cache_dir()
@@ -235,6 +420,31 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         .join("turnout")
         .join("orm_cache");
     let _ = std::fs::create_dir_all(&cache_dir);
+
+    // Materialize the bundled SDF glyphs so the online styles can reference them via
+    // a local file:// URL (upstream no longer serves glyph PBFs). A failure here only
+    // costs text labels, so warn and carry on rather than failing the whole renderer.
+    let glyphs_dir = match crate::orm_glyphs::materialize(&cache_dir) {
+        Ok(dir) => Some(dir),
+        Err(e) => {
+            tracing::warn!("could not materialize ORM glyphs ({e}); map labels may not render");
+            None
+        }
+    };
+
+    let shared = Arc::new(OrmShared {
+        offline_dir: RwLock::new(None),
+        base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+        glyphs_dir,
+        orm_state: RwLock::new(crate::orm_state::default_state(STYLES[0].1)),
+        generation: AtomicU64::new(0),
+        bound_port: AtomicU16::new(0),
+        render_failure: Mutex::new(None),
+        render_failure_logged: AtomicBool::new(false),
+        slow_render_count: AtomicU64::new(0),
+        slow_render_reported: AtomicBool::new(false),
+    });
+
     let shared_cache_path = cache_dir.join("shared.db");
     enable_wal(&shared_cache_path);
 
@@ -251,10 +461,21 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
 
     let cache: Arc<TileCache> = Arc::new(TileCache::new(TILE_CACHE_CAPACITY, CACHE_STRIPES));
 
+    // Shared across all workers so a sibling rendered by any worker reuses the
+    // parent instead of re-rendering it. Generation-tagged entries make clearing
+    // on an offline/base-URL change unnecessary — stale parents miss and re-render.
+    let parent_cache: Arc<ParentCache> = Arc::new(Mutex::new(LruCache::new(
+        NonZeroUsize::new(PARENT_CACHE_CAPACITY).expect("nonzero"),
+    )));
+
+    let cores = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    let worker_count = (cores / 2).clamp(WORKER_COUNT_MIN, WORKER_COUNT_MAX);
+    let encoder_count = (cores / 4).clamp(ENCODER_COUNT_MIN, ENCODER_COUNT_MAX);
+
     let (encode_tx, encode_rx) = std::sync::mpsc::channel::<(Key, RawImage, u64)>();
     let encode_rx = Arc::new(Mutex::new(encode_rx));
 
-    for _ in 0..ENCODER_COUNT {
+    for _ in 0..encoder_count {
         let rx = Arc::clone(&encode_rx);
         let cache = Arc::clone(&cache);
         let dispatch = Arc::clone(&dispatch);
@@ -304,19 +525,22 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
             })?;
     }
 
-    for i in 0..WORKER_COUNT {
+    for i in 0..worker_count {
         let dispatch = Arc::clone(&dispatch);
         let cache_path = shared_cache_path.clone();
         let encode_tx = encode_tx.clone();
         let shared = Arc::clone(&shared);
         let cache = Arc::clone(&cache);
+        let parent_cache = Arc::clone(&parent_cache);
         std::thread::Builder::new()
             .name(format!("orm-render-{i}"))
             .spawn(move || {
                 let mut restarts = 0u32;
                 loop {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        render_worker_inner(i, &dispatch, &cache, &cache_path, &encode_tx, &shared);
+                        render_worker_inner(
+                            i, &dispatch, &cache, &cache_path, &encode_tx, &shared, &parent_cache,
+                        );
                     }));
                     match result {
                         // Clean exit: the dispatch queue was closed (shutdown).
@@ -330,10 +554,18 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
                             if restarts > MAX_WORKER_RESTARTS {
                                 // A worker that keeps panicking would otherwise spin
                                 // forever burning CPU; give up and let it stay down.
+                                // This is a distinct, terminal condition (the renderer
+                                // permanently loses a worker) rather than the panic
+                                // itself, so surface it as its own Sentry issue.
                                 tracing::error!("worker {i} panicked {restarts}× (last: {msg}); giving up");
                                 break;
                             }
-                            tracing::error!("worker {i} panicked: {msg} — restarting ({restarts}/{MAX_WORKER_RESTARTS})");
+                            // The process-global sentry panic hook already captured
+                            // this panic with a backtrace before catch_unwind returned
+                            // Err (catch_unwind doesn't suppress the hook). Log at warn
+                            // so it lands as a breadcrumb, not a second, backtrace-less
+                            // duplicate issue.
+                            tracing::warn!("worker {i} panicked: {msg} — restarting ({restarts}/{MAX_WORKER_RESTARTS})");
                             std::thread::sleep(std::time::Duration::from_secs(WORKER_RESTART_DELAY_SECS));
                         }
                     }
@@ -345,6 +577,7 @@ pub fn start_blocking() -> Result<OrmHandle, Box<dyn std::error::Error + Send + 
         cache: Arc::clone(&cache),
         dispatch,
         shared: Arc::clone(&shared),
+        worker_count,
     });
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -398,11 +631,10 @@ fn enable_wal(path: &std::path::Path) {
     }
 }
 
-fn build_renderer(
-    cache_path: &std::path::Path,
-    style: &str,
-    shared: &OrmShared,
-) -> maplibre_native::ImageRenderer<maplibre_native::Tile> {
+type RendererResult =
+    Result<maplibre_native::ImageRenderer<maplibre_native::Tile>, Box<dyn std::error::Error + Send + Sync>>;
+
+fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared) -> RendererResult {
     use maplibre_native::{ImageRendererBuilder, ResourceOptions};
     use std::num::NonZeroU32;
 
@@ -410,12 +642,47 @@ fn build_renderer(
     let resource_opts = ResourceOptions::default()
         .with_cache_path(cache_path.to_path_buf())
         .with_maximum_cache_size(MBGL_CACHE_BYTES);
+    // The graphics backend can fail to initialize (no working Vulkan runtime / no
+    // GPU); it now returns an error instead of crashing the process.
     let mut r = ImageRendererBuilder::new()
         .with_size(tile_size, tile_size)
         .with_resource_options(resource_opts)
-        .build_tile_renderer();
-    r.load_style_from_json_str(resolve_style_source(style, shared));
-    r
+        .build_tile_renderer()?;
+    // global-state can only be set once the style has finished loading (mbgl throws
+    // otherwise), so wait for the load before pushing the ORM options in.
+    r.load_style_from_json_str(resolve_style_source(style, shared))
+        .wait()
+        .map_err(|e| format!("ORM style '{style}' failed to load: {e}"))?;
+    apply_global_state(&mut r, shared, style);
+    Ok(r)
+}
+
+/// Pushes `name`'s ORM option values ([`view_state`]) into the renderer's style as
+/// native `global-state`, so the style's `global-state` expressions evaluate against
+/// the user's selections. maplibre-native evaluates these directly (core #4516), so
+/// no expression rewriting is needed.
+fn apply_global_state(
+    renderer: &mut maplibre_native::ImageRenderer<maplibre_native::Tile>,
+    shared: &OrmShared,
+    name: &str,
+) {
+    use maplibre_native::GlobalStateValue;
+    let state = view_state(&shared.orm_state.read().unpoison(), name);
+    let mut style = renderer.style();
+    for (key, value) in &state {
+        let resolved = match value {
+            serde_json::Value::String(s) => GlobalStateValue::String(s.clone()),
+            serde_json::Value::Bool(b) => GlobalStateValue::Bool(*b),
+            serde_json::Value::Number(n) => GlobalStateValue::Number(n.as_f64().unwrap_or(0.0)),
+            serde_json::Value::Null => GlobalStateValue::Null,
+            serde_json::Value::Array(items) => GlobalStateValue::StringList(
+                items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+            ),
+            // ORM options are never object-valued.
+            serde_json::Value::Object(_) => continue,
+        };
+        style.set_global_state(key, resolved);
+    }
 }
 
 /// Returns the style JSON to load: the on-disk offline variant when offline mode is
@@ -427,7 +694,9 @@ fn build_renderer(
 fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     let embedded = || {
         let base = shared.base_url.read().unpoison();
-        rebase_style(style_json(style), &base)
+        // Keep the style's `global-state` expressions intact; they are applied to the
+        // renderer natively via `apply_global_state` rather than rewritten here.
+        rebase_style(style_json(style), &base, shared.glyphs_dir.as_deref())
     };
     let dir = shared.offline_dir.read().unpoison().clone();
     let Some(dir) = dir else {
@@ -442,19 +711,33 @@ fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
     }
 }
 
-/// Substitutes the default ORM host in an embedded style with `base`. A no-op when
-/// `base` is the default, so the common case allocates only the base copy.
-fn rebase_style(json: &str, base: &str) -> String {
-    if base == crate::settings::DEFAULT_ORM_BASE {
-        json.to_string()
+/// Rewrites an embedded style for runtime use: glyphs always point at the local
+/// self-hosted SDF directory (upstream dropped the glyph-PBF endpoint), while tiles
+/// and sprites move from the style's baked-in [`STYLE_SOURCE_BASE`] host to the
+/// configured `base`. The glyph rewrite runs first so the host swap never touches
+/// the now-`file://` glyphs URL.
+///
+/// [`STYLE_SOURCE_BASE`]: crate::settings::STYLE_SOURCE_BASE
+fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) -> String {
+    let source = crate::settings::STYLE_SOURCE_BASE;
+    let glyph_rewritten = match glyphs_dir {
+        Some(dir) => json.replace(
+            &format!("{source}/font/"),
+            &format!("file://{}/", dir.display()),
+        ),
+        None => json.to_string(),
+    };
+    if base == source {
+        glyph_rewritten
     } else {
-        json.replace(crate::settings::DEFAULT_ORM_BASE, base)
+        glyph_rewritten.replace(source, base)
     }
 }
 
-/// Reads `<dir>/styles/{style}_offline.json`.
+/// Reads `<dir>/styles/{source}_offline.json`, where `source` is `style`'s
+/// [`source_style`].
 fn offline_style_source(dir: &std::path::Path, style: &str) -> std::io::Result<String> {
-    let path = dir.join("styles").join(format!("{style}_offline.json"));
+    let path = dir.join("styles").join(format!("{}_offline.json", source_style(style)));
     std::fs::read_to_string(path)
 }
 
@@ -544,18 +827,20 @@ fn refresh_generation(
 
 /// Builds one not-yet-built style renderer (styles in list order, `standard` first)
 /// for the current generation. Returns `false` when every style is already built.
+/// Builds one not-yet-built style. `Ok(true)` warmed one, `Ok(false)` all warm;
+/// `Err` means the graphics backend can't initialize (ORM is unavailable).
 fn warm_one_style(
     renderers: &mut HashMap<Arc<str>, maplibre_native::ImageRenderer<maplibre_native::Tile>>,
     cache_path: &std::path::Path,
     shared: &OrmShared,
-) -> bool {
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     for (name, _) in STYLES {
         if !renderers.contains_key(*name) {
-            renderers.insert(Arc::from(*name), build_renderer(cache_path, name, shared));
-            return true;
+            renderers.insert(Arc::from(*name), build_renderer(cache_path, name, shared)?);
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 fn render_worker_inner(
@@ -565,6 +850,7 @@ fn render_worker_inner(
     cache_path: &std::path::Path,
     encode_tx: &std::sync::mpsc::Sender<(Key, RawImage, u64)>,
     shared: &OrmShared,
+    parent_cache: &ParentCache,
 ) {
     tracing::debug!("worker {id} starting");
 
@@ -583,10 +869,23 @@ fn render_worker_inner(
             k
         } else {
             refresh_generation(&mut renderers, shared, &mut current_gen);
-            if warm_one_style(&mut renderers, cache_path, shared) {
-                continue;
+            match warm_one_style(&mut renderers, cache_path, shared) {
+                Ok(true) => continue,
+                Ok(false) => pop_key_blocking(dispatch),
+                Err(e) => {
+                    // The graphics backend can't initialize; ORM can't render.
+                    // Record why so the UI can tell the user, exit cleanly (no
+                    // crash, no restart spin — catch_unwind treats a normal return
+                    // as shutdown), and log the error only for the first worker so
+                    // one unusable GPU doesn't flood Sentry with an event each.
+                    if shared.note_render_failure(&e.to_string()) {
+                        tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    } else {
+                        tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
+                    }
+                    return;
+                }
             }
-            pop_key_blocking(dispatch)
         };
         let style = Arc::clone(&key.0);
         let (z, x, y) = (key.1, key.2, key.3);
@@ -623,27 +922,80 @@ fn render_worker_inner(
 
         if !renderers.contains_key(style.as_ref()) {
             tracing::debug!("worker {id} loading style '{style}'");
-            renderers.insert(Arc::clone(&style), build_renderer(cache_path, &style, shared));
-            tracing::debug!("worker {id} style '{style}' loaded");
+            match build_renderer(cache_path, &style, shared) {
+                Ok(r) => {
+                    renderers.insert(Arc::clone(&style), r);
+                    tracing::debug!("worker {id} style '{style}' loaded");
+                }
+                Err(e) => {
+                    if shared.note_render_failure(&e.to_string()) {
+                        tracing::error!("worker {id}: ORM renderer init failed, disabling: {e}");
+                    } else {
+                        tracing::debug!("worker {id}: ORM renderer init failed (already reported): {e}");
+                    }
+                    return;
+                }
+            }
         }
 
         let (render_z, render_x, render_y) = parent_coords(z, x, y);
+        let is_overzoom = z > MAX_NATIVE_ZOOM;
+
+        // Overzoom siblings share one z19 parent render. Reuse a cached parent from
+        // the current generation instead of re-rendering it for every child; a
+        // stale-generation entry is ignored so it can't crop into a stale tile.
+        let cached_parent = if is_overzoom {
+            let key = (Arc::clone(&style), render_x, render_y);
+            parent_cache
+                .lock()
+                .unpoison()
+                .get(&key)
+                .and_then(|(entry_gen, img)| (*entry_gen == current_gen).then(|| Arc::clone(img)))
+        } else {
+            None
+        };
+
         let start = Instant::now();
-        let result = renderers
-            .get_mut(style.as_ref())
-            .expect("just inserted")
-            .render_tile(render_z, render_x, render_y);
+        let fetches_before = crate::orm_net::fetch_stats();
+        let raw_result = if let Some(parent) = cached_parent {
+            Ok(crop_and_upscale(&parent, z, x, y))
+        } else {
+            renderers
+                .get_mut(style.as_ref())
+                .expect("just inserted")
+                .render_tile(render_z, render_x, render_y)
+                .map(|image| {
+                    if is_overzoom {
+                        let parent = Arc::new(image.into_inner());
+                        parent_cache.lock().unpoison().put(
+                            (Arc::clone(&style), render_x, render_y),
+                            (current_gen, Arc::clone(&parent)),
+                        );
+                        crop_and_upscale(&parent, z, x, y)
+                    } else {
+                        image.into_inner()
+                    }
+                })
+        };
         let render_ms = start.elapsed().as_millis();
         render_count += 1;
+        // mbgl downloads a tile's sources inside the render, so a render is only
+        // GPU/CPU-bound when no download during it was slow or failed.
+        let render_bound = !fetches_before.degraded_since(crate::orm_net::fetch_stats());
 
-        match result {
-            Ok(image) => {
-                let raw = if z > MAX_NATIVE_ZOOM {
-                    crop_and_upscale(image.as_image(), z, x, y)
-                } else {
-                    image.into_inner()
-                };
-                if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > 2000 {
+        match raw_result {
+            Ok(raw) => {
+                if render_ms > SLOW_RENDER_MS && render_bound && shared.note_slow_render() {
+                    // One Sentry-visible event per process. The GPU scope tags
+                    // (render_device, render_device_software, gpu, vulkan_icds)
+                    // travel with it, so a "Turnout ORM is slow" report becomes
+                    // diagnosable instead of relying on the user to inspect their GPU.
+                    let net = crate::orm_net::fetch_stats();
+                    tracing::error!(
+                        "ORM rendering is persistently slow: worker {id} tile '{style}' z{z} took {render_ms}ms ({render_count} rendered) with no slow tile downloads during it. Session downloads: {} total, {} slow, {} failed. Check the render_device and render_device_software tags.",
+                        net.total, net.slow, net.failed
+                    );
+                } else if render_count.is_multiple_of(STATS_INTERVAL) || render_ms > SLOW_RENDER_MS {
                     tracing::debug!(
                         "worker {id} rendered {render_count} tiles (last: {render_ms}ms)"
                     );
@@ -674,7 +1026,7 @@ fn render_worker_inner(
 }
 
 async fn serve_tilejson(State(state): State<Arc<OrmTileState>>) -> impl IntoResponse {
-    serve_tilejson_for("standard", state.shared.bound_port.load(Ordering::SeqCst))
+    serve_tilejson_for("orm", state.shared.bound_port.load(Ordering::SeqCst))
 }
 
 async fn serve_style_tilejson(
@@ -742,7 +1094,7 @@ async fn serve_tile(
             }
             // Only prefetch once the workers have caught up, so it never competes
             // with real requests during an active pan.
-            let prefetched = if q.main.len() <= WORKER_COUNT {
+            let prefetched = if q.main.len() <= state.worker_count {
                 enqueue_prefetch_ring(&mut q, &waiters, &state.cache, &key)
             } else {
                 0
@@ -750,7 +1102,7 @@ async fn serve_tile(
             drop(q);
             // Wake one worker per newly enqueued key (main + prefetch), capped at the
             // worker count, instead of stampeding all workers on every request.
-            let wake = (1 + prefetched).min(WORKER_COUNT);
+            let wake = (1 + prefetched).min(state.worker_count);
             for _ in 0..wake {
                 state.dispatch.cv.notify_one();
             }
@@ -802,6 +1154,28 @@ pub async fn set_orm_offline(
 /// Returns the port the ORM tile server actually bound to. The server binds on a
 /// background runtime, so this polls the shared value (published at bind time)
 /// until it is set rather than assuming `PREFERRED_PORT`.
+/// Sets one ORM display option and persists it. The renderer rebuilds against the
+/// new value; the frontend reloads the ORM layer afterwards to pull fresh tiles.
+#[tauri::command]
+pub async fn set_orm_option(
+    app: tauri::AppHandle,
+    handle: tauri::State<'_, OrmHandle>,
+    key: String,
+    value: serde_json::Value,
+) -> CommandResult<()> {
+    handle.set_orm_option(key, value);
+    crate::settings::save_orm_options(&app, &handle.orm_options());
+    Ok(())
+}
+
+/// The current ORM option values, for the UI to initialize its controls.
+#[tauri::command]
+pub async fn get_orm_options(
+    handle: tauri::State<'_, OrmHandle>,
+) -> CommandResult<serde_json::Map<String, serde_json::Value>> {
+    Ok(handle.orm_options())
+}
+
 #[tauri::command]
 pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> CommandResult<u16> {
     for _ in 0..PORT_WAIT_ATTEMPTS {
@@ -812,4 +1186,283 @@ pub async fn get_orm_port(handle: tauri::State<'_, OrmHandle>) -> CommandResult<
         tokio::time::sleep(std::time::Duration::from_millis(PORT_WAIT_INTERVAL_MS)).await;
     }
     Err(CommandError::Server("ORM tile server not bound".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_zoom_tiles_are_their_own_parent() {
+        assert_eq!(parent_coords(MAX_NATIVE_ZOOM, 100, 200), (MAX_NATIVE_ZOOM, 100, 200));
+        assert_eq!(parent_coords(0, 0, 0), (0, 0, 0));
+    }
+
+    #[test]
+    fn overzoom_siblings_share_one_parent() {
+        // The four z20 children of z19 parent (10, 20) must all resolve to it, so
+        // the parent cache renders it once and crops four times.
+        let parent = (MAX_NATIVE_ZOOM, 10, 20);
+        for (cx, cy) in [(20, 40), (21, 40), (20, 41), (21, 41)] {
+            assert_eq!(parent_coords(MAX_NATIVE_ZOOM + 1, cx, cy), parent);
+        }
+        // A z22 tile resolves three levels up to the same parent.
+        assert_eq!(parent_coords(MAX_NATIVE_ZOOM + 3, 10 << 3, 20 << 3), parent);
+    }
+
+    #[test]
+    fn crop_and_upscale_returns_full_tile_size() {
+        let parent = RawImage::from_pixel(TILE_SIZE, TILE_SIZE, Rgba([1, 2, 3, 4]));
+        let child = crop_and_upscale(&parent, MAX_NATIVE_ZOOM + 1, 21, 41);
+        assert_eq!(child.dimensions(), (TILE_SIZE, TILE_SIZE));
+    }
+
+    fn test_shared() -> OrmShared {
+        OrmShared {
+            offline_dir: RwLock::new(None),
+            base_url: RwLock::new(crate::settings::DEFAULT_ORM_BASE.to_string()),
+            glyphs_dir: None,
+            orm_state: RwLock::new(crate::orm_state::default_state(STYLES[0].1)),
+            generation: AtomicU64::new(0),
+            bound_port: AtomicU16::new(0),
+            render_failure: Mutex::new(None),
+            render_failure_logged: AtomicBool::new(false),
+            slow_render_count: AtomicU64::new(0),
+            slow_render_reported: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn rebase_style_points_glyphs_at_local_dir() {
+        let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sprite":"https://openrailwaymap.app/sprite/symbols","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high,railway_text_km/{z}/{x}/{y}"]}}}"#;
+        let out = rebase_style(json, crate::settings::STYLE_SOURCE_BASE, Some(std::path::Path::new("/cache/glyphs")));
+        // Glyphs go local, with the fontstack/range placeholders preserved.
+        assert!(out.contains("\"glyphs\":\"file:///cache/glyphs/{fontstack}/{range}.pbf\""), "{out}");
+        // Tiles and sprite stay on the style's own host when that is the base.
+        assert!(out.contains("https://openrailwaymap.app/railway_line_high"));
+        assert!(out.contains("https://openrailwaymap.app/sprite/symbols"));
+        assert!(!out.contains("openrailwaymap.app/font/"));
+    }
+
+    /// maplibre-native takes `layout.visibility` only as a literal, and decodes every
+    /// vector source as MVT. The style build moves option gates into filters and drops
+    /// upstream's `encoding: mlt`; this guards both.
+    #[test]
+    fn embedded_styles_are_native_compatible() {
+        for (name, json) in STYLES {
+            let style: serde_json::Value = serde_json::from_str(json).expect("embedded style parses");
+            for layer in style["layers"].as_array().expect("layers") {
+                let visibility = &layer["layout"]["visibility"];
+                assert!(
+                    visibility.is_null() || visibility.is_string(),
+                    "{name} layer {} has an expression visibility",
+                    layer["id"]
+                );
+            }
+            for (source, def) in style["sources"].as_object().expect("sources") {
+                assert!(def.get("encoding").is_none(), "{name} source {source} sets an encoding");
+            }
+        }
+    }
+
+    /// Whether `needle` occurs anywhere in `expr`, including inside objects such as
+    /// a whole layer.
+    fn mentions(expr: &serde_json::Value, needle: &serde_json::Value) -> bool {
+        expr == needle
+            || expr.as_array().is_some_and(|items| items.iter().any(|e| mentions(e, needle)))
+            || expr.as_object().is_some_and(|fields| fields.values().any(|e| mentions(e, needle)))
+    }
+
+    /// The expressions `filter` ANDs together: its `all` arguments, flattened.
+    fn conjuncts(filter: &serde_json::Value) -> Vec<&serde_json::Value> {
+        match filter.as_array().map(Vec::as_slice) {
+            Some([all, rest @ ..]) if all == "all" => rest.iter().flat_map(conjuncts).collect(),
+            _ => vec![filter],
+        }
+    }
+
+    /// Whether `expr` is the Levels clause
+    /// `["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", band, ["global-state", LEVELS_KEY]]]`.
+    fn is_level_clause(expr: &serde_json::Value, band: &serde_json::Value) -> bool {
+        use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM};
+        *expr == serde_json::json!(["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", band, ["global-state", LEVELS_KEY]]])
+    }
+
+    /// Whether `filter` ANDs in the Levels clause with `band` exactly once: alone,
+    /// or as an argument of `all` (nested `all`s too, since the dasharray split
+    /// wraps filters after the clause is added).
+    fn is_level_gated(filter: &serde_json::Value, band: &serde_json::Value) -> bool {
+        conjuncts(filter).into_iter().filter(|e| is_level_clause(e, band)).count() == 1
+    }
+
+    /// The band expressions the style build gives line layers and platform (and
+    /// platform edge) layers: the band from a numeric `layer` when the feature has
+    /// one, else lines fall back to their tunnel / bridge flags and platforms to
+    /// ground.
+    fn level_bands() -> (serde_json::Value, serde_json::Value) {
+        use serde_json::json;
+        let [underground, ground, elevated] = turnout_core::orm_levels::LEVEL_BANDS;
+        let by_layer = json!([
+            "case",
+            ["<", ["number", ["get", "layer"], 0], 0], underground,
+            [">", ["number", ["get", "layer"], 0], 0], elevated,
+            ground
+        ]);
+        let line = json!([
+            "case",
+            ["has", "layer"], by_layer,
+            ["==", ["get", "tunnel"], true], underground,
+            ["==", ["get", "bridge"], true], elevated,
+            ground
+        ]);
+        let platform = json!(["case", ["has", "layer"], by_layer, ground]);
+        (line, platform)
+    }
+
+    /// The Levels option gates every line and platform layer on the `levels`
+    /// global-state with its source layer's band. Every other layer, including the
+    /// low-zoom lines and the kilometre labels (which carry no level data), stays
+    /// ungated.
+    #[test]
+    fn level_filter_gates_line_and_platform_layers() {
+        const LEVEL_SOURCE_LAYERS: [&str; 3] =
+            ["railway_line_high", "standard_railway_platforms", "standard_railway_platform_edges"];
+        let (line_band, platform_band) = level_bands();
+        let bands = [&line_band, &platform_band, &platform_band];
+        let gate = serde_json::json!(["global-state", turnout_core::orm_levels::LEVELS_KEY]);
+        let style: serde_json::Value = serde_json::from_str(STYLES[0].1).expect("embedded style parses");
+        let (mut gated, mut km, mut low_zoom) = ([0; LEVEL_SOURCE_LAYERS.len()], 0, 0);
+        for layer in style["layers"].as_array().expect("layers") {
+            let source_layer = layer["source-layer"].as_str().unwrap_or_default();
+            if let Some(i) = LEVEL_SOURCE_LAYERS.iter().position(|s| *s == source_layer) {
+                assert!(
+                    is_level_gated(&layer["filter"], bands[i]),
+                    "layer {} has no {source_layer} levels clause: {}",
+                    layer["id"],
+                    layer["filter"]
+                );
+                gated[i] += 1;
+                continue;
+            }
+            assert!(!mentions(layer, &gate), "ungated layer {} mentions the levels state", layer["id"]);
+            km += usize::from(source_layer == "railway_text_km");
+            low_zoom += usize::from(source_layer.ends_with("_railway_line_low"));
+        }
+        assert!(
+            gated.iter().all(|n| *n > 0) && km > 0 && low_zoom > 0,
+            "{gated:?} gated per {LEVEL_SOURCE_LAYERS:?}, {km} km, {low_zoom} low-zoom"
+        );
+    }
+
+    #[test]
+    fn rebase_style_swaps_host_but_keeps_glyphs_local() {
+        let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high/{z}/{x}/{y}"]}}}"#;
+        let out = rebase_style(json, "http://localhost:8000", Some(std::path::Path::new("/c/glyphs")));
+        // A self-hosted base moves tiles, but glyphs still come from the local dir.
+        assert!(out.contains("\"glyphs\":\"file:///c/glyphs/{fontstack}/{range}.pbf\""), "{out}");
+        assert!(out.contains("http://localhost:8000/railway_line_high"));
+        assert!(!out.contains("openrailwaymap.app"));
+    }
+
+    #[test]
+    fn rebase_style_moves_bundled_style_to_default_base() {
+        let out = rebase_style(STYLES[0].1, crate::settings::DEFAULT_ORM_BASE, Some(std::path::Path::new("/c/glyphs")));
+        let style: serde_json::Value = serde_json::from_str(&out).expect("rebased style parses");
+        assert_eq!(style["glyphs"], "file:///c/glyphs/{fontstack}/{range}.pbf");
+        let tiles: Vec<&str> = style["sources"]
+            .as_object()
+            .expect("sources")
+            .values()
+            .filter_map(|s| s["tiles"].as_array())
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|t| t.starts_with("https://orm.sorlie.io/")), "{tiles:?}");
+        assert!(!out.contains(crate::settings::STYLE_SOURCE_BASE));
+    }
+
+    #[test]
+    fn views_and_styles_keep_their_name_and_others_fall_back_to_orm() {
+        assert_eq!(&*canonical_style("signals"), "signals");
+        assert_eq!(&*canonical_style("orm"), "orm");
+        assert_eq!(&*canonical_style("nope"), "orm");
+    }
+
+    #[test]
+    fn views_render_from_the_orm_style() {
+        assert_eq!(source_style("speed"), "orm");
+        assert_eq!(source_style("nope"), "orm");
+        assert_eq!(style_json("speed"), STYLES[0].1);
+    }
+
+    #[test]
+    fn every_view_names_a_classic_preset() {
+        for (view, preset) in VIEWS {
+            assert!(turnout_core::orm_presets::classic_state(preset).is_some(), "{view}: no preset {preset}");
+        }
+    }
+
+    #[test]
+    fn view_state_sets_preset_keys_and_keeps_the_rest_shared() {
+        use serde_json::json;
+        use turnout_core::orm_levels::LEVELS_KEY;
+        let mut shared = crate::orm_state::default_state(STYLES[0].1);
+        shared.insert(LEVELS_KEY.to_owned(), json!(["underground"]));
+        shared.insert("theme".to_owned(), json!("dark"));
+        shared.insert("platforms".to_owned(), json!("height"));
+
+        let state = view_state(&shared, "signals");
+        assert_eq!(state.get("tracks"), Some(&json!("train_protection")));
+        assert_eq!(state.get("boxes"), Some(&json!("plain")));
+        assert_eq!(state.get("platforms"), Some(&json!(turnout_core::orm_presets::NONE)));
+        assert_eq!(state.get(LEVELS_KEY), Some(&json!(["underground"])));
+        assert_eq!(state.get("theme"), Some(&json!("dark")));
+        assert_eq!(state.len(), shared.len());
+    }
+
+    #[test]
+    fn view_state_of_a_style_is_the_shared_state() {
+        let mut shared = crate::orm_state::default_state(STYLES[0].1);
+        shared.insert("tracks".to_owned(), serde_json::json!("gauge"));
+        assert_eq!(view_state(&shared, "orm"), shared);
+    }
+
+    #[test]
+    fn offline_views_read_the_orm_offline_style() {
+        let dir = std::env::temp_dir().join(format!("turnout-orm-views-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("styles")).expect("styles dir");
+        std::fs::write(dir.join("styles").join("orm_offline.json"), "{}").expect("offline style");
+        let source = offline_style_source(&dir, "electrification");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(source.expect("view reads the orm offline style"), "{}");
+    }
+
+    #[test]
+    fn render_failure_is_recorded_and_logged_once() {
+        let shared = test_shared();
+        assert_eq!(shared.render_failure(), None);
+        // First failure logs (returns true) and records a user-facing reason.
+        assert!(shared.note_render_failure("ErrorInitializationFailed"));
+        let reason = shared.render_failure().expect("reason recorded");
+        assert!(reason.contains("ErrorInitializationFailed"));
+        assert!(reason.contains("graphics drivers"));
+        // Every later failure (one per worker per pass) stays quiet.
+        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+        assert!(!shared.note_render_failure("ErrorInitializationFailed"));
+    }
+
+    #[test]
+    fn slow_render_reports_once_after_streak() {
+        let shared = test_shared();
+        // Below the streak: a few slow renders don't fire (cold cache, one-off stall).
+        for _ in 0..SLOW_RENDER_STREAK - 1 {
+            assert!(!shared.note_slow_render());
+        }
+        // Crossing the streak fires exactly once.
+        assert!(shared.note_slow_render());
+        // Every later slow render stays quiet.
+        assert!(!shared.note_slow_render());
+        assert!(!shared.note_slow_render());
+    }
 }

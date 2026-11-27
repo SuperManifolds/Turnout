@@ -1,50 +1,117 @@
 #!/usr/bin/env python3
 """
-Sanitize the ORM standard style JSON for maplibre-native compatibility.
+Build Turnout's embedded ORM overlay style (src-tauri/resources/orm/orm.json)
+from the live OpenRailwayMap style.
 
-Resolves:
-- global-state → static default values
-- feature-state → non-hover fallback
-- image expression → direct value
-- Relative source URLs → absolute URLs
+OpenRailwayMap is one style driven by a `state` block: the track mode and every
+display option are `["global-state", ...]` reads. maplibre-native evaluates
+global-state, so it is kept as-is and Turnout switches options on the renderer
+without reloading the style. Everything native cannot handle is rewritten:
+
+- visibility expressions → literal visibility plus an equivalent filter gate
+- feature-state → non-hover fallback; image expression → direct value
 - interpolate-hcl → interpolate with HCL-sampled intermediate stops
 - ==/!= comparisons against null → has/!has
 - data-driven line-dasharray → per-value layers with constant dash arrays
+- font-face stacks → the bundled SDF glyph fontstacks
+- relative source URLs → absolute tile URLs (MVT, see `encoding` below)
+
+Turnout adds one option of its own: `levels`, the vertical level bands that line
+and platform layers draw from zoom 8 (see `with_level_filter`).
+
+The basemap (background, hillshade, landuse/transport), OpenHistoricalMap and the
+website's search/route UI sources are dropped: Turnout overlays its own base map.
+
+Usage: python3 scripts/build_orm_style.py [style.json]
+(with no argument the live style is fetched)
 """
 
 import json
 import math
+import pathlib
 import sys
 import copy
 import urllib.request
 
-INPUT = "/tmp/orm_standard.json"
-OUTPUT = "/tmp/orm_standard_sanitized.json"
+BASE_URL = "https://openrailwaymap.app"
+STYLE_URL = f"{BASE_URL}/style.json"
+OUTPUT = pathlib.Path(__file__).resolve().parent.parent / "src-tauri/resources/orm/orm.json"
+GLYPHS_URL = f"{BASE_URL}/font/{{fontstack}}/{{range}}.pbf"
 
-GLOBAL_STATE_DEFAULTS = {
-    "theme": "light",
-    "showConstructionInfrastructure": True,
-    "showProposedInfrastructure": True,
-    "showAbandonedInfrastructure": True,
-    "showRazedInfrastructure": True,
-    "stationLowZoomLabel": "name",
-    "date": 2026,
-    "openHistoricalMap": False,
-    "hillshade": False,
-    "allDates": True,
-    "bearing": 0,
+# Basemap source-layers Turnout does not render (it overlays its own base map).
+BASEMAP_SOURCE_LAYERS = {"landuse_areas", "transport_lines", "transport_points_centroids"}
+
+# Upstream font-face stacks → the bundled SDF glyph fontstacks (same fonts, see
+# src-tauri/resources/orm/glyphs/README.md). A fontstack with no glyph directory
+# leaves native waiting forever on the missing glyph file.
+BUNDLED_FONTS = {
+    "Noto-Sans-Bold": "OpenRailwayMap-Bold",
+    "Noto-Sans-Regular": "OpenRailwayMap-Regular",
+    "Noto-Sans-Italic": "OpenRailwayMap-Italic",
+    "Fira-Code-Bold": "FiraCode-Bold",
 }
 
-BASE_URL = "https://openrailwaymap.app"
+# Options Turnout cannot serve: no OpenHistoricalMap source or hillshade DEM.
+STATE_OVERRIDES = {"openHistoricalMap": False, "hillshade": False}
+
+VISIBILITY_BOOL = {"visible": True, "none": False}
+
+# The Levels option: the `levels` global-state key lists the bands drawn. Keep
+# in sync with LEVEL_BANDS / LEVELS_KEY / LEVELS_MIN_ZOOM in
+# core/src/orm_levels.rs.
+LEVEL_BANDS = ["underground", "ground", "elevated"]
+LEVELS_KEY = "levels"
+# Below this zoom the Levels filter passes everything (low-zoom lines carry no
+# tunnel, bridge or layer data).
+LEVELS_MIN_ZOOM = 8
+LINE_LEVEL_SOURCE_LAYERS = {"railway_line_high"}
+PLATFORM_LEVEL_SOURCE_LAYERS = {"standard_railway_platforms", "standard_railway_platform_edges"}
+
+
+def band_by_layer(fallback):
+    """The level band from a feature's numeric `layer` (<0 underground, 0 ground,
+    >0 elevated), or `fallback` when the feature has none."""
+    layer = ["number", ["get", "layer"], 0]
+    return ["case",
+            ["has", "layer"], ["case", ["<", layer, 0], "underground",
+                               [">", layer, 0], "elevated", "ground"],
+            *fallback]
+
+
+# Lines without a `layer` fall back to their tunnel / bridge flags.
+LINE_BAND = band_by_layer([["==", ["get", "tunnel"], True], "underground",
+                           ["==", ["get", "bridge"], True], "elevated", "ground"])
+PLATFORM_BAND = band_by_layer(["ground"])
+
+
+def with_level_filter(layer):
+    """AND the Levels clause into a line or platform layer's filter: from
+    LEVELS_MIN_ZOOM a feature draws only when its band is selected."""
+    source_layer = layer.get("source-layer")
+    if source_layer in LINE_LEVEL_SOURCE_LAYERS:
+        band = LINE_BAND
+    elif source_layer in PLATFORM_LEVEL_SOURCE_LAYERS:
+        band = PLATFORM_BAND
+    else:
+        return layer
+    clause = ["any", ["<", ["zoom"], LEVELS_MIN_ZOOM],
+              ["in", copy.deepcopy(band), ["global-state", LEVELS_KEY]]]
+    existing = layer.get("filter")
+    layer["filter"] = clause if existing is None else ["all", existing, clause]
+    return layer
 
 _tilejson_cache: dict = {}
 
 
-def fetch_tilejson(url: str) -> dict:
-    """Fetch TileJSON from url, with in-process caching."""
+def fetch_json(url: str) -> dict:
+    """Fetch JSON from an openrailwaymap.app url, with in-process caching.
+
+    Tile endpoints reject requests without a Referer (hotlink guard)."""
     if url not in _tilejson_cache:
-        req = urllib.request.Request(url, headers={"User-Agent": "curl/8.7.1"})
-        with urllib.request.urlopen(req) as resp:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "curl/8.7.1", "Referer": BASE_URL + "/"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
             _tilejson_cache[url] = json.loads(resp.read())
     return _tilejson_cache[url]
 
@@ -229,60 +296,36 @@ def replace_overlap_properties(layer):
             layout[f"{prefix}-allow-overlap"] = layout.pop(key) == "always"
 
 
-def _eval_const(expr):
-    """Constant-fold a simple boolean/string expression to a Python value.
+def visibility_as_bool(expr):
+    """Rewrite a visibility expression's outputs ("visible"/"none") to booleans,
+    giving the equivalent per-feature "show" condition."""
+    if isinstance(expr, str):
+        return VISIBILITY_BOOL[expr]
+    if isinstance(expr, list) and expr and expr[0] == "case":
+        out = ["case"]
+        for i in range(1, len(expr) - 1, 2):
+            out += [expr[i], visibility_as_bool(expr[i + 1])]
+        return out + [visibility_as_bool(expr[-1])]
+    raise SystemExit(f"unsupported visibility expression: {expr}")
 
-    Handles the subset produced by resolve_expr after global-state substitution:
-    all/any/! with boolean literals, and case with constant conditions.
-    Returns the expression unchanged when it cannot be fully evaluated.
+
+def visibility_to_filter(layer):
+    """Move a visibility expression into the layer filter.
+
+    maplibre-native requires layout.visibility to be a literal "visible"/"none",
+    but evaluates global-state in filters. Upstream gates most layers on options
+    (tracks, stations, lifecycle, date, ...) through visibility, so moving the gate
+    keeps those options live: switching one needs no style reload.
     """
-    if not isinstance(expr, list) or not expr:
-        return expr
-    op = expr[0]
-    if op == "all":
-        results = [_eval_const(e) for e in expr[1:]]
-        if all(isinstance(r, bool) for r in results):
-            return all(results)
-    elif op == "any":
-        results = [_eval_const(e) for e in expr[1:]]
-        if all(isinstance(r, bool) for r in results):
-            return any(results)
-    elif op == "!" and len(expr) == 2:
-        inner = _eval_const(expr[1])
-        if isinstance(inner, bool):
-            return not inner
-    elif op == "case":
-        i = 1
-        while i < len(expr) - 1:
-            cond = _eval_const(expr[i])
-            if cond is True:
-                return _eval_const(expr[i + 1])
-            if cond is False:
-                i += 2
-                continue
-            return expr  # non-constant condition; give up
-        return _eval_const(expr[-1])
-    return expr
-
-
-def evaluate_visibility_expressions(layers):
-    """Drop layers whose visibility evaluates to 'none'; fix remaining expressions.
-
-    maplibre-native requires visibility to be a literal "visible" or "none".
-    Layers produced by resolve_expr may have residual case/all expressions.
-    Constant-fold them: layers that are provably invisible are dropped outright;
-    layers with a non-constant expression are conservatively kept as "visible".
-    """
-    result = []
-    for layer in layers:
-        vis = layer.get("layout", {}).get("visibility")
-        if isinstance(vis, list):
-            evaluated = _eval_const(vis)
-            if evaluated == "none":
-                continue
-            layer["layout"]["visibility"] = "visible"
-        result.append(layer)
-    return result
+    layout = layer.get("layout")
+    if not isinstance(layout, dict) or not isinstance(layout.get("visibility"), list):
+        return
+    show = resolve_expr(visibility_as_bool(layout["visibility"]))
+    layout["visibility"] = "none" if show is False else "visible"
+    if isinstance(show, bool):
+        return
+    existing = layer.get("filter")
+    layer["filter"] = show if existing is None else ["all", existing, show]
 
 
 def split_data_dasharray(layers):
@@ -359,9 +402,10 @@ def apply_native_compat(style):
         if isinstance(layer.get("filter"), list):
             layer["filter"] = rewrite_null_comparisons(layer["filter"])
         replace_overlap_properties(layer)
-    style["layers"] = evaluate_visibility_expressions(
-        split_data_dasharray(style["layers"])
-    )
+    style["layers"] = [
+        layer for layer in split_data_dasharray(style["layers"])
+        if layer.get("layout", {}).get("visibility") != "none"
+    ]
     prune_unreferenced_sources(style)
 
 
@@ -372,10 +416,9 @@ def resolve_expr(expr):
 
     op = expr[0]
 
-    # global-state → return the default value
-    if op == "global-state" and len(expr) >= 2:
-        key = expr[1]
-        return GLOBAL_STATE_DEFAULTS.get(key, None)
+    # global-state → keep: native evaluates it, so options switch live
+    if op == "global-state":
+        return expr
 
     # feature-state → always return the default (false for hover)
     if op == "feature-state":
@@ -422,12 +465,39 @@ def resolve_expr(expr):
                 return a
         return ["boolean"] + resolved_args
 
-    # match → resolve the match key and all values
+    # match → resolve the input and branches; fold to one branch on a constant input
     if op == "match":
-        resolved = ["match", resolve_expr(expr[1])]
-        for item in expr[2:]:
-            resolved.append(resolve_expr(item))
-        return resolved
+        inp = resolve_expr(expr[1])
+        branches = [resolve_expr(item) for item in expr[2:]]
+        if isinstance(inp, (list, dict)):
+            return ["match", inp] + branches
+        for label, value in zip(branches[:-1:2], branches[1:-1:2]):
+            if inp in (label if isinstance(label, list) else [label]):
+                return value
+        return branches[-1]
+
+    # in → fold membership when the needle and the list are both constant
+    if op == "in" and len(expr) == 3:
+        needle = resolve_expr(expr[1])
+        hay = resolve_expr(expr[2])
+        items = hay[1] if isinstance(hay, list) and len(hay) == 2 and hay[0] == "literal" else hay
+        if not isinstance(needle, (list, dict)) and isinstance(items, list) \
+                and not any(isinstance(x, (list, dict)) for x in items):
+            return needle in items
+        return ["in", needle, hay]
+
+    # all / any → drop identity constants, short-circuit on the absorbing one
+    if op in ("all", "any"):
+        absorbing = op == "any"
+        args = []
+        for arg in (resolve_expr(a) for a in expr[1:]):
+            if arg is absorbing:
+                return absorbing
+            if not isinstance(arg, bool):
+                args.append(arg)
+        if not args:
+            return not absorbing
+        return args[0] if len(args) == 1 else [op] + args
 
     # == → resolve both sides, evaluate if both are constants
     if op == "==" and len(expr) == 3:
@@ -462,94 +532,113 @@ def resolve_dict(d):
     return result
 
 
+def is_overlay_source(name, src):
+    """Whether a source carries ORM overlay data Turnout can serve."""
+    if src.get("type") == "raster-dem":
+        return False  # hillshade
+    tiles = (src.get("tiles") or [""])[0]
+    if name == "openhistoricalmap" or "openhistoricalmap.org" in tiles:
+        return False
+    if src.get("type") == "geojson":
+        return False  # search / route results the website fills at runtime
+    return True
+
+
+def resolve_sources(style):
+    """Drop sources Turnout does not serve and inline each vector source's
+    TileJSON so its tiles are absolute URLs."""
+    sources = style["sources"]
+    for name in [n for n, s in sources.items() if not is_overlay_source(n, s)]:
+        del sources[name]
+    for src in sources.values():
+        url = src.pop("url", "")
+        if url:
+            tj = fetch_json(BASE_URL + url if url.startswith("/") else url)
+            src["tiles"] = tj["tiles"]
+            for key in ("minzoom", "maxzoom"):
+                if key in tj:
+                    src[key] = tj[key]
+        src["tiles"] = [BASE_URL + t if t.startswith("/") else t for t in src.get("tiles", [])]
+        # Upstream tags some sources `encoding: mlt`, but the endpoints serve MVT.
+        src.pop("encoding", None)
+
+
+def resolve_sprites(style):
+    sprite = style.get("sprite")
+    if isinstance(sprite, list):
+        for s in sprite:
+            if isinstance(s, dict) and s.get("url", "").startswith("/"):
+                s["url"] = BASE_URL + s["url"]
+    elif isinstance(sprite, str) and sprite.startswith("/"):
+        style["sprite"] = BASE_URL + sprite
+
+
+def bundled_fontstack(stack):
+    """Map a text-font value to the bundled glyph fontstack it renders with."""
+    if isinstance(stack, list) and stack and stack[0] in ("case", "match", "coalesce", "step"):
+        # Native treats expression op names as font names; use the fallback.
+        fallback = stack[-1]
+        stack = fallback[1] if isinstance(fallback, list) and fallback[0] == "literal" else fallback
+    head = stack[0] if isinstance(stack, list) and stack else None
+    if head in BUNDLED_FONTS.values():
+        return [head]
+    if head not in BUNDLED_FONTS:
+        raise SystemExit(f"no bundled glyphs for font stack {stack}; add it to BUNDLED_FONTS")
+    return [BUNDLED_FONTS[head]]
+
+
+def resolve_layer(layer):
+    layer = copy.deepcopy(layer)
+    for section in ("paint", "layout"):
+        if section in layer:
+            layer[section] = resolve_dict(layer[section])
+    if "filter" in layer:
+        layer["filter"] = resolve_expr(layer["filter"])
+    visibility_to_filter(layer)
+    layout = layer.get("layout", {})
+    if "text-font" in layout:
+        layout["text-font"] = bundled_fontstack(layout["text-font"])
+    return layer
+
+
+def is_overlay_layer(layer, sources):
+    if layer.get("type") in ("background", "hillshade"):
+        return False
+    if "source" in layer and layer["source"] not in sources:
+        return False
+    if layer.get("source-layer") in BASEMAP_SOURCE_LAYERS:
+        return False
+    return layer.get("filter") is not False and layer.get("layout", {}).get("visibility") != "none"
+
+
 def main():
-    with open(INPUT) as f:
-        style = json.load(f)
+    if len(sys.argv) > 1:
+        with open(sys.argv[1]) as f:
+            style = json.load(f)
+    else:
+        style = fetch_json(STYLE_URL)
+    upstream_layers = len(style["layers"])
 
-    # Resolve source URLs
-    for name, src in style.get("sources", {}).items():
-        url = src.get("url", "")
-        if url.startswith(BASE_URL + "/"):
-            # Inline TileJSON discovery: replace url with tiles/minzoom/maxzoom
-            tj = fetch_tilejson(url)
-            del src["url"]
-            src["tiles"] = [(BASE_URL + t if t.startswith("/") else t) for t in tj["tiles"]]
-            if "minzoom" in tj:
-                src["minzoom"] = tj["minzoom"]
-            if "maxzoom" in tj:
-                src["maxzoom"] = tj["maxzoom"]
-        elif url.startswith("/"):
-            src["url"] = BASE_URL + url
-        if "tiles" in src:
-            src["tiles"] = [
-                (BASE_URL + t if t.startswith("/") else t) for t in src["tiles"]
-            ]
-
-    # Resolve sprite URLs
-    if "sprite" in style:
-        if isinstance(style["sprite"], list):
-            for s in style["sprite"]:
-                if isinstance(s, dict) and "url" in s and s["url"].startswith("/"):
-                    s["url"] = BASE_URL + s["url"]
-        elif isinstance(style["sprite"], str) and style["sprite"].startswith("/"):
-            style["sprite"] = BASE_URL + style["sprite"]
-
-    # Resolve glyph URL
-    if "glyphs" in style and style["glyphs"].startswith("/"):
-        style["glyphs"] = BASE_URL + style["glyphs"]
-
-    # Resolve expressions in all layers
-    resolved_layers = []
-    for layer in style["layers"]:
-        layer = copy.deepcopy(layer)
-        if "paint" in layer:
-            layer["paint"] = resolve_dict(layer["paint"])
-        if "layout" in layer:
-            layer["layout"] = resolve_dict(layer["layout"])
-        if "filter" in layer:
-            layer["filter"] = resolve_expr(layer["filter"])
-        resolved_layers.append(layer)
-
-    # Resolve text-font expressions to static fallback values.
-    # maplibre-native interprets expression operator names (e.g. "case") as font
-    # names, causing 404 font requests that hang the renderer on macOS.
-    for layer in resolved_layers:
-        tf = layer.get("layout", {}).get("text-font")
-        if isinstance(tf, list) and len(tf) > 0 and isinstance(tf[0], str) and tf[0] in ("case", "match", "coalesce", "step"):
-            layer["layout"]["text-font"] = tf[-1] if isinstance(tf[-1], list) and tf[-1][0] == "literal" else ["OpenRailwayMap-Bold"]
-            if isinstance(layer["layout"]["text-font"], list) and layer["layout"]["text-font"][0] == "literal":
-                layer["layout"]["text-font"] = layer["layout"]["text-font"][1]
-
-    # Remove layers that resolve to display:none
-    final_layers = []
-    for layer in resolved_layers:
-        vis = layer.get("layout", {}).get("visibility")
-        if vis == "none":
-            continue
-        final_layers.append(layer)
-
-    style["layers"] = final_layers
-
+    resolve_sources(style)
+    resolve_sprites(style)
+    style["glyphs"] = GLYPHS_URL
+    state = style.setdefault("state", {})
+    for key, value in STATE_OVERRIDES.items():
+        if key in state:
+            state[key]["default"] = value
+    state[LEVELS_KEY] = {"default": LEVEL_BANDS}
+    layers = (resolve_layer(layer) for layer in style["layers"])
+    style["layers"] = [with_level_filter(layer) for layer in layers
+                       if is_overlay_layer(layer, style["sources"])]
     apply_native_compat(style)
 
-    # Write output
-    with open(OUTPUT, "w") as f:
-        json.dump(style, f, separators=(",", ":"))
-
-    print(f"Input: {len(json.load(open(INPUT))['layers'])} layers")
-    print(f"Output: {len(style['layers'])} layers")
-    print(f"Saved to {OUTPUT} ({len(open(OUTPUT).read())} bytes)")
-
-    # Verify no unsupported expressions remain
-    remaining = set()
-    s = json.dumps(style)
-    for expr in ["global-state", "feature-state", "interpolate-hcl"]:
-        if expr in s:
-            remaining.add(expr)
-    if remaining:
-        print(f"WARNING: Still contains: {remaining}")
-    else:
-        print("Clean: no unsupported expressions remain")
+    s = json.dumps(style, separators=(",", ":"))
+    leftovers = [e for e in ("feature-state", "interpolate-hcl") if e in s]
+    if leftovers:
+        raise SystemExit(f"unsupported expressions remain: {leftovers}")
+    OUTPUT.write_text(s)
+    print(f"{upstream_layers} upstream layers -> {len(style['layers'])} layers, "
+          f"{len(style['sources'])} sources: {OUTPUT} ({len(s)} bytes)")
 
 
 if __name__ == "__main__":

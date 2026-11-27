@@ -2,10 +2,28 @@ use leptos::{wasm_bindgen, component, view, IntoView, create_signal, create_effe
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+/// Mirror of the backend `NetworkSettings` — features that automatically contact
+/// external servers. Nested under `network` on the wire (not flattened, so
+/// `serde_wasm_bindgen` serializes it as a plain object, not an ES `Map`).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct NetworkSettings {
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
+    #[serde(default = "default_true")]
+    pub apple_auto_refresh: bool,
+    #[serde(default = "default_true")]
+    pub crash_reporting: bool,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self { check_for_updates: true, apple_auto_refresh: true, crash_reporting: true }
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub mods_dir_override: Option<String>,
-    pub check_for_updates: bool,
     pub map_theme: String,
     #[serde(default = "default_overpass_timeout")]
     pub overpass_timeout: u32,
@@ -17,33 +35,56 @@ pub struct Settings {
     pub apple_map_version: Option<String>,
     #[serde(default)]
     pub apple_sat_version: Option<String>,
-    #[serde(default = "default_true")]
-    pub apple_auto_refresh: bool,
     #[serde(default)]
     pub orm_base_url: Option<String>,
+    #[serde(default)]
+    pub gpu_adapter: Option<String>,
+    #[serde(default)]
+    pub tutorial_completed: bool,
+    #[serde(default = "default_orm_controls")]
+    pub orm_controls: String,
+    #[serde(default)]
+    pub network: NetworkSettings,
 }
 
 fn default_overpass_timeout() -> u32 { 60 }
 fn default_true() -> bool { true }
+fn default_orm_controls() -> String { ORM_CONTROLS[0].0.to_string() }
+
+/// Rail overlay control layouts `(id, label)`; the first is the default.
+pub const ORM_CONTROLS: &[(&str, &str)] =
+    &[("toolbar", "Toolbar"), ("presets", "Presets"), ("both", "Presets and toolbar")];
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             mods_dir_override: None,
-            check_for_updates: true,
             map_theme: "system".to_string(),
             overpass_timeout: 60,
             type_speed_overrides: std::collections::HashMap::new(),
             apple_access_key: None,
             apple_map_version: None,
             apple_sat_version: None,
-            apple_auto_refresh: true,
             orm_base_url: None,
+            gpu_adapter: None,
+            tutorial_completed: false,
+            orm_controls: default_orm_controls(),
+            network: NetworkSettings::default(),
         }
     }
 }
 
-const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
+/// One GPU the app can render on, from `list_gpu_adapters`.
+#[derive(Clone, serde::Deserialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub backend: String,
+    pub kind: String,
+    #[serde(rename = "isSoftware")]
+    pub is_software: bool,
+}
+
+const DEFAULT_ORM_BASE: &str = "https://orm.sorlie.io";
 
 /// Settings-window auto-fit geometry: fixed width, content-height padding, and a
 /// ceiling so a long panel scrolls rather than growing off-screen.
@@ -93,6 +134,16 @@ async fn save_settings(settings: &Settings) -> Result<(), String> {
     crate::tauri::set_settings(&args).await
 }
 
+/// Persist that the first-launch tutorial has been finished, preserving every
+/// other stored setting.
+pub async fn mark_tutorial_completed() {
+    let mut settings = load_settings().await;
+    settings.tutorial_completed = true;
+    if let Err(e) = save_settings(&settings).await {
+        crate::tauri::report_error("save settings (tutorial completed)", &e);
+    }
+}
+
 /// Returns true if this webview is the settings window.
 pub fn is_settings_window() -> bool {
     let window = web_sys::window().expect("window");
@@ -132,6 +183,10 @@ pub fn AppSettings() -> impl IntoView {
     let (apple_sat_ver, set_apple_sat_ver) = create_signal::<Option<String>>(None);
     let (apple_auto, set_apple_auto) = create_signal(true);
     let (orm_base, set_orm_base) = create_signal::<Option<String>>(None);
+    let (gpu_adapter, set_gpu_adapter) = create_signal::<Option<String>>(None);
+    let (crash_reports, set_crash_reports) = create_signal(true);
+    let (orm_controls, set_orm_controls) = create_signal(default_orm_controls());
+    let (gpus, set_gpus) = create_signal::<Vec<GpuInfo>>(Vec::new());
     let (apple_refresh_status, set_apple_refresh_status) = create_signal(String::new());
     let (status, set_status) = create_signal(String::new());
     let (app_version, set_app_version) = create_signal(String::new());
@@ -143,15 +198,23 @@ pub fn AppSettings() -> impl IntoView {
         spawn_local(async move {
             let settings = load_settings().await;
             set_mods_dir.set(settings.mods_dir_override);
-            set_check_updates.set(settings.check_for_updates);
+            set_check_updates.set(settings.network.check_for_updates);
             set_theme.set(settings.map_theme);
             set_timeout.set(settings.overpass_timeout);
             set_speed_overrides.set(settings.type_speed_overrides);
             set_apple_key.set(settings.apple_access_key);
             set_apple_map_ver.set(settings.apple_map_version);
             set_apple_sat_ver.set(settings.apple_sat_version);
-            set_apple_auto.set(settings.apple_auto_refresh);
+            set_apple_auto.set(settings.network.apple_auto_refresh);
             set_orm_base.set(settings.orm_base_url);
+            set_gpu_adapter.set(settings.gpu_adapter);
+            set_crash_reports.set(settings.network.crash_reporting);
+            set_orm_controls.set(settings.orm_controls);
+            if let Ok(js) = crate::tauri::list_gpu_adapters().await
+                && let Ok(list) = serde_wasm_bindgen::from_value::<Vec<GpuInfo>>(js)
+            {
+                set_gpus.set(list);
+            }
             set_loaded.set(true);
             fit_window_to_content();
 
@@ -176,6 +239,9 @@ pub fn AppSettings() -> impl IntoView {
         let asv = apple_sat_ver.get();
         let auto = apple_auto.get();
         let orm = orm_base.get();
+        let gpu = gpu_adapter.get();
+        let crash = crash_reports.get();
+        let controls = orm_controls.get();
         if !loaded.get() { return; }
 
         if let Some(handle) = save_timer.get_value() {
@@ -184,15 +250,23 @@ pub fn AppSettings() -> impl IntoView {
         let cb = Closure::once(move || {
             let settings = Settings {
                 mods_dir_override: mods,
-                check_for_updates: updates,
                 map_theme: t,
                 overpass_timeout: tout,
                 type_speed_overrides: speeds,
                 apple_access_key: ak,
                 apple_map_version: amv,
                 apple_sat_version: asv,
-                apple_auto_refresh: auto,
                 orm_base_url: orm,
+                gpu_adapter: gpu,
+                // The settings window never completes the tutorial; the backend
+                // preserves a stored `true`, so this can't un-complete it.
+                tutorial_completed: false,
+                orm_controls: controls,
+                network: NetworkSettings {
+                    check_for_updates: updates,
+                    apple_auto_refresh: auto,
+                    crash_reporting: crash,
+                },
             };
             spawn_local(async move {
                 if let Err(e) = save_settings(&settings).await {
@@ -305,6 +379,22 @@ pub fn AppSettings() -> impl IntoView {
             </fieldset>
 
             <fieldset>
+                <legend>"Rail Overlay Controls"</legend>
+                <nav class="theme-options">
+                    {ORM_CONTROLS.iter().map(|&(id, label)| view! {
+                        <button
+                            type="button"
+                            class:active=move || orm_controls.get() == id
+                            on:click=move |_| set_orm_controls.set(id.to_string())
+                        >
+                            {label}
+                        </button>
+                    }).collect_view()}
+                </nav>
+                <p class="hint">"The toolbar sets each overlay option separately. Presets are the original one-click styles, such as Speed and Electrification."</p>
+            </fieldset>
+
+            <fieldset>
                 <legend>"Overpass API"</legend>
                 <label>
                     "Query timeout: "
@@ -342,6 +432,53 @@ pub fn AppSettings() -> impl IntoView {
                     "Where OpenRailwayMap tiles, glyphs and sprites are fetched from. Leave blank to use "
                     {DEFAULT_ORM_BASE}
                     ". Set this to your own server if you self-host the OpenRailwayMap stack."
+                </p>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Rendering GPU"</legend>
+                <label>
+                    "GPU"
+                    <select
+                        prop:value=move || gpu_adapter.get().unwrap_or_default()
+                        on:change=move |ev| {
+                            let v = leptos::event_target_value(&ev);
+                            set_gpu_adapter.set(if v.is_empty() { None } else { Some(v) });
+                        }
+                    >
+                        <option value="">
+                            {move || match gpus.get().iter().find(|g| !g.is_software) {
+                                Some(g) => format!("Auto — {}", g.name),
+                                None => "Auto (best available GPU)".to_string(),
+                            }}
+                        </option>
+                        // A saved GPU that is no longer present (driver change, eGPU
+                        // unplugged) gets its own option so the select shows it —
+                        // labelled "not found" — instead of a blank selection, while
+                        // keeping the preference. The backend falls back to Auto.
+                        {move || {
+                            let list = gpus.get();
+                            gpu_adapter.get()
+                                // Skip empty (its value="" would collide with the Auto option).
+                                .filter(|name| !name.is_empty() && !list.is_empty() && !list.iter().any(|g| &g.name == name))
+                                .map(|name| view! {
+                                    <option value={name.clone()}>{format!("{name} (not found)")}</option>
+                                })
+                        }}
+                        {move || gpus.get().into_iter().map(|g| {
+                            // Show the render backend (Vulkan/Metal) so each row is
+                            // clearly a distinct device+API, not a bare duplicate.
+                            let label = if g.is_software {
+                                format!("{} — {} ({} · software)", g.name, g.backend, g.kind)
+                            } else {
+                                format!("{} — {} ({})", g.name, g.backend, g.kind)
+                            };
+                            view! { <option value={g.name.clone()}>{label}</option> }
+                        }).collect_view()}
+                    </select>
+                </label>
+                <p class="hint">
+                    "Which GPU renders the OpenRailwayMap layers. \"Auto\" avoids software renderers (which peg the CPU and leave the GPU idle). Takes effect after restarting the app."
                 </p>
             </fieldset>
 
@@ -453,6 +590,30 @@ pub fn AppSettings() -> impl IntoView {
                         />
                     </label>
                 })}
+            </fieldset>
+
+            <fieldset>
+                <legend>"Help"</legend>
+                <nav>
+                    <button type="button" on:click=move |_| {
+                        spawn_local(async move {
+                            let _ = crate::tauri::replay_tutorial().await;
+                        });
+                    }>
+                        <i class="fa-solid fa-graduation-cap"></i>
+                        " Replay tutorial"
+                    </button>
+                </nav>
+                <p class="path-display">"Reopens the guided tour in the main window."</p>
+            </fieldset>
+
+            <fieldset>
+                <legend>"Privacy"</legend>
+                <label on:click=move |_| set_crash_reports.update(|v| *v = !*v)>
+                    <i class=move || if crash_reports.get() { "fa-solid fa-square-check" } else { "fa-regular fa-square" }></i>
+                    " Send automatic crash reports"
+                </label>
+                <p class="hint">"Sends anonymous crash and error diagnostics (no personal data) so startup crashes and bugs can be found and fixed. Nothing else is collected."</p>
             </fieldset>
 
             <fieldset>

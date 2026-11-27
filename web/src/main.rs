@@ -12,6 +12,18 @@ mod utils;
 extern "C" {
     fn map_set_theme(theme: &str);
     fn map_on_load(callback: &js_sys::Function);
+    #[wasm_bindgen(js_name = __turnout_report_panic)]
+    fn report_panic(msg: &str);
+}
+
+/// Installs a panic hook that keeps the standard console output and additionally
+/// forwards the panic (message plus `file:line` location) to Sentry. The Sentry
+/// forwarding is a no-op when the plugin global is absent.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        console_error_panic_hook::hook(info);
+        report_panic(&info.to_string());
+    }));
 }
 
 fn setup_theme_handling() {
@@ -45,7 +57,7 @@ fn setup_theme_handling() {
 }
 
 fn main() {
-    console_error_panic_hook::set_once();
+    install_panic_hook();
     mount_to_body(App);
 }
 
@@ -96,8 +108,24 @@ fn App() -> impl IntoView {
     let (overlay_open, set_overlay_open) = create_signal(false);
     // Shared ORM overlay state: the switcher owns the active mode, the overlay
     // drawer owns visibility, and each reads the other's signal.
-    let (orm_style, set_orm_style) = create_signal("standard".to_string());
+    let (orm_tracks, set_orm_tracks) = create_signal("usage".to_string());
     let (orm_visible, set_orm_visible) = create_signal(true);
+
+    // First-launch guided tour: auto-opens until completed, and re-openable from
+    // the settings window via the `start-tutorial` event.
+    let (tour_active, set_tour_active) = create_signal(false);
+    let (tour_replay, set_tour_replay) = create_signal(false);
+    if !is_settings {
+        spawn_local(async move {
+            if !components::app_settings::load_settings().await.tutorial_completed {
+                set_tour_active.set(true);
+            }
+        });
+        tauri::listen_to_events(&["start-tutorial"], move |_| {
+            set_tour_replay.set(true);
+            set_tour_active.set(true);
+        });
+    }
 
     view! {
         <Show when=move || is_settings>
@@ -116,11 +144,7 @@ fn App() -> impl IntoView {
                         set_drawer_open=set_drawer_open
                     />
                     <components::Search />
-                    <components::LayerSwitcher
-                        orm_style=orm_style
-                        set_orm_style=set_orm_style
-                        orm_visible=orm_visible
-                    />
+                    <components::LayerSwitcher set_orm_tracks=set_orm_tracks />
                     <button id="overlay-toggle" on:click=move |_| set_overlay_open.set(!overlay_open.get()) title="Overlays">
                         <i class="fa-solid fa-layer-group"></i>
                     </button>
@@ -143,7 +167,7 @@ fn App() -> impl IntoView {
                     <components::OverlayDrawer
                         open=overlay_open
                         set_open=set_overlay_open
-                        orm_style=orm_style
+                        orm_tracks=orm_tracks
                         orm_visible=orm_visible
                         set_orm_visible=set_orm_visible
                     />
@@ -151,6 +175,14 @@ fn App() -> impl IntoView {
                         open=drawer_open
                         set_open=set_drawer_open
                     />
+                    <Show when=move || tour_active.get()>
+                        <components::Tutorial
+                            set_active=set_tour_active
+                            replay=tour_replay
+                            set_drawer_open=set_drawer_open
+                            set_overlay_open=set_overlay_open
+                        />
+                    </Show>
                 </section>
             </main>
         </Show>

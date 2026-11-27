@@ -1,6 +1,6 @@
 [package]
 name = "turnout-tauri"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 
 [lints]
@@ -8,11 +8,12 @@ workspace = true
 
 [dependencies]
 turnout-core = { path = "../core" }
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-store = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs-next = "2.0"
@@ -24,14 +25,27 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 tiny-skia = "0.11"
 futures = "0.3"
-lru = "0.12"
+# Used only to enumerate the machine's GPUs for the settings picker (list_gpus).
+# NOT the maplibre `wgpu` backend feature (that upstream backend does not build);
+# the wgpu crate on its own reads adapter names fine.
+wgpu = "29.0.0"
+lru = "0.16.3"
 quick-xml = "0.37"
 tokio = { version = "1", features = ["net"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
-maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "aa183dd", features = ["json", "tokio"] }
-mvt = "0.13.0"
+maplibre_native = { git = "https://github.com/SuperManifolds/maplibre-native-rs", rev = "0d940d8", features = ["json", "tokio"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Crash reporting. rustls transport only — no native-tls/openssl, matching the
+# app's rustls-only reqwest. tauri-plugin-sentry re-exports sentry-rust-minidump
+# (native crash capture) and injects @sentry/browser into the webview.
+sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "reqwest", "rustls", "release-health", "tracing", "logs"] }
+tauri-plugin-sentry = "0.5"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk"] }
+
+# Read the Vulkan driver (ICD) and implicit-layer registry for crash diagnostics.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

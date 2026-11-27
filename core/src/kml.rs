@@ -133,7 +133,9 @@ fn parse_kmz_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)
             .map_err(|e| CoreError::Parse { format: "kml", detail: e.to_string() })?;
-        let name = file.name().to_string();
+        let name = file.name()
+            .map_err(|e| CoreError::Parse { format: "kml", detail: e.to_string() })?
+            .into_owned();
         let ext = std::path::Path::new(&name)
             .extension()
             .and_then(|e| e.to_str())

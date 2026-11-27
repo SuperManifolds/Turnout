@@ -169,12 +169,25 @@ pub(super) async fn fetch_xyz_tile(
         .replace("{y}", &y.to_string())
         .replace("{q}", &xyz_to_quadkey(z, x, y));
 
-    let resp = server_core::send_with_retry(|| {
+    let resp = match server_core::send_with_retry(|| {
         client.get(&url).header("User-Agent", "Mozilla/5.0")
     })
     .await
-    .map_err(|e| tracing::warn!("XYZ fetch for {url} gave up: {e:?}"))
-    .ok()?;
+    {
+        Ok(resp) => resp,
+        // Apple rejects an expired access key with 403. Nudge the token refresher
+        // so the next render picks up a fresh key (the background timer alone
+        // leaves a stale window after sleep or a missed refresh).
+        Err(server_core::FetchError::Forbidden) if url.contains("apple-mapkit") => {
+            crate::apple_token::request_refresh();
+            tracing::warn!("Apple tile 403 (stale access key); requested a token refresh");
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!("XYZ fetch for {url} gave up: {e:?}");
+            return None;
+        }
+    };
 
     Some(resp.bytes().await.ok()?.to_vec())
 }

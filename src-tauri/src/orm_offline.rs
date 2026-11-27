@@ -13,27 +13,29 @@ use tauri::{Emitter, Manager};
 use crate::error::{CommandError, CommandResult};
 use crate::mbtiles::{DownloadProgress, ProgressEvent};
 use crate::server_core::{USER_AGENT, UnpoisonExt};
+use crate::settings::STYLE_SOURCE_BASE;
 
 /// Union of every distinct MVT source layer referenced by the composite
-/// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs across all seven bundled
-/// styles. Downloaded together into a single combined-blob `MBTiles`.
+/// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs of the bundled styles.
+/// Downloaded together into a single combined-blob `MBTiles`.
 const ORM_LAYERS: &[&str] = &[
     "electrification_catenary",
     "electrification_railway_line_low",
-    "electrification_railway_symbols",
-    "electrification_signals",
     "electrification_substation",
+    "level_crossings_grouped",
+    "level_crossings_grouped_buffered",
     "operator_railway_line_low",
-    "operator_railway_symbols",
+    "points_of_interest",
+    "points_of_interest_areas",
     "railway_line_high",
+    "railway_signals",
     "railway_text_km",
     "route_railway_line_low",
     "signals_railway_line_low",
-    "signals_railway_line_low_construction",
-    "signals_railway_signals",
     "signals_signal_boxes",
     "speed_railway_line_low",
-    "speed_railway_signals",
+    "standard_interlocking",
+    "standard_interlocking_text",
     "standard_railway_grouped_station_areas",
     "standard_railway_grouped_stations",
     "standard_railway_line_low",
@@ -41,11 +43,9 @@ const ORM_LAYERS: &[&str] = &[
     "standard_railway_platforms",
     "standard_railway_stop_positions",
     "standard_railway_switch_ref",
-    "standard_railway_symbols",
     "standard_railway_text_stations",
     "standard_railway_text_stations_low",
     "standard_railway_text_stations_med",
-    "standard_railway_turntables",
     "standard_station_entrances",
     "track_railway_line_low",
 ];
@@ -107,6 +107,14 @@ pub async fn download_orm_offline(
 
     let orm_base = crate::settings::resolve_orm_base(crate::settings::load(&app).orm_base_url.as_deref());
 
+    // Every fetch targets `orm_base`, whose tile endpoints 403 requests without a
+    // `Referer` header (see `orm_net::referer_for`). Set it once as a default so
+    // tiles, sprites and fonts all carry it.
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    if let Some(referer) = crate::orm_net::referer_for(&orm_base).and_then(|r| r.parse().ok()) {
+        default_headers.insert(reqwest::header::REFERER, referer);
+    }
+
     // HTTP/1.1 with a warm connection pool, NOT HTTP/2: the tile endpoint is
     // latency-bound, and a pool of independent connections parallelizes far better
     // than HTTP/2 multiplexing over a single connection (measured ~1.5x faster, and
@@ -115,6 +123,7 @@ pub async fn download_orm_offline(
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .user_agent(USER_AGENT)
+        .default_headers(default_headers)
         .http1_only()
         .pool_max_idle_per_host(CONCURRENT_REQUESTS)
         .build()
@@ -271,7 +280,15 @@ pub async fn download_orm_offline(
     // Stop fetching, then close the channel so the writer flushes its open transaction.
     drop(stream);
     drop(tx);
-    let conn = writer.join().map_err(|_| CommandError::Other("Tile writer thread panicked".to_string()))?;
+    // Join only after the sender is dropped, so this never deadlocks. On panic the
+    // process-global sentry panic hook has already captured it with a backtrace at
+    // panic time, so log the join failure at warn (a breadcrumb, not a second
+    // backtrace-less issue) before surfacing it to the caller as an error.
+    let conn = writer.join().map_err(|e| {
+        let msg = crate::orm_tiles::extract_panic_message(&e);
+        tracing::warn!("tile writer thread panicked: {msg}");
+        CommandError::Other(format!("Tile writer thread panicked: {msg}"))
+    })?;
     finalize_vector_mbtiles(&conn).map_err(|e| CommandError::Io(format!("Failed to finalize MBTiles: {e}")))?;
     emit_progress(&app, &progress);
 
@@ -445,7 +462,8 @@ fn rewrite_offline_style(style: &mut Value, orm_source: &Value, sprite: &Value, 
     style["glyphs"] = glyphs.clone();
 }
 
-/// True for vector sources whose tiles are served from `openrailwaymap.app`.
+/// True for vector sources whose tiles are on the bundled styles' baked-in
+/// [`STYLE_SOURCE_BASE`] host.
 fn is_orm_vector_source(src: &Value) -> bool {
     src.get("type").and_then(Value::as_str) == Some("vector")
         && src
@@ -453,14 +471,14 @@ fn is_orm_vector_source(src: &Value) -> bool {
             .and_then(Value::as_array)
             .and_then(|a| a.first())
             .and_then(Value::as_str)
-            .is_some_and(|t| t.contains("openrailwaymap.app"))
+            .is_some_and(|t| t.starts_with(STYLE_SOURCE_BASE))
 }
 
 /// Extracts the comma-separated layer path (the segment between
-/// `openrailwaymap.app/` and `/{z}`) from an ORM vector source's tile template.
+/// `<STYLE_SOURCE_BASE>/` and `/{z}`) from an ORM vector source's tile template.
 fn orm_layer_segment(src: &Value) -> Option<&str> {
     let tmpl = src.get("tiles")?.as_array()?.first()?.as_str()?;
-    let after_host = tmpl.split_once("openrailwaymap.app/")?.1;
+    let after_host = tmpl.strip_prefix(STYLE_SOURCE_BASE)?.strip_prefix('/')?;
     Some(after_host.split_once("/{z}")?.0)
 }
 
@@ -826,4 +844,15 @@ pub async fn download_orm_tiles(
     }
 
     result.map(|p| p.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orm_layers_match_the_bundled_styles() {
+        // derive_layer_zoom_ranges asserts the derived set equals ORM_LAYERS.
+        assert_eq!(derive_layer_zoom_ranges().len(), ORM_LAYERS.len());
+    }
 }

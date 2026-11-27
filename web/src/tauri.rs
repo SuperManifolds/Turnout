@@ -5,11 +5,39 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = __turnout_report_error)]
+    fn report_error_js(context: &str, detail: &str);
+    #[wasm_bindgen(js_name = __turnout_breadcrumb)]
+    fn breadcrumb_js(category: &str, message: &str, level: &str);
+}
+
+/// Forward a non-fatal command/IPC failure to Sentry as an error-level message.
+/// A no-op when the Sentry plugin global is absent (plain browser / dev).
+pub fn report_error(context: &str, detail: &str) {
+    report_error_js(context, detail);
+}
+
+/// Record a Sentry breadcrumb — a step in the trail attached to the next error,
+/// so a frontend crash report shows the actions that led up to it. A no-op when
+/// the Sentry plugin global is absent (plain browser / dev).
+pub fn breadcrumb(category: &str, message: &str) {
+    breadcrumb_js(category, message, "info");
+}
+
 pub async fn invoke(cmd: &str, args: &JsValue) -> Result<JsValue, String> {
     let invoke_fn = tauri_namespace_fn("core", "invoke").ok_or("Tauri not available")?;
     let promise = invoke_fn.call2(&JsValue::NULL, &cmd.into(), args)
         .map_err(|e| format!("{e:?}"))?;
-    await_promise(promise).await
+    let result = await_promise(promise).await;
+    // Leave a warning breadcrumb for a failed command so the trail before a later
+    // crash shows which IPC calls errored — most callers propagate or swallow the
+    // error, making these invisible otherwise. Successes aren't recorded (noise).
+    if let Err(detail) = &result {
+        breadcrumb_js("invoke", &format!("{cmd} failed: {detail}"), "warning");
+    }
+    result
 }
 
 /// Invoke a command whose arguments are an args object, taking ownership so the
@@ -141,6 +169,25 @@ pub async fn get_settings() -> Result<JsValue, String> {
     invoke("get_settings", &JsValue::NULL).await
 }
 
+/// Sets one ORM display option (e.g. `platforms` = "plain"/"none", `pois` = a list).
+/// The backend re-renders against it; the caller reloads the ORM layer afterwards.
+pub async fn set_orm_option(key: &str, value: JsValue) -> Result<(), String> {
+    let args = js_sys::Object::new();
+    set(&args, "key", key);
+    let _ = js_sys::Reflect::set(&args, &JsValue::from_str("value"), &value);
+    invoke_obj("set_orm_option", args).await?;
+    Ok(())
+}
+
+/// The current ORM option values, for the UI to initialize its toggles.
+pub async fn get_orm_options() -> Result<JsValue, String> {
+    invoke("get_orm_options", &JsValue::NULL).await
+}
+
+pub async fn list_gpu_adapters() -> Result<JsValue, String> {
+    invoke("list_gpu_adapters", &JsValue::NULL).await
+}
+
 pub async fn set_settings(settings: &JsValue) -> Result<(), String> {
     let wrapper = js_sys::Object::new();
     set(&wrapper, "settings", settings.clone());
@@ -150,6 +197,33 @@ pub async fn set_settings(settings: &JsValue) -> Result<(), String> {
 pub async fn pick_folder() -> Option<String> {
     let result = invoke("pick_folder", &JsValue::NULL).await.ok()?;
     result.as_string()
+}
+
+pub async fn open_external_url(url: &str) -> Result<(), String> {
+    let wrapper = js_sys::Object::new();
+    set(&wrapper, "url", url);
+    invoke_obj("open_external_url", wrapper).await.map(|_| ())
+}
+
+pub async fn replay_tutorial() -> Result<(), String> {
+    invoke("replay_tutorial", &JsValue::NULL).await.map(|_| ())
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NimbyLaunchSetup {
+    pub os: String,
+    #[serde(default)]
+    pub launch_options: Option<String>,
+    #[serde(default)]
+    pub nimby_detected: bool,
+}
+
+/// The Steam Launch Options string (and NIMBY-detection result) for auto-launching
+/// Turnout with NIMBY Rails. `None` outside Tauri (e.g. the browser dev server).
+pub async fn nimby_launch_setup() -> Option<NimbyLaunchSetup> {
+    let result = invoke("nimby_launch_setup", &JsValue::NULL).await.ok()?;
+    from_js(result)
 }
 
 pub async fn blueprint_exists(name: &str) -> bool {
@@ -337,6 +411,7 @@ pub struct ArcGisServiceInfo {
 /// The empty overlay status returned when an infallible overlay command fails.
 fn overlay_failed() -> OverlayStatus {
     web_sys::console::warn_1(&"overlay command failed".into());
+    report_error("overlay command", "returned no status");
     OverlayStatus { groups: Vec::new() }
 }
 
@@ -584,39 +659,6 @@ pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
     invoke_obj("set_tile_download_paused", args).await.map(|_| ())
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorLayerLevel {
-    pub level: i32,
-    pub layer_name: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorLayersInfo {
-    pub tilejson_url: String,
-    pub tile_url: String,
-    pub levels: Vec<VectorLayerLevel>,
-}
-
-pub async fn start_orm_vector_layers(
-    south: f64, west: f64, north: f64, east: f64, timeout_secs: u32,
-) -> Result<VectorLayersInfo, String> {
-    let args = js_sys::Object::new();
-    set(&args, "south", south);
-    set(&args, "west", west);
-    set(&args, "north", north);
-    set(&args, "east", east);
-    set(&args, "timeoutSecs", f64::from(timeout_secs));
-    let result = invoke_obj("start_orm_vector_layers", args).await?;
-    from_js(result).ok_or_else(|| "Unexpected response from the tile server".to_string())
-}
-
-pub async fn stop_orm_vector_layers() {
-    let _ = invoke("stop_orm_vector_layers", &JsValue::NULL).await;
-}
-
 pub async fn open_workshop_mod() -> Result<(), String> {
     invoke("open_workshop_mod", &JsValue::NULL).await.map(|_| ())
 }
@@ -639,6 +681,11 @@ pub async fn download_orm_tiles(
 pub async fn get_orm_port() -> Result<u16, String> {
     let result = invoke("get_orm_port", &JsValue::NULL).await?;
     result.as_f64().map(|v| v as u16).ok_or_else(|| "unexpected response".into())
+}
+
+/// The reason ORM (rail overlay) rendering is disabled, or `None` when running.
+pub async fn orm_disabled_reason() -> Option<String> {
+    invoke("orm_disabled_reason", &JsValue::NULL).await.ok().and_then(|v| v.as_string())
 }
 
 pub async fn set_orm_offline(dir: Option<&str>) -> Result<(), String> {

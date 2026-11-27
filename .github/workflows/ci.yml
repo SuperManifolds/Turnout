@@ -6,124 +6,63 @@ on:
   pull_request:
     branches: [main]
 
-# A newer commit on a ref supersedes an in-flight run: back-to-back merges to
-# main no longer race to reserve the same cache keys (one run wins, the other
-# fails to save), and a PR force-push cancels its stale run instead of piling up.
+# A newer commit on a PR cancels its stale run. Runs on main always finish, since
+# main's runs are the only ones that save the build cache (see below): cancelling
+# them on back-to-back merges would leave the cache permanently cold.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
-  # maplibre-native's C++ core (the dominant build cost, ~50 min from scratch on
-  # Windows) is a git dependency compiled from source via cmake into the crate's
-  # OUT_DIR under `target/`. We cache `target/` + the cargo registry so cargo's
+  CARGO_INCREMENTAL: "0"
+  # Line tables keep test backtraces readable while cutting the debug info that
+  # dominates target/ size and link time.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # maplibre-native's C++ core (the dominant build cost, 20-50 min from scratch)
+  # is a git dependency compiled from source via cmake into the crate's OUT_DIR
+  # under `target/`. We cache `target/` + the cargo registry so cargo's
   # build-script fingerprint stays valid and cmake is never re-invoked.
   #
-  # The cache key is scoped to the pinned maplibre rev, NOT the full Cargo.lock:
-  # the exact key includes the lock hash (fast path when deps are unchanged), but
-  # `restore-keys` falls back to the maplibre-rev prefix, so an unrelated
-  # dependency change still restores a `target/` with the C++ core already built
-  # (cargo then rebuilds only the changed crates, ~1 min). maplibre_native's own
-  # build-dir hash depends only on its own deps, so it stays valid across our
-  # edits. Only bumping the maplibre rev forces a true cold rebuild. This replaces
-  # Swatinem/rust-cache, which is exact-match only: any Cargo.lock or toolchain
-  # change missed and rebuilt the core from scratch (~50 min).
+  # The cache key is scoped to the pinned maplibre rev: the exact key includes the
+  # lock hash, and `restore-keys` falls back to the maplibre-rev prefix, so an
+  # unrelated dependency change still restores a `target/` with the C++ core
+  # built. Only bumping the maplibre rev forces a true cold rebuild.
   #
   # `~/.cargo/git` is cached whole (not just `git/db`): on Windows maplibre builds
   # its C/C++ deps via vcpkg INTO the git checkout, and `target/` links against
-  # those libs (libcurl.lib, icu*.lib, …) by absolute path, so restoring `target/`
-  # without the checkout's built libs breaks the link (LNK1181).
-  CARGO_INCREMENTAL: "0"
+  # those libs (libcurl.lib, icu*.lib, ...) by absolute path, so restoring
+  # `target/` without the checkout's built libs breaks the link (LNK1181). The
+  # build script also marks the checkout rerun-if-changed, so it must be present.
+  #
+  # Each lane is ~3 GB and the repo gets 10 GB of cache before the Actions budget
+  # makes it read-only, so only main saves: one lane per OS, with the lane's older
+  # entries deleted right before saving. PRs restore main's lanes (a PR can read
+  # its base branch's caches) but never save, since a PR's cache is visible only
+  # to that PR and would crowd out main's.
+  CACHE_PATHS: |
+    ~/.cargo/registry/index
+    ~/.cargo/registry/cache
+    ~/.cargo/git
+    target
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # Second line: maplibre-native core build deps (compiled from source by maplibre_native's build.rs)
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-            cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev \
-            glslang-dev glslang-tools
-
-      - name: Resolve maplibre rev
-        shell: bash
-        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
-
-      - name: Cache cargo + target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-            target
-          # `-check-` lane, shared with clippy: both are metadata-only. Separate
-          # from the test job's key so its built rlibs aren't clobbered.
-          key: ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-
-
-      - run: cargo check --all-targets
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-          components: clippy
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # Second line: maplibre-native core build deps (compiled from source by maplibre_native's build.rs)
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-            cmake pkg-config libcurl4-openssl-dev libuv1-dev libpng-dev libjpeg-turbo8-dev libwebp-dev libicu-dev libgl1-mesa-dev libegl1-mesa-dev \
-            glslang-dev glslang-tools
-
-      - name: Resolve maplibre rev
-        shell: bash
-        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
-
-      # Shares the `-check-` lane with the check job (same key): both are
-      # metadata-only (`cargo check`/`clippy`), kept separate from the test job's
-      # key so its built rlibs aren't clobbered by this metadata-only target/.
-      - name: Cache cargo + target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-check-mln${{ env.MLN_REV }}-
-
-      - run: cargo clippy --all-targets -- -D warnings
-
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      # Deleting superseded cache entries on main.
+      actions: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest, windows-latest]
+        # Pinned to windows-2022: the windows-latest image (VS18 / CMake 4.4,
+        # rolled out ~2026-08) breaks maplibre-native's vendored-vcpkg bootstrap
+        # ("Downloading vcpkg.exe failed / Access is denied"), failing the mbgl
+        # C++ build before CURL is found. windows-2022 has the toolchain mbgl's
+        # vcpkg build expects.
+        os: [ubuntu-22.04, macos-latest, windows-2022]
     env:
       RUST_BACKTRACE: 1
     steps:
@@ -160,27 +99,64 @@ jobs:
           git config --system core.longpaths true
           if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
-      - name: Resolve maplibre rev
+      - name: Resolve cache key
         shell: bash
-        run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
+        run: |
+          rev=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')
+          echo "CACHE_LANE=${{ runner.os }}-cargo-mln" >> "$GITHUB_ENV"
+          echo "CACHE_PREFIX=${{ runner.os }}-cargo-mln${rev}-" >> "$GITHUB_ENV"
 
-      # The test job owns the base `-cargo-mln` key (check/clippy use a separate
-      # `-check-` lane). On Linux this matters: check/clippy emit dependency
-      # metadata (.rmeta), not codegen (.rlib), so a shared cache would force the
-      # test job to codegen the whole dependency graph (~20 min). macOS/Windows are
-      # unaffected — the test job is the only one on those runners.
-      - name: Cache cargo + target
+      - name: Restore cargo + target
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE_PATHS }}
+          key: ${{ env.CACHE_PREFIX }}${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ env.CACHE_PREFIX }}
+
+      # Point vcpkg's downloads at a stable path and cache it on a rev-independent
+      # key, so the package source tarballs (curl, ICU, ...) survive an mbgl rev
+      # bump, which changes the cargo-cache key above and would otherwise force a
+      # full re-download of every source through the flaky vendored-vcpkg path. The
+      # fork's Get-VendorPackages retry covers a cold-cache/bootstrap blip.
+      - name: Set vcpkg downloads dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "VCPKG_DOWNLOADS=$GITHUB_WORKSPACE/vcpkg-downloads" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg downloads (Windows)
+        if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
+          path: ${{ github.workspace }}/vcpkg-downloads
+          key: ${{ runner.os }}-vcpkg-downloads-v1
+
+      # Clippy runs in the Linux test job so the C++ core is built once per run:
+      # check-mode and test builds share the build script's output. Clippy with
+      # --all-targets covers everything `cargo check --all-targets` does.
+      - name: Clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets -- -D warnings
 
       # turnout-web is a wasm-only frontend crate (no host tests); it is
       # exercised by `trunk build` in the release workflow.
       - run: cargo test --workspace --exclude turnout-web
+
+      - name: Delete superseded cache entries (main)
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_LANE" --limit 100 --json id,key \
+            --jq '.[] | "\(.id) \(.key)"' | while read -r id key; do
+            echo "deleting $key"
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Save cargo + target (main)
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE_PATHS }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -2,7 +2,7 @@ use leptos::{wasm_bindgen, component, view, web_sys, WriteSignal, ReadSignal, In
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-const ORM_DEFAULT_STYLE: &str = "standard";
+const ORM_DEFAULT_STYLE: &str = "orm";
 const MAX_BBOX_AREA_DEG2: f64 = 1.0;
 const BBOX_COLOR: &str = "#4a9eff";
 const BBOX_ERROR_COLOR: &str = "#d32f2f";
@@ -113,9 +113,14 @@ pub fn Map(
             // URL is built from it.
             let cb = Closure::once(move || {
                 spawn_local(async move {
-                    if let Ok(port) = crate::tauri::get_orm_port().await {
-                        map_set_orm_port(port);
-                        map_set_orm_style(ORM_DEFAULT_STYLE);
+                    match crate::tauri::get_orm_port().await {
+                        Ok(port) => {
+                            map_set_orm_port(port);
+                            map_set_orm_style(ORM_DEFAULT_STYLE);
+                        }
+                        Err(err) => {
+                            crate::tauri::report_error("ORM tile server bootstrap", &err);
+                        }
                     }
                 });
             });
@@ -348,7 +353,6 @@ pub fn Map(
     };
 
     let (show_tile_download, set_show_tile_download) = create_signal(false);
-    let (show_vector_layers, set_show_vector_layers) = create_signal(false);
     let (show_name_prompt, set_show_name_prompt) = create_signal(false);
     let (success_message, set_success_message) = create_signal::<Option<String>>(None);
 
@@ -387,10 +391,6 @@ pub fn Map(
                         <i class="fa-solid fa-download"></i>
                         " Download Tiles"
                     </button>
-                    <button on:click=move |_| set_show_vector_layers.update(|v| *v = !*v)>
-                        <i class="fa-solid fa-layer-group"></i>
-                        " Rail Layers"
-                    </button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
@@ -400,12 +400,6 @@ pub fn Map(
                 <super::tile_download::TileDownload
                     bbox=bbox
                     on_close=Callback::new(move |()| set_show_tile_download.set(false))
-                />
-            </Show>
-            <Show when=move || show_vector_layers.get()>
-                <super::vector_layers::VectorLayers
-                    bbox=bbox
-                    on_close=Callback::new(move |()| set_show_vector_layers.set(false))
                 />
             </Show>
             <Show when=move || show_name_prompt.get()>
@@ -456,6 +450,7 @@ async fn do_import(s: f64, w: f64, n: f64, e: f64, name: &str, cached_json: Opti
         Ok(d) => { unlisten(); d }
         Err(err) => {
             unlisten();
+            crate::tauri::report_error("blueprint import", &err);
             set_status.set(format!("Import failed: {err}"));
             return;
         }

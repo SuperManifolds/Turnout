@@ -8,17 +8,41 @@
 //! Sweeps the style's layer count so we can see whether per-render cost scales
 //! with the number of style layers (fixed per-render overhead) or with the
 //! actual geometry drawn.
+//!
+//! `orm-bench levels` instead checks the Levels option: it renders one London
+//! tile with no level band, with only the underground band and with every band,
+//! and exits non-zero unless each render draws more than the one before.
 
 use std::num::NonZeroU32;
 use std::time::Instant;
 
-use maplibre_native::{ImageRendererBuilder, ResourceOptions};
+use maplibre_native::{
+    GlobalStateValue, Image, ImageRenderer, ImageRendererBuilder, RenderingError, ResourceOptions,
+    Tile,
+};
 
-const STYLE: &str = include_str!("../../src-tauri/resources/orm/standard.json");
+const STYLE: &str = include_str!("../../src-tauri/resources/orm/orm.json");
+/// The host `build_orm_style.py` bakes into `STYLE` (the app's `STYLE_SOURCE_BASE`).
+const STYLE_SOURCE_BASE: &str = "https://openrailwaymap.app";
+/// The ORM host the app renders from by default (the app's `DEFAULT_ORM_BASE`).
+/// openrailwaymap.app answers maplibre-native's tile requests with 403.
+const ORM_BASE: &str = "https://orm.sorlie.io";
+/// The bundled SDF glyphs, which the app also loads locally (upstream serves none).
+const GLYPHS_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../src-tauri/resources/orm/glyphs"
+);
 const TILE_SIZE: u32 = 512;
 const CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const WARMUP_PASSES: usize = 2;
 const TIMED_PASSES: usize = 20;
+
+/// The style `global-state` key and band the `levels` check selects
+/// (`turnout_core::orm_levels`).
+const LEVELS_KEY: &str = "levels";
+const UNDERGROUND: &str = "underground";
+/// Central London at z14, where Underground lines run in tunnels.
+const LEVELS_TILE: (u8, u32, u32) = (14, 8186, 5448);
 
 const POINTS: &[(f64, f64, u8)] = &[
     (51.512, 7.463, 13),
@@ -43,9 +67,21 @@ fn tile_xy(lat: f64, lon: f64, z: u8) -> (u32, u32) {
     (x.floor() as u32, y.floor() as u32)
 }
 
-/// Returns `STYLE` with its `layers` array truncated to the first `n` entries.
+/// `STYLE` as the app loads it by default: glyphs from the bundled directory,
+/// tiles and sprites from `ORM_BASE`.
+fn runtime_style() -> String {
+    STYLE
+        .replace(
+            &format!("{STYLE_SOURCE_BASE}/font/"),
+            &format!("file://{GLYPHS_DIR}/"),
+        )
+        .replace(STYLE_SOURCE_BASE, ORM_BASE)
+}
+
+/// Returns the runtime style with its `layers` array truncated to the first `n` entries.
 fn style_with_layers(n: usize) -> (String, usize) {
-    let mut v: serde_json::Value = serde_json::from_str(STYLE).expect("valid style json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&runtime_style()).expect("valid style json");
     let total = v["layers"].as_array().map_or(0, Vec::len);
     if let Some(layers) = v["layers"].as_array_mut() {
         layers.truncate(n);
@@ -53,16 +89,20 @@ fn style_with_layers(n: usize) -> (String, usize) {
     (v.to_string(), total.min(n))
 }
 
-fn bench_style(style: &str, tiles: &[(u8, u32, u32)]) -> (f64, f64, f64) {
+fn tile_renderer() -> ImageRenderer<Tile> {
     let size = NonZeroU32::new(TILE_SIZE).expect("nonzero tile size");
-    let cache = std::env::temp_dir().join("orm-bench-cache.db");
     let opts = ResourceOptions::default()
-        .with_cache_path(cache)
+        .with_cache_path(std::env::temp_dir().join("orm-bench-cache.db"))
         .with_maximum_cache_size(CACHE_BYTES);
-    let mut renderer = ImageRendererBuilder::new()
+    ImageRendererBuilder::new()
         .with_size(size, size)
         .with_resource_options(opts)
-        .build_tile_renderer();
+        .build_tile_renderer()
+        .expect("failed to build tile renderer (no working GPU/Vulkan backend)")
+}
+
+fn bench_style(style: &str, tiles: &[(u8, u32, u32)]) -> (f64, f64, f64) {
+    let mut renderer = tile_renderer();
     renderer.load_style_from_json_str(style);
 
     for _ in 0..WARMUP_PASSES {
@@ -88,7 +128,80 @@ fn bench_style(style: &str, tiles: &[(u8, u32, u32)]) -> (f64, f64, f64) {
     (samples.len() as f64 / wall_s, mean, p50)
 }
 
+/// The number of pixels a rendered tile draws (alpha above zero).
+fn drawn_pixels(img: &Image) -> usize {
+    img.as_image()
+        .as_raw()
+        .chunks_exact(4)
+        .filter(|px| px[3] != 0)
+        .count()
+}
+
+/// Renders `LEVELS_TILE` with the `levels` global-state set to `bands`.
+fn render_levels(
+    renderer: &mut ImageRenderer<Tile>,
+    bands: &[String],
+) -> Result<usize, RenderingError> {
+    renderer
+        .style()
+        .set_global_state(LEVELS_KEY, GlobalStateValue::StringList(bands.to_vec()));
+    let (z, x, y) = LEVELS_TILE;
+    renderer.render_tile(z, x, y).map(|img| drawn_pixels(&img))
+}
+
+/// The drawn pixels of `LEVELS_TILE` with no band, with only the underground
+/// band and with every band.
+fn level_counts(
+    renderer: &mut ImageRenderer<Tile>,
+    all_bands: &[String],
+) -> Result<(usize, usize, usize), RenderingError> {
+    let none = render_levels(renderer, &[])?;
+    let underground = render_levels(renderer, &[UNDERGROUND.to_owned()])?;
+    let all = render_levels(renderer, all_bands)?;
+    Ok((none, underground, all))
+}
+
+/// Whether the Levels option filters the render: `LEVELS_TILE` with only the
+/// underground band draws more than with no band (which still draws the layers
+/// the option doesn't gate), and less than with every band (the style's
+/// `levels` default).
+fn levels_check() -> bool {
+    let style: serde_json::Value = serde_json::from_str(STYLE).expect("valid style json");
+    let Some(all_bands) = style["state"][LEVELS_KEY]["default"].as_array() else {
+        eprintln!("the style declares no `{LEVELS_KEY}` state");
+        return false;
+    };
+    let all_bands: Vec<String> = all_bands
+        .iter()
+        .filter_map(|b| b.as_str().map(str::to_owned))
+        .collect();
+    let mut renderer = tile_renderer();
+    // global-state can only be set once the style has loaded.
+    if let Err(e) = renderer.load_style_from_json_str(runtime_style()).wait() {
+        eprintln!("style failed to load: {e}");
+        return false;
+    }
+    let (none, underground, all) = match level_counts(&mut renderer, &all_bands) {
+        Ok(counts) => counts,
+        Err(e) => {
+            eprintln!("render failed: {e:?}");
+            return false;
+        }
+    };
+    let (z, x, y) = LEVELS_TILE;
+    let ok = none < underground && underground < all;
+    println!("{{\"tile\":\"{z}/{x}/{y}\",\"no_bands_px\":{none},\"underground_px\":{underground},\"all_bands_px\":{all},\"ok\":{ok}}}");
+    ok
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("levels") {
+        if !levels_check() {
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let tiles: Vec<(u8, u32, u32)> = POINTS
         .iter()
         .map(|&(lat, lon, z)| {
@@ -103,16 +216,12 @@ fn main() {
     // compilation happens once during warmup and the timed frames measure pure
     // steady-state rendering, like the app's long-lived per-style renderers.
     if let Ok(n) = std::env::var("BENCH_LAYERS").map(|s| s.parse::<usize>().unwrap_or(1)) {
-        let secs: u64 = std::env::var("BENCH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
+        let secs: u64 = std::env::var("BENCH_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(12);
         let (style, actual) = style_with_layers(n);
-        let size = NonZeroU32::new(TILE_SIZE).expect("nonzero tile size");
-        let opts = ResourceOptions::default()
-            .with_cache_path(std::env::temp_dir().join("orm-bench-cache.db"))
-            .with_maximum_cache_size(CACHE_BYTES);
-        let mut renderer = ImageRendererBuilder::new()
-            .with_size(size, size)
-            .with_resource_options(opts)
-            .build_tile_renderer();
+        let mut renderer = tile_renderer();
         renderer.load_style_from_json_str(&style);
 
         for _ in 0..WARMUP_PASSES {

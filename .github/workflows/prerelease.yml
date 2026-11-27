@@ -19,9 +19,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # See ci.yml for the caching rationale: the build cache is keyed on the pinned
-  # maplibre rev (with a prefix restore-key), and `~/.cargo/git` is cached whole so
-  # the Windows vcpkg libs built into the checkout persist. sccache was 0% hit on
+  # See ci.yml for the caching rationale. The cache budget holds one lane per OS,
+  # which ci.yml's runs on main own, so this workflow restores that lane and never
+  # saves. It builds the release profile, so the lane's debug `target/` is unused,
+  # but its `~/.cargo/git` checkout (the maplibre-native clone and, on Windows, the
+  # vcpkg libs built into it) and cargo registry are reused. sccache was 0% hit on
   # Windows and rebuilt maplibre's C++ core (~50 min) every nightly.
   CARGO_INCREMENTAL: "0"
 
@@ -69,7 +71,9 @@ jobs:
           - platform: linux-x86
             runner: ubuntu-22.04
           - platform: windows
-            runner: windows-latest
+            # Pinned off windows-latest: its VS18/CMake 4.4 image breaks mbgl's
+            # vendored-vcpkg bootstrap. See the note in ci.yml.
+            runner: windows-2022
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -107,32 +111,50 @@ jobs:
         shell: bash
         run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
 
-      - name: Cache cargo + target
-        uses: actions/cache@v4
+      # ci.yml's lane for this OS. The paths must match ci.yml's CACHE_PATHS
+      # exactly, since the cache version is derived from them.
+      - name: Restore cargo + target (ci.yml lane)
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git
             target
-          # `-release-`: this builds the release profile (target/release), a
-          # separate maplibre build dir from ci.yml's debug `cargo test`, so it
-          # must not share ci's key or a cross-profile restore would rebuild the core.
-          # Keyed on matrix.platform (not runner.os) so it shares the cache with
-          # release.yml's host-native platforms (windows, linux-x86), which build
-          # the same target/release. release.yml's --target arches (macos, arm64)
-          # build into target/<triple>/ and keep their own lanes.
-          key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
+
+      # Cache vcpkg's package source downloads on a rev-independent key so an mbgl
+      # bump (which changes the cargo-cache key above) doesn't force a full
+      # re-download through the flaky vendored-vcpkg path. See ci.yml.
+      - name: Set vcpkg downloads dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "VCPKG_DOWNLOADS=$GITHUB_WORKSPACE/vcpkg-downloads" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg downloads (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-downloads
+          key: ${{ runner.os }}-vcpkg-downloads-v1
 
       - name: Install Trunk
-        run: which trunk || cargo install trunk --locked
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/install_trunk.sh
 
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Crash reporting: baked into the binary at build time via option_env!,
+          # so nightly testers' crashes report too. Unset secret → empty → crash
+          # reporting compiles out.
+          TURNOUT_SENTRY_DSN: ${{ secrets.TURNOUT_SENTRY_DSN }}
+          TURNOUT_SENTRY_ENVIRONMENT: nightly
         with:
           releaseId: ${{ needs.create-prerelease.outputs.release_id }}
           assetNamePattern: "[name]_[arch][_setup][ext]"
@@ -141,6 +163,59 @@ jobs:
           # workflow has it), and the auto-updater tracks tagged releases, not
           # this rolling pre-release.
           args: '--config {"bundle":{"createUpdaterArtifacts":false}}'
+
+      # Upload native debug symbols so nightly crash minidumps symbolicate too
+      # (matched by debug-id, independent of the tagged release). All three lanes
+      # build host-native, so the debug files live in target/release. No-ops when
+      # SENTRY_AUTH_TOKEN is unset. Best-effort: continue-on-error so a flaky
+      # upload never fails the nightly build.
+      - name: Upload debug symbols to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping debug symbol upload"
+            exit 0
+          fi
+          npm install -g @sentry/cli
+          sentry-cli debug-files upload --include-sources target/release
+
+      # Nightly counterpart of the release frontend symbolication upload, from
+      # `dist/` (built + bundled verbatim by the Tauri step above):
+      #   1. JS source context — the hand-written bridges + wasm-bindgen glue (both
+      #      UNMINIFIED), as artifacts of the release the browser SDK reports
+      #      (turnout-tauri@<version>, matching sentry::release_name!(); the nightly
+      #      environment tag is separate from the release name). No .map files exist
+      #      (the JS isn't minified).
+      #   2. Wasm frames — upload the wasm as a debug file. It carries DWARF line
+      #      tables (retained via index.html data-keep-debug) and a build_id
+      #      (beforeBuildCommand runs scripts/inject-wasm-build-id.mjs), giving it
+      #      the debug_id the vendored @sentry/wasm derives at runtime, so wasm
+      #      frames resolve to Rust function + file:line. Same file shipped and
+      #      uploaded, so offsets match without wasm-split.
+      # Best-effort, token-gated, per-matrix (idempotent) — never fails the build.
+      - name: Upload frontend JS + wasm debug info to Sentry
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: sorlie
+          SENTRY_PROJECT: rust
+          SENTRY_URL: https://de.sentry.io
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN not set — skipping frontend upload"
+            exit 0
+          fi
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          REL="turnout-tauri@${VERSION}"
+          sentry-cli sourcemaps upload --release "$REL" dist
+          sentry-cli debug-files upload --include-sources dist
 
       # The AppImage upstream excludelist requires the X11/Wayland client
       # libraries to come from the host, never the bundle. maplibre dlopens the
@@ -173,6 +248,8 @@ jobs:
           ( cd "$work" && "$OLDPWD/$appimage" --appimage-extract >/dev/null )
           rm -fv "$work"/squashfs-root/usr/lib/libxcb*.so* \
                  "$work"/squashfs-root/usr/lib/libwayland*.so*
+          # appimagetool rejects an AppDir that other users cannot read; the bundler's dirs are 0700.
+          chmod -R a+rX "$work/squashfs-root"
 
           out="$work/Turnout_amd64.AppImage"
           ARCH=x86_64 "$tooldir/appimagetool" --appimage-extract-and-run \
