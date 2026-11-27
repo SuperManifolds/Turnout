@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Generate the static NIMBY Rails mod for ORM vertical-layer railway tiles.
 
-The mod styles the MVT served by the app's vector-tile server: one `[StyleLine]`
-per (vertical level x railway type x surface/tunnel/bridge). Encoding:
+The mod styles the MVT of the orm.sorlie.io levels source
+(`https://orm.sorlie.io/levels.json`, tiles under `railway_levels`): one
+`[StyleLine]` per (vertical level x railway type x surface/tunnel/bridge).
+Encoding:
   - hue      = railway type (ORM's own palette)
   - lightness = vertical level (deeper darker, higher lighter; baked into the
     RGBA hex because the stylesheet has no lightness key)

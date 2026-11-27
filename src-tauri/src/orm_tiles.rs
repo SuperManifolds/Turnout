@@ -138,13 +138,18 @@ fn canonical_style(name: &str) -> Arc<str> {
 
 /// The [`STYLES`] entry a style or view renders from. Views and unknown names
 /// render from `orm`, so views need no style files of their own.
-fn source_style(name: &str) -> &'static str {
-    STYLES.iter().find(|(n, _)| *n == name).map_or(STYLES[0].0, |(n, _)| n)
+fn source_entry(name: &str) -> &'static (&'static str, &'static str) {
+    STYLES.iter().find(|(n, _)| *n == name).unwrap_or(&STYLES[0])
 }
 
+/// The name of `name`'s [`source_entry`].
+fn source_style(name: &str) -> &'static str {
+    source_entry(name).0
+}
+
+/// The style JSON of `name`'s [`source_entry`].
 fn style_json(name: &str) -> &'static str {
-    let source = source_style(name);
-    STYLES.iter().find(|(n, _)| *n == source).map_or(STYLES[0].1, |(_, s)| s)
+    source_entry(name).1
 }
 
 /// The option state `style` renders with: the shared state, with a view's preset
@@ -652,17 +657,17 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
     Ok(r)
 }
 
-/// Pushes `style`'s ORM option values ([`view_state`]) into the renderer's style as
+/// Pushes `name`'s ORM option values ([`view_state`]) into the renderer's style as
 /// native `global-state`, so the style's `global-state` expressions evaluate against
 /// the user's selections. maplibre-native evaluates these directly (core #4516), so
 /// no expression rewriting is needed.
 fn apply_global_state(
     renderer: &mut maplibre_native::ImageRenderer<maplibre_native::Tile>,
     shared: &OrmShared,
-    style: &str,
+    name: &str,
 ) {
     use maplibre_native::GlobalStateValue;
-    let state = view_state(&shared.orm_state.read().unpoison(), style);
+    let state = view_state(&shared.orm_state.read().unpoison(), name);
     let mut style = renderer.style();
     for (key, value) in &state {
         let resolved = match value {
@@ -1260,31 +1265,66 @@ mod tests {
         }
     }
 
+    /// Whether `needle` occurs anywhere in `expr`, including inside objects such as
+    /// a whole layer.
     fn mentions(expr: &serde_json::Value, needle: &serde_json::Value) -> bool {
-        expr == needle || expr.as_array().is_some_and(|items| items.iter().any(|e| mentions(e, needle)))
+        expr == needle
+            || expr.as_array().is_some_and(|items| items.iter().any(|e| mentions(e, needle)))
+            || expr.as_object().is_some_and(|fields| fields.values().any(|e| mentions(e, needle)))
+    }
+
+    /// The expressions `filter` ANDs together: its `all` arguments, flattened.
+    fn conjuncts(filter: &serde_json::Value) -> Vec<&serde_json::Value> {
+        match filter.as_array().map(Vec::as_slice) {
+            Some([all, rest @ ..]) if all == "all" => rest.iter().flat_map(conjuncts).collect(),
+            _ => vec![filter],
+        }
+    }
+
+    /// Whether `expr` is the Levels clause
+    /// `["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", <band>, ["global-state", LEVELS_KEY]]]`.
+    fn is_level_clause(expr: &serde_json::Value) -> bool {
+        use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM};
+        let [any, low_zoom, band_in] = expr.as_array().map(Vec::as_slice).unwrap_or_default() else {
+            return false;
+        };
+        let [op, _band, selected] = band_in.as_array().map(Vec::as_slice).unwrap_or_default() else {
+            return false;
+        };
+        any == "any"
+            && *low_zoom == serde_json::json!(["<", ["zoom"], LEVELS_MIN_ZOOM])
+            && op == "in"
+            && *selected == serde_json::json!(["global-state", LEVELS_KEY])
+    }
+
+    /// Whether `filter` ANDs in the Levels clause exactly once: alone, or as an
+    /// argument of `all` (nested `all`s too, since the dasharray split wraps
+    /// filters after the clause is added).
+    fn is_level_gated(filter: &serde_json::Value) -> bool {
+        conjuncts(filter).into_iter().filter(|e| is_level_clause(e)).count() == 1
     }
 
     /// The Levels option gates every line and platform layer on the `levels`
-    /// global-state. Low-zoom line layers carry no level data, so they stay ungated.
+    /// global-state. Low-zoom line layers and the kilometre labels carry no level
+    /// data, so they stay ungated.
     #[test]
     fn level_filter_gates_line_and_platform_layers() {
         const LEVEL_SOURCE_LAYERS: [&str; 3] =
             ["railway_line_high", "standard_railway_platforms", "standard_railway_platform_edges"];
         let gate = serde_json::json!(["global-state", turnout_core::orm_levels::LEVELS_KEY]);
         let style: serde_json::Value = serde_json::from_str(STYLES[0].1).expect("embedded style parses");
-        let (mut gated, mut low) = (0, 0);
+        let (mut gated, mut ungated) = ([0; LEVEL_SOURCE_LAYERS.len()], 0);
         for layer in style["layers"].as_array().expect("layers") {
             let source_layer = layer["source-layer"].as_str().unwrap_or_default();
-            let has_gate = mentions(&layer["filter"], &gate);
-            if LEVEL_SOURCE_LAYERS.contains(&source_layer) {
-                assert!(has_gate, "layer {} has no levels filter", layer["id"]);
-                gated += 1;
-            } else if source_layer.ends_with("_railway_line_low") {
-                assert!(!has_gate, "low-zoom layer {} has a levels filter", layer["id"]);
-                low += 1;
+            if let Some(i) = LEVEL_SOURCE_LAYERS.iter().position(|s| *s == source_layer) {
+                assert!(is_level_gated(&layer["filter"]), "layer {} has no levels clause: {}", layer["id"], layer["filter"]);
+                gated[i] += 1;
+            } else if source_layer == "railway_text_km" || source_layer.ends_with("_railway_line_low") {
+                assert!(!mentions(layer, &gate), "ungated layer {} mentions the levels state", layer["id"]);
+                ungated += 1;
             }
         }
-        assert!(gated > 0 && low > 0, "{gated} gated, {low} low-zoom layers");
+        assert!(gated.iter().all(|n| *n > 0) && ungated > 0, "{gated:?} gated per {LEVEL_SOURCE_LAYERS:?}, {ungated} ungated");
     }
 
     #[test]

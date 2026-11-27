@@ -26,3 +26,7 @@ pub const LEVEL_BANDS: [&str; 3] = ["underground", "ground", "elevated"];
 
 /// The ORM style `global-state` key holding the selected [`LEVEL_BANDS`].
 pub const LEVELS_KEY: &str = "levels";
+
+/// The zoom from which the Levels option filters lines and platforms; lower
+/// zooms draw every level.
+pub const LEVELS_MIN_ZOOM: u8 = 8;
