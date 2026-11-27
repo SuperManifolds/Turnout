@@ -31,7 +31,8 @@ current.
   levels, from **underground** through **ground** to **elevated**, each
   toggleable in the game. Turnout doesn't need to be running for this: in NIMBY
   Rails add `https://orm.sorlie.io/levels.json` as a map source (Map options →
-  Sources → New source, format Auto) and subscribe to the
+  Sources → New source, format Auto), reload the game so the level toggles
+  appear, and subscribe to the
   [ORM Vertical Layers](https://steamcommunity.com/sharedfiles/filedetails/?id=3763998309)
   Workshop mod, which styles it. On Turnout's own map, the Levels tool in the ORM
   toolbar filters the overlay by level from zoom 8. Offline bundles saved before
