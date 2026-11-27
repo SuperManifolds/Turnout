@@ -73,21 +73,25 @@ jobs:
         shell: bash
         run: echo "MLN_REV=$(grep -oE 'maplibre-native-rs\?rev=[0-9a-f]+' Cargo.lock | head -1 | sed 's/.*rev=//')" >> "$GITHUB_ENV"
 
-      # Rev-scoped release-profile cache, matching prerelease.yml's key and paths.
-      # The host-native platforms (windows, linux-x86) build target/release and so
-      # share their cache with the same-named prerelease lanes; the --target arches
-      # (macos-*, linux-arm64) build target/<triple>/ and keep their own lanes.
-      - name: Cache cargo + target
-        uses: actions/cache@v4
+      # Restores ci.yml's lane for this OS and never saves: a cache saved on a tag
+      # is visible only to that tag, so it would never be reused. The lane's debug
+      # `target/` is unused by this release build, but its maplibre-native clone
+      # (with the Windows vcpkg libs built into it) and cargo registry are reused.
+      # Linux arm64 skips it, since ci.yml's Linux lane is x86. The paths must
+      # match ci.yml's CACHE_PATHS exactly, since the cache version is derived
+      # from them.
+      - name: Restore cargo + target (ci.yml lane)
+        if: runner.os != 'Linux' || runner.arch == 'X64'
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git
             target
-          key: ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ matrix.platform }}-cargo-release-mln${{ env.MLN_REV }}-
+            ${{ runner.os }}-cargo-mln${{ env.MLN_REV }}-
 
       # Cache vcpkg's package source downloads on a rev-independent key so an mbgl
       # bump (which changes the cargo-cache key above) doesn't force a full
@@ -134,7 +138,10 @@ jobs:
           if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
       - name: Install Trunk
-        run: which trunk || cargo install trunk --locked
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/install_trunk.sh
 
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
