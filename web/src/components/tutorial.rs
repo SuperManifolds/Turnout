@@ -37,7 +37,6 @@ enum Panel {
     None,
     Blueprints,
     Overlays,
-    RailLayers,
 }
 
 /// Where the callout sits relative to the spotlighted element.
@@ -79,7 +78,7 @@ const STEPS: &[Step] = &[
         title: "Import real railways",
         body: &[
             "Pan and zoom to a place, click Select Area, then drag a box on the map. Turnout pulls the railways inside it from OpenRailwayMap.",
-            "Once an area is selected, more tools appear here: Import Tracks turns it into a blueprint, plus Download Tiles and Rail Layers.",
+            "Once an area is selected, more tools appear here: Import Tracks turns it into a blueprint, plus Download Tiles.",
         ],
     },
     Step {
@@ -117,17 +116,6 @@ const STEPS: &[Step] = &[
         ],
     },
     Step {
-        target: Some(".rail-layers-panel"),
-        panel: Panel::RailLayers,
-        placement: Placement::Left,
-        icon: "fa-solid fa-train-subway",
-        title: "Rail layers in-game",
-        body: &[
-            "Rail Layers streams OpenRailwayMap into NIMBY Rails itself, split into underground, ground, and elevated levels you can toggle in the game.",
-            "It needs the free \"ORM Vertical Layers\" Steam Workshop mod for the styling — this panel links to it. Select an area first, then Generate.",
-        ],
-    },
-    Step {
         target: None,
         panel: Panel::None,
         placement: Placement::Center,
@@ -143,7 +131,7 @@ const STEPS: &[Step] = &[
         icon: "fa-solid fa-circle-exclamation",
         title: "Reporting problems",
         body: &[
-            "Turnout is not made by the NIMBY Rails developer. If something is wrong with a blueprint's tracks, the rail overlay, or the Rail Layers mod, it's a Turnout issue.",
+            "Turnout is not made by the NIMBY Rails developer. If something is wrong with a blueprint's tracks or the rail overlay, it's a Turnout issue.",
             "Please report those to me, the Turnout developer — the game's developer can't help with them.",
             "Open an issue on GitHub, or message me on Discord: @supermanifolds (I'm \"Alex\" in the NIMBY Rails Discord).",
         ],
@@ -222,7 +210,6 @@ pub fn Tutorial(
     replay: ReadSignal<bool>,
     set_drawer_open: WriteSignal<bool>,
     set_overlay_open: WriteSignal<bool>,
-    set_show_vector_layers: WriteSignal<bool>,
 ) -> impl IntoView {
     let (step, set_step) = create_signal(0usize);
     let (rect, set_rect) = create_signal::<Option<Rect>>(None);
@@ -243,7 +230,6 @@ pub fn Tutorial(
     let apply_panel = move |panel: Panel| {
         set_drawer_open.set(panel == Panel::Blueprints);
         set_overlay_open.set(panel == Panel::Overlays);
-        set_show_vector_layers.set(panel == Panel::RailLayers);
     };
 
     let remeasure = move || {

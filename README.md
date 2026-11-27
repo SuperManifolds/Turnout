@@ -25,10 +25,6 @@ current.
 - **OpenRailwayMap, live** — Stream up-to-date [OpenRailwayMap](https://www.openrailwaymap.org/)
   railway data straight into the game. Self-hosting? Point it at your own
   OpenRailwayMap server.
-- **Vertical rail layers** — Download an area's railway data (via Overpass) and
-  view it split into independently toggleable **underground**, **ground**, and
-  **elevated** levels — detail the live tiles can't show — with station platforms
-  and under-construction / proposed / preserved tracks each styled distinctly.
 - **Bring your own maps** — Load **KMZ/KML** (ground overlays and vector geometry
   with styling), **Shapefiles** (automatic SLD/QML styling), and **GeoJSON**.
 - **Online tile sources** — Add **WMS**, **WMTS**, **ArcGIS MapServer**, and any
