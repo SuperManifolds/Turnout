@@ -16,8 +16,8 @@ without reloading the style. Everything native cannot handle is rewritten:
 - font-face stacks → the bundled SDF glyph fontstacks
 - relative source URLs → absolute tile URLs (MVT, see `encoding` below)
 
-Turnout adds one option of its own: `levels`, the vertical level bands that line
-and platform layers draw from zoom 8 (see `with_level_filter`).
+Turnout adds one option of its own: `levels`, the vertical level bands and single
+levels that line and platform layers draw from zoom 8 (see `with_level_filter`).
 
 The basemap (background, hillshade, landuse/transport), OpenHistoricalMap and the
 website's search/route UI sources are dropped: Turnout overlays its own base map.
@@ -56,10 +56,12 @@ STATE_OVERRIDES = {"openHistoricalMap": False, "hillshade": False}
 
 VISIBILITY_BOOL = {"visible": True, "none": False}
 
-# The Levels option: the `levels` global-state key lists the bands drawn. Keep
-# in sync with LEVEL_BANDS / LEVELS_KEY / LEVELS_MIN_ZOOM in
-# core/src/orm_levels.rs.
+# The Levels option: the `levels` global-state key lists the bands and single
+# levels drawn. Keep in sync with LEVEL_BANDS / LEVELS / LEVELS_KEY /
+# LEVELS_MIN_ZOOM in core/src/orm_levels.rs.
 LEVEL_BANDS = ["underground", "ground", "elevated"]
+LEVEL_MIN, LEVEL_MAX = -5, 5
+LEVELS = [str(level) for level in range(LEVEL_MIN, LEVEL_MAX + 1)]
 LEVELS_KEY = "levels"
 # Below this zoom the Levels filter passes everything (low-zoom lines carry no
 # tunnel, bridge or layer data).
@@ -78,24 +80,35 @@ def band_by_layer(fallback):
             *fallback]
 
 
+def clamped_level(level):
+    """`level` clamped to LEVEL_MIN..LEVEL_MAX, the range of LEVELS."""
+    return ["max", LEVEL_MIN, ["min", LEVEL_MAX, level]]
+
+
 # Lines without a `layer` fall back to their tunnel / bridge flags.
 LINE_BAND = band_by_layer([["==", ["get", "tunnel"], True], "underground",
                            ["==", ["get", "bridge"], True], "elevated", "ground"])
 PLATFORM_BAND = band_by_layer(["ground"])
+LINE_LEVEL = clamped_level(["case", ["has", "layer"], ["number", ["get", "layer"], 0],
+                            ["==", ["get", "tunnel"], True], -1,
+                            ["==", ["get", "bridge"], True], 1, 0])
+PLATFORM_LEVEL = clamped_level(["number", ["get", "layer"], 0])
 
 
 def with_level_filter(layer):
     """AND the Levels clause into a line or platform layer's filter: from
-    LEVELS_MIN_ZOOM a feature draws only when its band is selected."""
+    LEVELS_MIN_ZOOM a feature draws only when its band or its level (as a
+    string, one of LEVELS) is selected."""
     source_layer = layer.get("source-layer")
     if source_layer in LINE_LEVEL_SOURCE_LAYERS:
-        band = LINE_BAND
+        band, level = LINE_BAND, LINE_LEVEL
     elif source_layer in PLATFORM_LEVEL_SOURCE_LAYERS:
-        band = PLATFORM_BAND
+        band, level = PLATFORM_BAND, PLATFORM_LEVEL
     else:
         return layer
     clause = ["any", ["<", ["zoom"], LEVELS_MIN_ZOOM],
-              ["in", copy.deepcopy(band), ["global-state", LEVELS_KEY]]]
+              ["in", copy.deepcopy(band), ["global-state", LEVELS_KEY]],
+              ["in", ["to-string", copy.deepcopy(level)], ["global-state", LEVELS_KEY]]]
     existing = layer.get("filter")
     layer["filter"] = clause if existing is None else ["all", existing, clause]
     return layer
@@ -626,7 +639,7 @@ def main():
     for key, value in STATE_OVERRIDES.items():
         if key in state:
             state[key]["default"] = value
-    state[LEVELS_KEY] = {"default": LEVEL_BANDS}
+    state[LEVELS_KEY] = {"default": LEVELS}
     layers = (resolve_layer(layer) for layer in style["layers"])
     style["layers"] = [with_level_filter(layer) for layer in layers
                        if is_overlay_layer(layer, style["sources"])]

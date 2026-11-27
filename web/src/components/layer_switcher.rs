@@ -1,11 +1,14 @@
 use leptos::{
     component, create_effect, create_rw_signal, create_signal, ev, spawn_local, view, wasm_bindgen,
     window_event_listener, CollectView, IntoView, RwSignal, Show, SignalGet, SignalSet, SignalUpdate,
-    SignalWith, SignalWithUntracked, WriteSignal,
+    SignalWith, SignalWithUntracked, View, WriteSignal,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
-use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM, LEVEL_BANDS};
+use turnout_core::orm_levels::{
+    band_levels, band_selection, expand_bands, toggle_band, BandSelection, LEVELS_KEY, LEVELS_MIN_ZOOM,
+    LEVEL_BANDS,
+};
 use turnout_core::orm_presets::{classic_values, Literal, Preset, CLASSIC_PRESETS, NONE};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -35,6 +38,10 @@ const DISPLAY: &str = "display";
 const DISPLAY_ICON: &str = "fa-solid fa-sliders";
 const DISPLAY_LABEL: &str = "Display";
 
+/// The icons of a collapsed and an expanded band row in the Levels popover.
+const BAND_COLLAPSED_ICON: &str = "fa-solid fa-chevron-right";
+const BAND_EXPANDED_ICON: &str = "fa-solid fa-chevron-down";
+
 /// The current ORM option values (the style's `global-state`), keyed by option.
 type Options = Map<String, Value>;
 
@@ -47,6 +54,11 @@ enum Pick {
     One(&'static [Choice]),
     /// Any subset of the list (a string-array option).
     Many(&'static [Choice]),
+    /// Any subset of the levels (the Levels string-array option), by band: each
+    /// `(band, label)` row switches every level of the band and expands to one
+    /// row per level, nearest the ground first ("Underground 1"). A band of one
+    /// level is a single row.
+    Bands(&'static [Choice]),
 }
 
 /// One toolbar button: an option key and the choices its popover offers.
@@ -143,7 +155,7 @@ const LEVELS: Category = Category {
     key: LEVELS_KEY,
     label: "Levels",
     icon: "fa-solid fa-layer-group",
-    pick: Pick::Many(&[(LEVEL_BANDS[0], "Underground"), (LEVEL_BANDS[1], "Ground"), (LEVEL_BANDS[2], "Elevated")]),
+    pick: Pick::Bands(&[(LEVEL_BANDS[0], "Underground"), (LEVEL_BANDS[1], "Ground"), (LEVEL_BANDS[2], "Elevated")]),
 };
 /// The Levels tooltip hint: the style filters by level from [`LEVELS_MIN_ZOOM`]
 /// only, and lower zooms draw every level.
@@ -246,6 +258,24 @@ fn toggled(options: &Options, key: &str, value: &str) -> Value {
     Value::Array(items)
 }
 
+/// The strings of `key`'s string-array option.
+fn selected_values<'a>(options: &'a Options, key: &str) -> Vec<&'a str> {
+    options
+        .get(key)
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |items| items.iter().filter_map(Value::as_str).collect())
+}
+
+/// `saved` with the Levels option's band names (saved by older versions)
+/// expanded to the levels they select, so each level row shows its state.
+fn with_expanded_levels(mut saved: Options) -> Options {
+    if saved.get(LEVELS_KEY).is_some_and(Value::is_array) {
+        let levels = expand_bands(selected_values(&saved, LEVELS_KEY));
+        saved.insert(LEVELS_KEY.to_owned(), Value::from(levels));
+    }
+    saved
+}
+
 /// Sets option values that differ from the current ones, pushes them to the
 /// renderer and reloads the overlay. Unchanged values cause no reload.
 fn apply(options: RwSignal<Options>, changes: Vec<(&'static str, Value)>) {
@@ -281,7 +311,7 @@ fn load_options(options: RwSignal<Options>) {
             .await
             .and_then(|js| serde_wasm_bindgen::from_value::<Options>(js).map_err(|e| e.to_string()));
         match saved {
-            Ok(saved) => options.set(saved),
+            Ok(saved) => options.set(with_expanded_levels(saved)),
             Err(e) => web_sys::console::warn_1(&format!("could not load ORM options: {e}").into()),
         }
         // Registered after the load so the saved theme cannot overwrite the map's.
@@ -341,7 +371,7 @@ fn poll_disabled_reason(set_reason: WriteSignal<Option<String>>) {
 
 /// A popover list item that shows whether its choice is selected.
 fn choice_item(
-    name: &'static str,
+    name: impl IntoView + 'static,
     role: &'static str,
     selected: impl Fn() -> bool + Copy + 'static,
     on_pick: impl Fn() + 'static,
@@ -360,15 +390,22 @@ fn choice_item(
     }
 }
 
+/// Adds `value` to or removes it from `key`'s string-array option.
+fn toggle_choice(options: RwSignal<Options>, key: &'static str, value: &str) {
+    let next = options.with_untracked(|o| toggled(o, key, value));
+    apply(options, vec![(key, next)]);
+}
+
 fn choice_list(
     category: &'static Category,
     options: RwSignal<Options>,
     open: RwSignal<Option<&'static str>>,
-) -> impl IntoView {
+) -> View {
     let key = category.key;
     let (choices, many) = match category.pick {
         Pick::One(choices) => (choices, false),
         Pick::Many(choices) => (choices, true),
+        Pick::Bands(bands) => return band_list(key, bands, options).into_view(),
     };
     let role = if many { "menuitemcheckbox" } else { "menuitemradio" };
     view! {
@@ -377,8 +414,7 @@ fn choice_list(
                 let selected = move || options.with(|o| is_selected(o, key, value));
                 choice_item(name, role, selected, move || {
                     if many {
-                        let next = options.with_untracked(|o| toggled(o, key, value));
-                        apply(options, vec![(key, next)]);
+                        toggle_choice(options, key, value);
                     } else {
                         apply(options, vec![(key, Value::from(value))]);
                         open.set(None);
@@ -386,6 +422,80 @@ fn choice_list(
                 })
             }).collect_view()}
         </ul>
+    }
+    .into_view()
+}
+
+/// The `aria-checked` value of a band row.
+fn band_checked(selection: BandSelection) -> &'static str {
+    match selection {
+        BandSelection::None => "false",
+        BandSelection::Partial => "mixed",
+        BandSelection::All => "true",
+    }
+}
+
+/// The rows of a [`Pick::Bands`] option: one per band, each expanding to its levels.
+fn band_list(key: &'static str, bands: &'static [Choice], options: RwSignal<Options>) -> impl IntoView {
+    view! {
+        <ul>
+            {bands.iter().map(|&(band, label)| band_item(key, band, label, options)).collect_view()}
+        </ul>
+    }
+}
+
+/// A band row that switches all of `band`'s levels, shown as partly checked when
+/// only some are on, with a button that expands it to a row per level.
+fn band_item(
+    key: &'static str,
+    band: &'static str,
+    label: &'static str,
+    options: RwSignal<Options>,
+) -> impl IntoView {
+    let levels = band_levels(band);
+    let selection = move || options.with(|o| band_selection(&selected_values(o, key), band));
+    let toggle = move |_| {
+        let next = options.with_untracked(|o| toggle_band(&selected_values(o, key), band));
+        apply(options, vec![(key, Value::from(next))]);
+    };
+    let expanded = create_rw_signal(false);
+    let expander = (levels.len() > 1).then(|| {
+        view! {
+            <button
+                class="orm-expand"
+                aria-label=format!("{label} levels")
+                aria-expanded=move || expanded.get().to_string()
+                on:click=move |_| expanded.update(|e| *e = !*e)
+            >
+                <i class=move || if expanded.get() { BAND_EXPANDED_ICON } else { BAND_COLLAPSED_ICON }></i>
+            </button>
+        }
+    });
+    let level_rows = (levels.len() > 1).then(|| {
+        view! {
+            <ul hidden=move || !expanded.get()>
+                {levels.iter().zip(1..).map(|(&level, distance)| {
+                    let selected = move || options.with(|o| is_selected(o, key, level));
+                    choice_item(format!("{label} {distance}"), "menuitemcheckbox", selected, move || {
+                        toggle_choice(options, key, level);
+                    })
+                }).collect_view()}
+            </ul>
+        }
+    });
+    view! {
+        <li class="orm-band">
+            {expander}
+            <button
+                role="menuitemcheckbox"
+                aria-checked=move || band_checked(selection())
+                class:selected=move || selection() == BandSelection::All
+                on:click=toggle
+            >
+                {label}
+            </button>
+            {level_rows}
+        </li>
     }
 }
 

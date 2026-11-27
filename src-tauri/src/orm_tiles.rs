@@ -1281,54 +1281,79 @@ mod tests {
         }
     }
 
-    /// Whether `expr` is the Levels clause
-    /// `["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", band, ["global-state", LEVELS_KEY]]]`.
-    fn is_level_clause(expr: &serde_json::Value, band: &serde_json::Value) -> bool {
-        use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM};
-        *expr == serde_json::json!(["any", ["<", ["zoom"], LEVELS_MIN_ZOOM], ["in", band, ["global-state", LEVELS_KEY]]])
+    /// What a layer's Levels clause matches the selection against: the feature's
+    /// `band` name and its `level` number (as a string).
+    struct LevelTerms {
+        band: serde_json::Value,
+        level: serde_json::Value,
     }
 
-    /// Whether `filter` ANDs in the Levels clause with `band` exactly once: alone,
+    /// Whether `expr` is the Levels clause `["any", ["<", ["zoom"], LEVELS_MIN_ZOOM],
+    /// ["in", band, ["global-state", LEVELS_KEY]], ["in", ["to-string", level],
+    /// ["global-state", LEVELS_KEY]]]`.
+    fn is_level_clause(expr: &serde_json::Value, terms: &LevelTerms) -> bool {
+        use turnout_core::orm_levels::{LEVELS_KEY, LEVELS_MIN_ZOOM};
+        *expr
+            == serde_json::json!([
+                "any",
+                ["<", ["zoom"], LEVELS_MIN_ZOOM],
+                ["in", terms.band, ["global-state", LEVELS_KEY]],
+                ["in", ["to-string", terms.level], ["global-state", LEVELS_KEY]]
+            ])
+    }
+
+    /// Whether `filter` ANDs in the Levels clause with `terms` exactly once: alone,
     /// or as an argument of `all` (nested `all`s too, since the dasharray split
     /// wraps filters after the clause is added).
-    fn is_level_gated(filter: &serde_json::Value, band: &serde_json::Value) -> bool {
-        conjuncts(filter).into_iter().filter(|e| is_level_clause(e, band)).count() == 1
+    fn is_level_gated(filter: &serde_json::Value, terms: &LevelTerms) -> bool {
+        conjuncts(filter).into_iter().filter(|e| is_level_clause(e, terms)).count() == 1
     }
 
-    /// The band expressions the style build gives line layers and platform (and
-    /// platform edge) layers: the band from a numeric `layer` when the feature has
-    /// one, else lines fall back to their tunnel / bridge flags and platforms to
-    /// ground.
-    fn level_bands() -> (serde_json::Value, serde_json::Value) {
+    /// The band and level expressions the style build gives line layers and
+    /// platform (and platform edge) layers. The band comes from a numeric `layer`
+    /// when the feature has one, else lines fall back to their tunnel / bridge
+    /// flags and platforms to ground. The level is the `layer`, else -1 for a
+    /// line in a tunnel, +1 on a bridge and 0 otherwise, clamped to the range of
+    /// `LEVELS`.
+    fn level_terms() -> (LevelTerms, LevelTerms) {
         use serde_json::json;
-        let [underground, ground, elevated] = turnout_core::orm_levels::LEVEL_BANDS;
-        let by_layer = json!([
-            "case",
-            ["<", ["number", ["get", "layer"], 0], 0], underground,
-            [">", ["number", ["get", "layer"], 0], 0], elevated,
-            ground
-        ]);
-        let line = json!([
-            "case",
-            ["has", "layer"], by_layer,
-            ["==", ["get", "tunnel"], true], underground,
-            ["==", ["get", "bridge"], true], elevated,
-            ground
-        ]);
-        let platform = json!(["case", ["has", "layer"], by_layer, ground]);
+        use turnout_core::orm_levels::{LEVELS, LEVEL_BANDS};
+        let [underground, ground, elevated] = LEVEL_BANDS;
+        let layer = json!(["number", ["get", "layer"], 0]);
+        let by_layer = json!(["case", ["<", layer, 0], underground, [">", layer, 0], elevated, ground]);
+        let bound = |level: &str| level.parse::<i8>().expect("numeric level");
+        let (lowest, highest) = (bound(LEVELS[0]), bound(LEVELS[LEVELS.len() - 1]));
+        let clamp = |level| json!(["max", lowest, ["min", highest, level]]);
+        let line = LevelTerms {
+            band: json!([
+                "case",
+                ["has", "layer"], by_layer,
+                ["==", ["get", "tunnel"], true], underground,
+                ["==", ["get", "bridge"], true], elevated,
+                ground
+            ]),
+            level: clamp(json!([
+                "case",
+                ["has", "layer"], layer,
+                ["==", ["get", "tunnel"], true], -1,
+                ["==", ["get", "bridge"], true], 1,
+                0
+            ])),
+        };
+        let platform = LevelTerms { band: json!(["case", ["has", "layer"], by_layer, ground]), level: clamp(layer) };
         (line, platform)
     }
 
     /// The Levels option gates every line and platform layer on the `levels`
-    /// global-state with its source layer's band. Every other layer, including the
-    /// low-zoom lines and the kilometre labels (which carry no level data), stays
-    /// ungated.
+    /// global-state with its source layer's band and level. Every other layer,
+    /// including the low-zoom lines and the kilometre labels (which carry no level
+    /// data), stays ungated.
     #[test]
     fn level_filter_gates_line_and_platform_layers() {
         const LEVEL_SOURCE_LAYERS: [&str; 3] =
             ["railway_line_high", "standard_railway_platforms", "standard_railway_platform_edges"];
-        let (line_band, platform_band) = level_bands();
-        let bands = [&line_band, &platform_band, &platform_band];
+        let (line, platform) = level_terms();
+        let terms = [&line, &platform, &platform];
         let gate = serde_json::json!(["global-state", turnout_core::orm_levels::LEVELS_KEY]);
         let style: serde_json::Value = serde_json::from_str(STYLES[0].1).expect("embedded style parses");
         let (mut gated, mut km, mut low_zoom) = ([0; LEVEL_SOURCE_LAYERS.len()], 0, 0);
@@ -1336,7 +1361,7 @@ mod tests {
             let source_layer = layer["source-layer"].as_str().unwrap_or_default();
             if let Some(i) = LEVEL_SOURCE_LAYERS.iter().position(|s| *s == source_layer) {
                 assert!(
-                    is_level_gated(&layer["filter"], bands[i]),
+                    is_level_gated(&layer["filter"], terms[i]),
                     "layer {} has no {source_layer} levels clause: {}",
                     layer["id"],
                     layer["filter"]
