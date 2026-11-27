@@ -10,6 +10,10 @@ pub(crate) const SETTINGS_STORE: &str = "settings.json";
 /// existing user's stale key is ignored, re-showing the tour once. `_v2` added
 /// the "auto-launch with NIMBY Rails" step.
 const TUTORIAL_COMPLETED_KEY: &str = "tutorial_completed_v2";
+/// Store key marking the one-time reset of a saved [`PREVIOUS_DEFAULT_ORM_BASE`]
+/// to the current default. Version-suffixed like [`TUTORIAL_COMPLETED_KEY`]: `_v2`
+/// is the move of the default to [`DEFAULT_ORM_BASE`].
+const ORM_BASE_MIGRATED_KEY: &str = "orm_base_default_v2";
 const ORM_CONTROLS_KEY: &str = "orm_controls";
 
 /// Bundle identifier (from `tauri.conf.json`). Locates the on-disk settings store
@@ -44,7 +48,15 @@ pub(crate) fn stored_gpu_adapter() -> Option<String> {
 
 /// Host serving `OpenRailwayMap` vector tiles, glyphs and sprites. Overridable via
 /// [`Settings::orm_base_url`] for users running a self-hosted `OpenRailwayMap` stack.
-pub const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
+pub const DEFAULT_ORM_BASE: &str = "https://orm.sorlie.io";
+
+/// Host baked into the tile, sprite and glyph URLs of the bundled `orm.json` by
+/// `scripts/build_orm_style.py`. The runtime replaces it with the configured base.
+pub const STYLE_SOURCE_BASE: &str = "https://openrailwaymap.app";
+
+/// The default base before [`DEFAULT_ORM_BASE`]. A base saved with this value is
+/// reset once to unset (see [`migrate_orm_base`]) so it follows the new default.
+const PREVIOUS_DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
 
 /// Resolves the configured ORM base URL, falling back to [`DEFAULT_ORM_BASE`] and
 /// trimming a trailing slash so callers can append `/path` without doubling it.
@@ -194,8 +206,7 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
             .and_then(|v| v.as_str().map(String::from)),
         apple_sat_version: store.get("apple_sat_version")
             .and_then(|v| v.as_str().map(String::from)),
-        orm_base_url: store.get("orm_base_url")
-            .and_then(|v| v.as_str().map(String::from)),
+        orm_base_url: load_orm_base_url(&store),
         gpu_adapter: store.get("gpu_adapter")
             .and_then(|v| v.as_str().map(String::from)),
         tutorial_completed: store.get(TUTORIAL_COMPLETED_KEY)
@@ -217,6 +228,35 @@ pub fn load(app: &tauri::AppHandle) -> Settings {
                 .unwrap_or(true),
         },
     }
+}
+
+/// Reads the saved ORM base URL. The first read without [`ORM_BASE_MIGRATED_KEY`]
+/// applies [`migrate_orm_base`], persists a changed base, then sets the marker.
+fn load_orm_base_url<R: tauri::Runtime>(store: &tauri_plugin_store::Store<R>) -> Option<String> {
+    let saved = store.get("orm_base_url").and_then(|v| v.as_str().map(String::from));
+    let migrated = store.get(ORM_BASE_MIGRATED_KEY).and_then(|v| v.as_bool()).unwrap_or(false);
+    let base = migrate_orm_base(saved.clone(), migrated);
+    if migrated {
+        return base;
+    }
+    if base != saved {
+        store.set("orm_base_url", serde_json::json!(base));
+    }
+    store.set(ORM_BASE_MIGRATED_KEY, serde_json::json!(true));
+    if let Err(e) = store.save() {
+        tracing::warn!("could not persist the ORM base URL migration ({e})");
+    }
+    base
+}
+
+/// The one-time default migration: before the marker is set (`migrated` false), a
+/// saved [`PREVIOUS_DEFAULT_ORM_BASE`], with or without a trailing slash, becomes
+/// unset so it follows [`DEFAULT_ORM_BASE`]. Any other value is kept.
+fn migrate_orm_base(saved: Option<String>, migrated: bool) -> Option<String> {
+    if migrated {
+        return saved;
+    }
+    saved.filter(|url| url.trim().trim_end_matches('/') != PREVIOUS_DEFAULT_ORM_BASE)
 }
 
 #[tauri::command]
@@ -310,4 +350,33 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let path = app.dialog().file().blocking_pick_folder()?;
     Some(path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_orm_base_resets_the_previous_default() {
+        assert_eq!(migrate_orm_base(Some("https://openrailwaymap.app".into()), false), None);
+        assert_eq!(migrate_orm_base(Some(" https://openrailwaymap.app/ ".into()), false), None);
+    }
+
+    #[test]
+    fn migrate_orm_base_keeps_other_urls() {
+        assert_eq!(
+            migrate_orm_base(Some("http://localhost:8000".into()), false).as_deref(),
+            Some("http://localhost:8000")
+        );
+        assert_eq!(migrate_orm_base(None, false), None);
+    }
+
+    #[test]
+    fn migrate_orm_base_runs_once() {
+        // With the marker set, a base chosen after the migration stays.
+        assert_eq!(
+            migrate_orm_base(Some("https://openrailwaymap.app".into()), true).as_deref(),
+            Some("https://openrailwaymap.app")
+        );
+    }
 }

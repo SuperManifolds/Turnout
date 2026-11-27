@@ -23,8 +23,10 @@ your chosen data shows up as an overlay on the in-game map — no restart, alway
 current.
 
 - **OpenRailwayMap, live** — Stream up-to-date [OpenRailwayMap](https://www.openrailwaymap.org/)
-  railway data straight into the game. Self-hosting? Point it at your own
-  OpenRailwayMap server.
+  railway data straight into the game. Tiles come from `orm.sorlie.io` by
+  default, served through Cloudflare from the developer's own server. To use
+  `openrailwaymap.app` or your own OpenRailwayMap server instead, set its URL in
+  Settings.
 - **Bring your own maps** — Load **KMZ/KML** (ground overlays and vector geometry
   with styling), **Shapefiles** (automatic SLD/QML styling), and **GeoJSON**.
 - **Online tile sources** — Add **WMS**, **WMTS**, **ArcGIS MapServer**, and any
