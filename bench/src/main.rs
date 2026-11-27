@@ -10,8 +10,10 @@
 //! actual geometry drawn.
 //!
 //! `orm-bench levels` instead checks the Levels option: it renders one London
-//! tile with no level band, with only the underground band and with every band,
-//! and exits non-zero unless each render draws more than the one before.
+//! tile with no level band, with only the underground band and with every level,
+//! and exits non-zero unless each render draws more than the one before. It also
+//! renders the tile with only level -1 and with only level -2, and exits non-zero
+//! unless each draws more than no level at all and the two renders differ.
 
 use std::num::NonZeroU32;
 use std::time::Instant;
@@ -36,11 +38,16 @@ const TILE_SIZE: u32 = 512;
 const CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const WARMUP_PASSES: usize = 2;
 const TIMED_PASSES: usize = 20;
+/// FNV-1a 64-bit offset basis and prime, for the pixel hashes.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// The style `global-state` key and band the `levels` check selects
-/// (`turnout_core::orm_levels`).
+/// The style `global-state` key, band and single levels the `levels` check
+/// selects (`turnout_core::orm_levels`).
 const LEVELS_KEY: &str = "levels";
 const UNDERGROUND: &str = "underground";
+const FIRST_BELOW: &str = "-1";
+const SECOND_BELOW: &str = "-2";
 /// Central London at z14, where Underground lines run in tunnels.
 const LEVELS_TILE: (u8, u32, u32) = (14, 8186, 5448);
 
@@ -128,69 +135,122 @@ fn bench_style(style: &str, tiles: &[(u8, u32, u32)]) -> (f64, f64, f64) {
     (samples.len() as f64 / wall_s, mean, p50)
 }
 
-/// The number of pixels a rendered tile draws (alpha above zero).
-fn drawn_pixels(img: &Image) -> usize {
-    img.as_image()
-        .as_raw()
-        .chunks_exact(4)
-        .filter(|px| px[3] != 0)
-        .count()
+/// `hash` extended FNV-1a style with `bytes`.
+fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(FNV_PRIME))
 }
 
-/// Renders `LEVELS_TILE` with the `levels` global-state set to `bands`.
+/// What a rendered tile draws: its drawn pixels (alpha above zero) and a hash
+/// of every pixel.
+struct Drawn {
+    pixels: usize,
+    hash: u64,
+}
+
+impl Drawn {
+    fn of(img: &Image) -> Self {
+        let raw = img.as_image().as_raw();
+        let pixels = raw.chunks_exact(4).filter(|px| px[3] != 0).count();
+        Self {
+            pixels,
+            hash: fnv1a(FNV_OFFSET, raw),
+        }
+    }
+}
+
+/// Renders `LEVELS_TILE` with the `levels` global-state set to `levels`.
 fn render_levels(
     renderer: &mut ImageRenderer<Tile>,
-    bands: &[String],
-) -> Result<usize, RenderingError> {
+    levels: &[&str],
+) -> Result<Drawn, RenderingError> {
+    let levels = levels.iter().map(|&l| l.to_owned()).collect();
     renderer
         .style()
-        .set_global_state(LEVELS_KEY, GlobalStateValue::StringList(bands.to_vec()));
+        .set_global_state(LEVELS_KEY, GlobalStateValue::StringList(levels));
     let (z, x, y) = LEVELS_TILE;
-    renderer.render_tile(z, x, y).map(|img| drawn_pixels(&img))
+    renderer.render_tile(z, x, y).map(|img| Drawn::of(&img))
 }
 
-/// The drawn pixels of `LEVELS_TILE` with no band, with only the underground
-/// band and with every band.
-fn level_counts(
+/// `LEVELS_TILE` rendered with no level, with only the underground band, with
+/// every level, and with only level -1 and only level -2.
+struct LevelRenders {
+    none: Drawn,
+    underground: Drawn,
+    all: Drawn,
+    first_below: Drawn,
+    second_below: Drawn,
+}
+
+fn level_renders(
     renderer: &mut ImageRenderer<Tile>,
-    all_bands: &[String],
-) -> Result<(usize, usize, usize), RenderingError> {
-    let none = render_levels(renderer, &[])?;
-    let underground = render_levels(renderer, &[UNDERGROUND.to_owned()])?;
-    let all = render_levels(renderer, all_bands)?;
-    Ok((none, underground, all))
+    all_levels: &[&str],
+) -> Result<LevelRenders, RenderingError> {
+    Ok(LevelRenders {
+        none: render_levels(renderer, &[])?,
+        underground: render_levels(renderer, &[UNDERGROUND])?,
+        all: render_levels(renderer, all_levels)?,
+        first_below: render_levels(renderer, &[FIRST_BELOW])?,
+        second_below: render_levels(renderer, &[SECOND_BELOW])?,
+    })
 }
 
-/// Whether the Levels option filters the render: `LEVELS_TILE` with only the
-/// underground band draws more than with no band (which still draws the layers
-/// the option doesn't gate), and less than with every band (the style's
-/// `levels` default).
+impl LevelRenders {
+    /// Whether the Levels option filters the render: only the underground band
+    /// draws more than no level (which still draws the layers the option doesn't
+    /// gate) and less than every level (the style's `levels` default), and levels
+    /// -1 and -2 each draw more than no level and differ from each other.
+    fn filters(&self) -> bool {
+        let none = self.none.pixels;
+        none < self.underground.pixels
+            && self.underground.pixels < self.all.pixels
+            && none < self.first_below.pixels
+            && none < self.second_below.pixels
+            && self.first_below.hash != self.second_below.hash
+    }
+}
+
+/// Whether the Levels option filters the render, per [`LevelRenders::filters`].
 fn levels_check() -> bool {
     let style: serde_json::Value = serde_json::from_str(STYLE).expect("valid style json");
-    let Some(all_bands) = style["state"][LEVELS_KEY]["default"].as_array() else {
+    let Some(all_levels) = style["state"][LEVELS_KEY]["default"].as_array() else {
         eprintln!("the style declares no `{LEVELS_KEY}` state");
         return false;
     };
-    let all_bands: Vec<String> = all_bands
-        .iter()
-        .filter_map(|b| b.as_str().map(str::to_owned))
-        .collect();
+    let all_levels: Vec<&str> = all_levels.iter().filter_map(|l| l.as_str()).collect();
     let mut renderer = tile_renderer();
     // global-state can only be set once the style has loaded.
     if let Err(e) = renderer.load_style_from_json_str(runtime_style()).wait() {
         eprintln!("style failed to load: {e}");
         return false;
     }
-    let (none, underground, all) = match level_counts(&mut renderer, &all_bands) {
-        Ok(counts) => counts,
+    let renders = match level_renders(&mut renderer, &all_levels) {
+        Ok(renders) => renders,
         Err(e) => {
             eprintln!("render failed: {e:?}");
             return false;
         }
     };
     let (z, x, y) = LEVELS_TILE;
-    let ok = none < underground && underground < all;
-    println!("{{\"tile\":\"{z}/{x}/{y}\",\"no_bands_px\":{none},\"underground_px\":{underground},\"all_bands_px\":{all},\"ok\":{ok}}}");
+    let ok = renders.filters();
+    let LevelRenders {
+        none,
+        underground,
+        all,
+        first_below,
+        second_below,
+    } = &renders;
+    println!(
+        "{{\"tile\":\"{z}/{x}/{y}\",\"no_levels_px\":{},\"underground_px\":{},\"all_levels_px\":{},\"level_-1_px\":{},\"level_-1_hash\":\"{:016x}\",\"level_-2_px\":{},\"level_-2_hash\":\"{:016x}\",\"ok\":{ok}}}",
+        none.pixels,
+        underground.pixels,
+        all.pixels,
+        first_below.pixels,
+        first_below.hash,
+        second_below.pixels,
+        second_below.hash,
+    );
     ok
 }
 
@@ -248,13 +308,10 @@ fn main() {
         let tps = samples.len() as f64 / wall_s;
 
         // Correctness hash (untimed) over the rendered pixels.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut hash = FNV_OFFSET;
         for &(z, x, y) in &tiles {
             if let Ok(img) = renderer.render_tile(z, x, y) {
-                for &b in img.as_image().as_raw() {
-                    hash ^= u64::from(b);
-                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-                }
+                hash = fnv1a(hash, img.as_image().as_raw());
             }
         }
         println!(
