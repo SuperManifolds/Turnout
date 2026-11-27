@@ -63,8 +63,6 @@ pub fn Map(
     clip_to_selection: ReadSignal<bool>,
     tangent_mode: ReadSignal<bool>,
     set_drawer_open: WriteSignal<bool>,
-    show_vector_layers: ReadSignal<bool>,
-    set_show_vector_layers: WriteSignal<bool>,
 ) -> impl IntoView {
     let map_ref = create_node_ref::<html::Div>();
     let (bbox, set_bbox) = create_signal::<Option<(f64, f64, f64, f64)>>(None);
@@ -393,10 +391,6 @@ pub fn Map(
                         <i class="fa-solid fa-download"></i>
                         " Download Tiles"
                     </button>
-                    <button on:click=move |_| set_show_vector_layers.update(|v| *v = !*v)>
-                        <i class="fa-solid fa-layer-group"></i>
-                        " Rail Layers"
-                    </button>
                     <button on:click=on_select_area>"Redraw"</button>
                     <button on:click=on_clear>"Clear"</button>
                 </Show>
@@ -406,12 +400,6 @@ pub fn Map(
                 <super::tile_download::TileDownload
                     bbox=bbox
                     on_close=Callback::new(move |()| set_show_tile_download.set(false))
-                />
-            </Show>
-            <Show when=move || show_vector_layers.get()>
-                <super::vector_layers::VectorLayers
-                    bbox=bbox
-                    on_close=Callback::new(move |()| set_show_vector_layers.set(false))
                 />
             </Show>
             <Show when=move || show_name_prompt.get()>

@@ -2,12 +2,17 @@
 //! per-game Launch Options (`%command%` wrapper). Turnout can't safely write
 //! Steam's config (the client overwrites `localconfig.vdf` on exit), so instead
 //! it hands the user a ready-to-paste string pre-filled with its own path — the
-//! same copy-and-paste flow the tutorial uses for tile-source URLs.
+//! same copy-and-paste flow the tutorial uses for tile-source URLs. It also
+//! opens the Steam Workshop page of the companion styling mod.
 
 use std::path::PathBuf;
 
+use crate::error::{CommandError, CommandResult};
+
 /// NIMBY Rails' Steam application id (Weird and Wry).
 const NIMBY_APPID: &str = "1134710";
+/// Steam Workshop page for the companion "ORM Vertical Layers" styling mod.
+const WORKSHOP_MOD_URL: &str = "https://steamcommunity.com/sharedfiles/filedetails/?id=3763998309";
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,9 +132,41 @@ pub fn nimby_launch_setup() -> NimbyLaunchSetup {
     }
 }
 
+/// Open the companion styling mod's Steam Workshop page in the default browser.
+#[tauri::command]
+pub fn open_workshop_mod() -> CommandResult<()> {
+    tauri_plugin_opener::open_url(WORKSHOP_MOD_URL, None::<&str>)
+        .map_err(|e| CommandError::Other(format!("Failed to open Workshop page: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use turnout_core::orm_levels::LEVEL_LAYERS;
+
     use super::library_paths;
+
+    #[test]
+    fn mod_source_layers_match_level_layers() {
+        // The committed mod's `source_layer` names must equal the levels source's
+        // layer names, or the mod silently renders nothing.
+        let mod_txt = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mods/orm-vertical-layers/mod.txt"
+        ))
+        .expect("read committed mod.txt");
+        let used: BTreeSet<&str> = mod_txt
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("source_layer = "))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            used,
+            BTreeSet::from(LEVEL_LAYERS),
+            "mod source_layers drifted from LEVEL_LAYERS: rerun scripts/gen_orm_layers_mod.py"
+        );
+    }
 
     #[test]
     fn parses_library_paths() {

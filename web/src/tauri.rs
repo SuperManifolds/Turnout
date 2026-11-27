@@ -659,43 +659,6 @@ pub async fn set_tile_download_paused(paused: bool) -> Result<(), String> {
     invoke_obj("set_tile_download_paused", args).await.map(|_| ())
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorLayerLevel {
-    pub level: i32,
-    pub layer_name: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VectorLayersInfo {
-    pub tilejson_url: String,
-    pub tile_url: String,
-    pub levels: Vec<VectorLayerLevel>,
-}
-
-pub async fn start_orm_vector_layers(
-    south: f64, west: f64, north: f64, east: f64, timeout_secs: u32,
-) -> Result<VectorLayersInfo, String> {
-    let args = js_sys::Object::new();
-    set(&args, "south", south);
-    set(&args, "west", west);
-    set(&args, "north", north);
-    set(&args, "east", east);
-    set(&args, "timeoutSecs", f64::from(timeout_secs));
-    let result = invoke_obj("start_orm_vector_layers", args).await?;
-    from_js(result).ok_or_else(|| "Unexpected response from the tile server".to_string())
-}
-
-pub async fn stop_orm_vector_layers() {
-    let _ = invoke("stop_orm_vector_layers", &JsValue::NULL).await;
-}
-
-pub async fn open_workshop_mod() -> Result<(), String> {
-    invoke("open_workshop_mod", &JsValue::NULL).await.map(|_| ())
-}
-
 pub async fn download_orm_tiles(
     south: f64, west: f64, north: f64, east: f64,
     z_min: u8, z_max: u8,

@@ -20,7 +20,6 @@ mod overpass;
 mod server_core;
 mod settings;
 mod tile_server;
-mod vector_tiles;
 mod vulkan;
 mod wms;
 mod wmts;
@@ -376,7 +375,6 @@ fn main() {
             app.manage(orm_availability);
             app.manage(apple_token::AppleRefresh::new());
             apple_token::spawn_auto_refresh(app.handle().clone());
-            app.manage(vector_tiles::VectorLayerState::default());
             app.manage(cartometro::CartoMetroState::default());
             tauri::async_runtime::spawn(cartometro::autostart(app.handle().clone()));
             Ok(())
@@ -455,9 +453,7 @@ fn main() {
             orm_tiles::get_orm_options,
             orm_tiles::get_orm_port,
             orm_tiles::orm_disabled_reason,
-            vector_tiles::start_orm_vector_layers,
-            vector_tiles::stop_orm_vector_layers,
-            vector_tiles::open_workshop_mod,
+            nimby_launch::open_workshop_mod,
             cartometro::start_cartometro,
             cartometro::stop_cartometro,
         ])

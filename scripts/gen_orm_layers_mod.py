@@ -21,7 +21,7 @@ import struct
 import zlib
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "mods", "orm-vertical-layers")
-LEVELS = range(-5, 6)  # matches LAYER_MIN/MAX in vector_tiles.rs and gameplay_layer
+LEVELS = range(-5, 6)  # matches turnout-core orm_levels::LEVEL_LAYERS (orm.sorlie.io railway_levels) and gameplay_layer
 
 # ORM's live per-mode palette (proxy/js/styles.mjs, colors.styles.standard).
 TYPE_COLORS = {
