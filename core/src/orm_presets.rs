@@ -1,6 +1,6 @@
 //! Presets of the ORM overlay's `global-state` options: the classic per-mode
-//! presets the toolbar's preset bar offers and the tile server's legacy per-mode
-//! URLs render.
+//! presets the preset bar offers and the tile server's legacy per-mode URLs
+//! render.
 
 use serde_json::{Map, Value};
 
@@ -42,8 +42,8 @@ pub const DETAILS_OFF: &[(&str, Literal)] = &[
     ("pois", Literal::List(&[])),
 ];
 
-/// The classic per-mode presets the toolbar's preset bar offers and the tile
-/// server's legacy per-mode URLs render, as the track mode and details each one
+/// The classic per-mode presets the preset bar offers and the tile server's
+/// legacy per-mode URLs render, as the track mode and details each one
 /// draws (on top of [`DETAILS_OFF`]).
 pub const CLASSIC_PRESETS: &[Preset] = &[
     (
