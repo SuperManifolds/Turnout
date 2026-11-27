@@ -10,6 +10,7 @@ pub mod geojson_reader;
 pub mod geo;
 pub mod kml;
 pub mod orm_levels;
+pub mod orm_presets;
 pub mod overlay_style;
 pub mod shapefile_reader;
 
