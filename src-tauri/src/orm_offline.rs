@@ -13,6 +13,7 @@ use tauri::{Emitter, Manager};
 use crate::error::{CommandError, CommandResult};
 use crate::mbtiles::{DownloadProgress, ProgressEvent};
 use crate::server_core::{USER_AGENT, UnpoisonExt};
+use crate::settings::STYLE_SOURCE_BASE;
 
 /// Union of every distinct MVT source layer referenced by the composite
 /// `openrailwaymap.app/<layers>/{z}/{x}/{y}` tile URLs of the bundled styles.
@@ -461,7 +462,8 @@ fn rewrite_offline_style(style: &mut Value, orm_source: &Value, sprite: &Value, 
     style["glyphs"] = glyphs.clone();
 }
 
-/// True for vector sources whose tiles are served from `openrailwaymap.app`.
+/// True for vector sources whose tiles are on the bundled styles' baked-in
+/// [`STYLE_SOURCE_BASE`] host.
 fn is_orm_vector_source(src: &Value) -> bool {
     src.get("type").and_then(Value::as_str) == Some("vector")
         && src
@@ -469,14 +471,14 @@ fn is_orm_vector_source(src: &Value) -> bool {
             .and_then(Value::as_array)
             .and_then(|a| a.first())
             .and_then(Value::as_str)
-            .is_some_and(|t| t.contains("openrailwaymap.app"))
+            .is_some_and(|t| t.starts_with(STYLE_SOURCE_BASE))
 }
 
 /// Extracts the comma-separated layer path (the segment between
-/// `openrailwaymap.app/` and `/{z}`) from an ORM vector source's tile template.
+/// `<STYLE_SOURCE_BASE>/` and `/{z}`) from an ORM vector source's tile template.
 fn orm_layer_segment(src: &Value) -> Option<&str> {
     let tmpl = src.get("tiles")?.as_array()?.first()?.as_str()?;
-    let after_host = tmpl.split_once("openrailwaymap.app/")?.1;
+    let after_host = tmpl.strip_prefix(STYLE_SOURCE_BASE)?.strip_prefix('/')?;
     Some(after_host.split_once("/{z}")?.0)
 }
 

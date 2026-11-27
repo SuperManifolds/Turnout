@@ -84,7 +84,7 @@ pub struct GpuInfo {
     pub is_software: bool,
 }
 
-const DEFAULT_ORM_BASE: &str = "https://openrailwaymap.app";
+const DEFAULT_ORM_BASE: &str = "https://orm.sorlie.io";
 
 /// Settings-window auto-fit geometry: fixed width, content-height padding, and a
 /// ceiling so a long panel scrolls rather than growing off-screen.

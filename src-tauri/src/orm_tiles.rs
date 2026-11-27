@@ -185,8 +185,8 @@ struct Dispatch {
 struct OrmShared {
     offline_dir: RwLock<Option<PathBuf>>,
     /// Base URL for online tile/glyph/sprite requests. Substituted into the
-    /// embedded styles at load so a self-hosted `OpenRailwayMap` can replace the
-    /// default `openrailwaymap.app`.
+    /// embedded styles at load, so the default host or a self-hosted
+    /// `OpenRailwayMap` serves them.
     base_url: RwLock<String>,
     /// Directory holding the self-hosted SDF glyphs (`<dir>/<fontstack>/<range>.pbf`).
     /// The online styles' `glyphs` is rewritten to a `file://` URL under here because
@@ -670,22 +670,24 @@ fn resolve_style_source(style: &str, shared: &OrmShared) -> String {
 
 /// Rewrites an embedded style for runtime use: glyphs always point at the local
 /// self-hosted SDF directory (upstream dropped the glyph-PBF endpoint), while tiles
-/// and sprites follow the configured `base` host so a self-hosted ORM can replace
-/// `openrailwaymap.app`. The glyph rewrite runs first so the host swap never touches
+/// and sprites move from the style's baked-in [`STYLE_SOURCE_BASE`] host to the
+/// configured `base`. The glyph rewrite runs first so the host swap never touches
 /// the now-`file://` glyphs URL.
+///
+/// [`STYLE_SOURCE_BASE`]: crate::settings::STYLE_SOURCE_BASE
 fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) -> String {
-    let default = crate::settings::DEFAULT_ORM_BASE;
+    let source = crate::settings::STYLE_SOURCE_BASE;
     let glyph_rewritten = match glyphs_dir {
         Some(dir) => json.replace(
-            &format!("{default}/font/"),
+            &format!("{source}/font/"),
             &format!("file://{}/", dir.display()),
         ),
         None => json.to_string(),
     };
-    if base == default {
+    if base == source {
         glyph_rewritten
     } else {
-        glyph_rewritten.replace(default, base)
+        glyph_rewritten.replace(source, base)
     }
 }
 
@@ -1189,10 +1191,10 @@ mod tests {
     #[test]
     fn rebase_style_points_glyphs_at_local_dir() {
         let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sprite":"https://openrailwaymap.app/sprite/symbols","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high,railway_text_km/{z}/{x}/{y}"]}}}"#;
-        let out = rebase_style(json, crate::settings::DEFAULT_ORM_BASE, Some(std::path::Path::new("/cache/glyphs")));
+        let out = rebase_style(json, crate::settings::STYLE_SOURCE_BASE, Some(std::path::Path::new("/cache/glyphs")));
         // Glyphs go local, with the fontstack/range placeholders preserved.
         assert!(out.contains("\"glyphs\":\"file:///cache/glyphs/{fontstack}/{range}.pbf\""), "{out}");
-        // Tiles and sprite stay on the default host (no base override here).
+        // Tiles and sprite stay on the style's own host when that is the base.
         assert!(out.contains("https://openrailwaymap.app/railway_line_high"));
         assert!(out.contains("https://openrailwaymap.app/sprite/symbols"));
         assert!(!out.contains("openrailwaymap.app/font/"));
@@ -1222,11 +1224,29 @@ mod tests {
     #[test]
     fn rebase_style_swaps_host_but_keeps_glyphs_local() {
         let json = r#"{"glyphs":"https://openrailwaymap.app/font/{fontstack}/{range}.pbf","sources":{"high":{"tiles":["https://openrailwaymap.app/railway_line_high/{z}/{x}/{y}"]}}}"#;
-        let out = rebase_style(json, "https://orm.sorlie.io", Some(std::path::Path::new("/c/glyphs")));
+        let out = rebase_style(json, "http://localhost:8000", Some(std::path::Path::new("/c/glyphs")));
         // A self-hosted base moves tiles, but glyphs still come from the local dir.
         assert!(out.contains("\"glyphs\":\"file:///c/glyphs/{fontstack}/{range}.pbf\""), "{out}");
-        assert!(out.contains("https://orm.sorlie.io/railway_line_high"));
+        assert!(out.contains("http://localhost:8000/railway_line_high"));
         assert!(!out.contains("openrailwaymap.app"));
+    }
+
+    #[test]
+    fn rebase_style_moves_bundled_style_to_default_base() {
+        let out = rebase_style(STYLES[0].1, crate::settings::DEFAULT_ORM_BASE, Some(std::path::Path::new("/c/glyphs")));
+        let style: serde_json::Value = serde_json::from_str(&out).expect("rebased style parses");
+        assert_eq!(style["glyphs"], "file:///c/glyphs/{fontstack}/{range}.pbf");
+        let tiles: Vec<&str> = style["sources"]
+            .as_object()
+            .expect("sources")
+            .values()
+            .filter_map(|s| s["tiles"].as_array())
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|t| t.starts_with("https://orm.sorlie.io/")), "{tiles:?}");
+        assert!(!out.contains(crate::settings::STYLE_SOURCE_BASE));
     }
 
     #[test]
