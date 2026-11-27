@@ -114,16 +114,53 @@ enum TileResult {
 /// `(style, z, x, y)`, sized to `TILE_CACHE_CAPACITY` across `CACHE_STRIPES` shards.
 type TileCache = server_core::TileCache<Key>;
 
+/// The per-mode URLs saved NIMBY Rails sources still use, each a view: the `orm`
+/// style with the named [`CLASSIC_PRESETS`] entry over the shared option state.
+///
+/// [`CLASSIC_PRESETS`]: turnout_core::orm_presets::CLASSIC_PRESETS
+const VIEWS: &[(&str, &str)] = &[
+    ("standard", "Infrastructure"),
+    ("speed", "Speed"),
+    ("signals", "Signals"),
+    ("electrification", "Electrification"),
+    ("track", "Track"),
+    ("operator", "Operator"),
+    ("route", "Route"),
+];
+
 fn canonical_style(name: &str) -> Arc<str> {
-    if STYLES.iter().any(|(n, _)| *n == name) {
+    if STYLES.iter().chain(VIEWS).any(|(n, _)| *n == name) {
         Arc::from(name)
     } else {
         Arc::from("orm")
     }
 }
 
+/// The [`STYLES`] entry a style or view renders from. Views and unknown names
+/// render from `orm`, so views need no style files of their own.
+fn source_style(name: &str) -> &'static str {
+    STYLES.iter().find(|(n, _)| *n == name).map_or(STYLES[0].0, |(n, _)| n)
+}
+
 fn style_json(name: &str) -> &'static str {
-    STYLES.iter().find(|(n, _)| *n == name).map_or(STYLES[0].1, |(_, s)| s)
+    let source = source_style(name);
+    STYLES.iter().find(|(n, _)| *n == source).map_or(STYLES[0].1, |(_, s)| s)
+}
+
+/// The option state `style` renders with: the shared state, with a view's preset
+/// keys (`tracks` and the details) replaced by its preset's values. Every other
+/// key (`levels`, `theme`, `date`, `show*`) follows the shared state.
+fn view_state(
+    shared: &serde_json::Map<String, serde_json::Value>,
+    style: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut state = shared.clone();
+    let preset = VIEWS
+        .iter()
+        .find(|(name, _)| *name == style)
+        .and_then(|(_, preset)| turnout_core::orm_presets::classic_state(preset));
+    state.extend(preset.into_iter().flatten());
+    state
 }
 
 /// Computes the z19 ancestor tile coordinates for a given tile.
@@ -611,22 +648,23 @@ fn build_renderer(cache_path: &std::path::Path, style: &str, shared: &OrmShared)
     r.load_style_from_json_str(resolve_style_source(style, shared))
         .wait()
         .map_err(|e| format!("ORM style '{style}' failed to load: {e}"))?;
-    apply_global_state(&mut r, shared);
+    apply_global_state(&mut r, shared, style);
     Ok(r)
 }
 
-/// Pushes the current ORM option values into the renderer's style as native
-/// `global-state`, so the style's `global-state` expressions evaluate against the
-/// user's selections. maplibre-native evaluates these directly (core #4516), so no
-/// expression rewriting is needed.
+/// Pushes `style`'s ORM option values ([`view_state`]) into the renderer's style as
+/// native `global-state`, so the style's `global-state` expressions evaluate against
+/// the user's selections. maplibre-native evaluates these directly (core #4516), so
+/// no expression rewriting is needed.
 fn apply_global_state(
     renderer: &mut maplibre_native::ImageRenderer<maplibre_native::Tile>,
     shared: &OrmShared,
+    style: &str,
 ) {
     use maplibre_native::GlobalStateValue;
-    let state = shared.orm_state.read().unpoison();
+    let state = view_state(&shared.orm_state.read().unpoison(), style);
     let mut style = renderer.style();
-    for (key, value) in state.iter() {
+    for (key, value) in &state {
         let resolved = match value {
             serde_json::Value::String(s) => GlobalStateValue::String(s.clone()),
             serde_json::Value::Bool(b) => GlobalStateValue::Bool(*b),
@@ -691,9 +729,10 @@ fn rebase_style(json: &str, base: &str, glyphs_dir: Option<&std::path::Path>) ->
     }
 }
 
-/// Reads `<dir>/styles/{style}_offline.json`.
+/// Reads `<dir>/styles/{source}_offline.json`, where `source` is `style`'s
+/// [`source_style`].
 fn offline_style_source(dir: &std::path::Path, style: &str) -> std::io::Result<String> {
-    let path = dir.join("styles").join(format!("{style}_offline.json"));
+    let path = dir.join("styles").join(format!("{}_offline.json", source_style(style)));
     std::fs::read_to_string(path)
 }
 
@@ -1274,6 +1313,62 @@ mod tests {
         assert!(!tiles.is_empty());
         assert!(tiles.iter().all(|t| t.starts_with("https://orm.sorlie.io/")), "{tiles:?}");
         assert!(!out.contains(crate::settings::STYLE_SOURCE_BASE));
+    }
+
+    #[test]
+    fn views_and_styles_keep_their_name_and_others_fall_back_to_orm() {
+        assert_eq!(&*canonical_style("signals"), "signals");
+        assert_eq!(&*canonical_style("orm"), "orm");
+        assert_eq!(&*canonical_style("nope"), "orm");
+    }
+
+    #[test]
+    fn views_render_from_the_orm_style() {
+        assert_eq!(source_style("speed"), "orm");
+        assert_eq!(source_style("nope"), "orm");
+        assert_eq!(style_json("speed"), STYLES[0].1);
+    }
+
+    #[test]
+    fn every_view_names_a_classic_preset() {
+        for (view, preset) in VIEWS {
+            assert!(turnout_core::orm_presets::classic_state(preset).is_some(), "{view}: no preset {preset}");
+        }
+    }
+
+    #[test]
+    fn view_state_sets_preset_keys_and_keeps_the_rest_shared() {
+        use serde_json::json;
+        use turnout_core::orm_levels::LEVELS_KEY;
+        let mut shared = crate::orm_state::default_state(STYLES[0].1);
+        shared.insert(LEVELS_KEY.to_owned(), json!(["underground"]));
+        shared.insert("theme".to_owned(), json!("dark"));
+        shared.insert("platforms".to_owned(), json!("height"));
+
+        let state = view_state(&shared, "signals");
+        assert_eq!(state.get("tracks"), Some(&json!("train_protection")));
+        assert_eq!(state.get("boxes"), Some(&json!("plain")));
+        assert_eq!(state.get("platforms"), Some(&json!(turnout_core::orm_presets::NONE)));
+        assert_eq!(state.get(LEVELS_KEY), Some(&json!(["underground"])));
+        assert_eq!(state.get("theme"), Some(&json!("dark")));
+        assert_eq!(state.len(), shared.len());
+    }
+
+    #[test]
+    fn view_state_of_a_style_is_the_shared_state() {
+        let mut shared = crate::orm_state::default_state(STYLES[0].1);
+        shared.insert("tracks".to_owned(), serde_json::json!("gauge"));
+        assert_eq!(view_state(&shared, "orm"), shared);
+    }
+
+    #[test]
+    fn offline_views_read_the_orm_offline_style() {
+        let dir = std::env::temp_dir().join(format!("turnout-orm-views-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("styles")).expect("styles dir");
+        std::fs::write(dir.join("styles").join("orm_offline.json"), "{}").expect("offline style");
+        let source = offline_style_source(&dir, "electrification");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(source.expect("view reads the orm offline style"), "{}");
     }
 
     #[test]
